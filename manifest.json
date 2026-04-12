@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Fast Recorder & Playback",
+  "version": "1.0.0",
+  "description": "Record & Playback user actions across pages without delay",
+
+  "permissions": [
+    "tabs",
+    "storage",
+    "scripting",
+    "downloads",
+    "alarms",
+    "debugger",
+    "windows",
+    "notifications"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Fast Recorder & Playback"
+  }
+}

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Crop &amp; Edit Screenshot</title>
+  <link rel="stylesheet" href="css/editor.css" />
+</head>
+<body>
+
+  <!-- Sidebar: Tools -->
+  <div class="sidebar">
+    <button id="toolCrop"    class="s-btn active" data-tip="Crop (C)">✂</button>
+    <button id="toolDraw"    class="s-btn" data-tip="Draw (D)">✏</button>
+    <button id="toolRect"    class="s-btn" data-tip="Rectangle (R)">▭</button>
+    <button id="toolEllipse" class="s-btn" data-tip="Ellipse (E)">○</button>
+    <button id="toolArrow"   class="s-btn" data-tip="Arrow (A)">➜</button>
+    <button id="toolText"    class="s-btn" data-tip="Text (T)">T</button>
+    <button id="toolBlur"    class="s-btn" data-tip="Blur (B)">⬡</button>
+    <div class="s-sep"></div>
+    <button id="btnRotL"  class="s-btn" data-tip="Rotate 90° Left">↺</button>
+    <button id="btnRotR"  class="s-btn" data-tip="Rotate 90° Right">↻</button>
+    <button id="btnFlipH" class="s-btn" data-tip="Flip Horizontal">↔</button>
+    <button id="btnFlipV" class="s-btn" data-tip="Flip Vertical">↕</button>
+    <div class="s-sep"></div>
+    <button id="btnUndo" class="s-btn" disabled data-tip="Undo (Ctrl+Z)">↩</button>
+    <button id="btnRedo" class="s-btn" disabled data-tip="Redo (Ctrl+Y)">↪</button>
+    <div style="flex:1"></div>
+    <button id="btnTheme" class="s-btn" data-tip="Toggle Theme">🌙</button>
+    <button id="btnHelp" class="s-btn" data-tip="Shortcuts (?)">?</button>
+  </div>
+
+  <!-- Main area -->
+  <div class="main-area">
+    <!-- Top toolbar: actions only -->
+    <div class="toolbar">
+      <h1>✂ Crop &amp; Edit</h1>
+      <div class="sep"></div>
+      <span id="selInfo">Choose a tool</span>
+      <div style="flex:1;min-width:8px"></div>
+      <button id="btnSaveCrop" class="tbtn" disabled title="Crop &amp; Save">✂ Crop &amp; Save</button>
+      <button id="btnSaveFull" class="tbtn" title="Save full image">⬇ Save Full</button>
+      <button id="btnCancel"   class="tbtn" title="Cancel">✕ Cancel</button>
+    </div>
+
+    <!-- Context bar: shows options for current tool -->
+    <div class="context-bar" id="contextBar">
+      <span class="ctx-hint" id="ctxHint">Drag to select a crop area</span>
+    </div>
+
+    <div id="viewport">
+      <div id="wrapper">
+        <img id="imgEl" alt="" style="display:none" />
+        <canvas id="cvs"></canvas>
+        <input id="textInput" type="text" placeholder="Type… Enter to apply" />
+      </div>
+    </div>
+
+    <!-- Zoom bar (floating bottom-right) -->
+    <div class="zoom-bar">
+      <button id="btnZoomOut" class="zbtn" title="Zoom out">−</button>
+      <span id="zoomLabel">100%</span>
+      <button id="btnZoomIn" class="zbtn" title="Zoom in">+</button>
+      <button id="btnZoomReset" class="zbtn" title="Reset zoom" disabled style="font-size:11px">1:1</button>
+    </div>
+  </div>
+
+  <!-- Shortcut panel -->
+  <div id="shortcutOverlay">
+    <div id="shortcutPanel"></div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div id="confirmModal">
+    <div class="cm-content">
+      <h4 id="cmTitle">Confirm</h4>
+      <p id="cmMsg"></p>
+      <div class="cm-row">
+        <button id="cmCancel">Cancel</button>
+        <button id="cmOk">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="saveToast"></div>
+  <div id="toolToast"></div>
+  <script src="editor.js"></script>
+</body>
+</html>

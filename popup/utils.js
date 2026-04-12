@@ -1,0 +1,138 @@
+/**
+ * utils.js
+ * Common utility functions used across popup modules.
+ * Exports: escHtml, ACTION_ICONS, getActionIcon, showToast, lockScroll, unlockScroll,
+ *          showConfirm, showAlert, validateNumberInput, safeSendTabMessage, isEligibleTab, debounce
+ */
+
+/* === HTML Escape === */
+
+export function escHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* === Action Icons === */
+
+export const ACTION_ICONS = {
+  click: '🖱', input: '⌨', navigate: '🔗', script: '⚡', hover: '👆',
+  wait: '⏱', condition: '❓', switch: '🔀', dragdrop: '↕', readdom: '📖',
+  screenshot: '📷', screenshot_full: '📄', screenshot_element: '📌', screenshot_tovar: '📸'
+};
+
+export function getActionIcon(type) {
+  return ACTION_ICONS[type] || '';
+}
+
+/* === Toast Notification === */
+
+let _toastTimer = null;
+
+export function showToast(msg, type = 'success') {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.className = `toast toast-${type} show`;
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
+}
+
+/* === Scroll Lock === */
+
+let _savedScrollY = 0;
+
+export function lockScroll() {
+  _savedScrollY = document.body.scrollTop || window.scrollY || 0;
+  document.body.style.top = `-${_savedScrollY}px`;
+  document.body.classList.add('modal-open');
+  document.documentElement.style.overflow = 'hidden';
+}
+
+export function unlockScroll() {
+  document.body.classList.remove('modal-open');
+  document.documentElement.style.overflow = '';
+  document.body.style.top = '';
+  document.body.scrollTop = _savedScrollY;
+  window.scrollTo(0, _savedScrollY);
+}
+
+/* === Confirm / Alert Modals === */
+
+export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel = '' } = {}) {
+  const modal = document.getElementById('confirmModal');
+  document.getElementById('confirmModalTitle').textContent = title;
+  document.getElementById('confirmModalMsg').textContent = msg;
+  const okBtn = document.getElementById('confirmModalOk');
+  const cancelBtn = document.getElementById('confirmModalCancel');
+  okBtn.textContent = okLabel || (danger ? 'Delete' : 'Confirm');
+  okBtn.className = danger ? 'danger' : '';
+  cancelBtn.style.display = '';
+  modal.classList.add('show');
+  lockScroll();
+  const close = () => { modal.classList.remove('show'); unlockScroll(); };
+  cancelBtn.onclick = close;
+  okBtn.onclick = () => { close(); onConfirm(); };
+}
+
+export function showAlert(msg, { title = 'Notice' } = {}) {
+  const modal = document.getElementById('confirmModal');
+  document.getElementById('confirmModalTitle').textContent = title;
+  document.getElementById('confirmModalMsg').textContent = msg;
+  const okBtn = document.getElementById('confirmModalOk');
+  const cancelBtn = document.getElementById('confirmModalCancel');
+  okBtn.textContent = 'OK';
+  okBtn.className = '';
+  cancelBtn.style.display = 'none';
+  modal.classList.add('show');
+  lockScroll();
+  const close = () => { modal.classList.remove('show'); cancelBtn.style.display = ''; unlockScroll(); };
+  cancelBtn.onclick = close;
+  okBtn.onclick = close;
+}
+
+/* === Validation === */
+
+export function validateNumberInput(input, min = 0) {
+  const value = parseInt(input.value, 10);
+  if (input.value && (isNaN(value) || value < min)) {
+    input.classList.add('required-error');
+    setTimeout(() => {
+      input.classList.remove('required-error');
+    }, 2000);
+    return false;
+  }
+  input.classList.remove('required-error');
+  return true;
+}
+
+/* === Tab Messaging === */
+
+export function safeSendTabMessage(tabId, payload) {
+  chrome.tabs.sendMessage(tabId, payload, () => {
+    if (chrome.runtime.lastError) {
+      return;
+    }
+  });
+}
+
+export function isEligibleTab(tab) {
+  if (!tab?.url) return false;
+  const url = tab.url;
+  return (
+    url.startsWith('http:') ||
+    url.startsWith('https:') ||
+    url.startsWith('file:') ||
+    url.startsWith('ftp:') ||
+    url.startsWith('ws:') ||
+    url.startsWith('wss:')
+  );
+}
+
+/* === Debounce === */
+
+export function debounce(fn, delay = 200) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), delay);
+  };
+}
