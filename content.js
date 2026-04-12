@@ -1069,7 +1069,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   const dir = msg.dir;
   const isVert = dir === "vertical";
-  const axis = isVert ? "Y" : "X";
   const startX = window.scrollX;
   const startY = window.scrollY;
 
@@ -1156,19 +1155,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   });
 
   btnStop.addEventListener("click", () => {
-    cleanup();
     const endX = window.scrollX + window.innerWidth;
     const endY = window.scrollY + window.innerHeight;
+    cleanup();
 
-    const payload = {
-      type: "CAPTURE_SEGMENT",
-      xStart: Math.min(startX, endX),
-      yStart: Math.min(startY, endY),
-      xEnd: Math.max(startX, endX),
-      yEnd: Math.max(startY, endY)
-    };
+    // Scroll back to start position before capture so screenshot.js tiles from the correct origin
+    window.scrollTo(startX, startY);
 
-    chrome.runtime.sendMessage(payload);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const payload = {
+        type: "CAPTURE_SEGMENT",
+        xStart: Math.min(startX, endX),
+        yStart: Math.min(startY, endY),
+        xEnd: Math.max(startX, endX),
+        yEnd: Math.max(startY, endY)
+      };
+      chrome.runtime.sendMessage(payload);
+    }));
   });
 
   _segCapture = { cleanup };

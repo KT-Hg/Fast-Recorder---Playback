@@ -171,6 +171,8 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     cvs.style.width = zW + "px"; cvs.style.height = zH + "px";
     const w = document.getElementById("wrapper");
     w.style.width = zW + "px"; w.style.height = zH + "px";
+    // Switch justify-content so scrollLeft=0 aligns to the true left edge when canvas overflows
+    viewport.style.justifyContent = (zW > viewport.clientWidth || zH > viewport.clientHeight) ? "flex-start" : "center";
   }
   applyCanvasSize();
 
