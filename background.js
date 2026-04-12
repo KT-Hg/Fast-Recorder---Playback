@@ -685,7 +685,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           });
         }
       } else {
-        chrome.action.openPopup().catch(() => {});
+        chrome.action.openPopup().catch(() => {
+          // openPopup() fails in MV3 when not triggered by user gesture.
+          // Show a badge so the user knows to click the extension icon.
+          chrome.action.setBadgeText({ text: "✓" });
+          chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
+        });
       }
     });
     sendResponse({ received: true });

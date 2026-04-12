@@ -280,6 +280,44 @@ function findElementWithFallback(selectors, timeout = 5000) {
 }
 
 /**
+ * Find a descendant of `root` matching one or more conditions.
+ *
+ * conditions: {
+ *   valueEquals  : string  — matches el.value === value
+ *   textContains : string  — matches el.textContent includes text (case-insensitive)
+ * }
+ *
+ * Multiple conditions are evaluated as OR (first match wins).
+ * Returns the first matching element, or null.
+ */
+function findElementByCondition(root, conditions) {
+  if (!root || !conditions) return null;
+  const { valueEquals, textContains } = conditions;
+  const normalize = (s) => (s ?? "").toString().trim().toLowerCase();
+  const needle = textContains != null ? normalize(textContains) : null;
+
+  const candidates = root.querySelectorAll("*");
+  for (const el of candidates) {
+    if (valueEquals !== undefined && el.value !== undefined) {
+      if (String(el.value) === String(valueEquals)) return el;
+    }
+    if (needle !== null) {
+      // Only check leaf-ish nodes to avoid matching ancestors with accumulated text
+      const ownText = normalize(
+        Array.from(el.childNodes)
+          .filter(n => n.nodeType === Node.TEXT_NODE)
+          .map(n => n.textContent)
+          .join("")
+      );
+      if (ownText.includes(needle)) return el;
+      // Also accept elements whose full trimmed text matches (for simple text nodes)
+      if (normalize(el.textContent).includes(needle)) return el;
+    }
+  }
+  return null;
+}
+
+/**
  * Wait for element to appear in DOM (for cascade dropdowns)
  */
 function waitForElement(selector, timeout = 5000) {
@@ -403,8 +441,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const actionTimeout = (action.timeout && action.timeout > 0) ? action.timeout : 5000;
     let target;
     try {
-      // Use selectors object if available, otherwise fall back to legacy selector string
-      if (action.selectors && typeof action.selectors === 'object') {
+      if (action.conditions && action.selector) {
+        // Condition-based matching: resolve parent element first, then search children
+        const parent = await findElementWithFallback(
+          action.selectors && typeof action.selectors === 'object'
+            ? action.selectors
+            : { css: action.selector },
+          actionTimeout
+        );
+        target = parent ? findElementByCondition(parent, action.conditions) : null;
+      } else if (action.selectors && typeof action.selectors === 'object') {
         target = await findElementWithFallback(action.selectors, actionTimeout);
       } else if (action.selector) {
         target = await findElementWithFallback({ css: action.selector }, actionTimeout);
@@ -894,7 +940,7 @@ document.addEventListener('keydown', (e) => {
 
   // Skip when user is typing in a form field
   const tag = document.activeElement?.tagName;
-  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+  if (['INPUT', 'TEXTAREA'].includes(tag)) return;
   if (document.activeElement?.isContentEditable) return;
 
   const combo = getKeyCombo(e);

@@ -97,18 +97,18 @@
         <option value="">-- Select Action Type --</option>
         <option value="click">Click</option>
         <option value="input">Input</option>
-        <option value="navigate">Navigate</option>
         <option value="hover">Hover</option>
+        <option value="dragdrop">Drag &amp; Drop</option>
+        <option value="navigate">Navigate</option>
+        <option value="wait">Wait (ms)</option>
         <option value="script">Run JS</option>
         <option value="condition">Condition (If)</option>
+        <option value="switch">Switch (Variable → Scenario)</option>
+        <option value="readdom">Read DOM → Variable</option>
         <option value="screenshot">Screenshot (Visible)</option>
         <option value="screenshot_full">Screenshot (Full Page)</option>
         <option value="screenshot_element">Screenshot (Element)</option>
-        <option value="screenshot_tovar">📸 Screenshot → Variable (CSV)</option>
-        <option value="wait">Wait (ms)</option>
-        <option value="dragdrop">Drag &amp; Drop</option>
-        <option value="readdom">Read DOM → Variable</option>
-        <option value="switch">🔀 Switch (variable → scenario)</option>
+        <option value="screenshot_tovar">Screenshot → Variable (CSV)</option>
       </select>
       <div class="hidden-by-default" id="readdomWrapper" style="margin-top:6px;">
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
@@ -189,6 +189,22 @@
         </div>
         <span class="helper-text">Leave case value empty to set as <strong>default</strong>. Cases are checked top-to-bottom; first match wins.</span>
       </div>
+      <!-- CHILD CONDITION (optional) — shown for click/input/hover -->
+      <div class="hidden-by-default" id="childConditionWrapper" style="margin-top:8px;padding:8px;border:1px dashed var(--border,#d1d5db);border-radius:6px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+          <label style="font-size:12px;font-weight:600;color:var(--muted);">Child Condition <span style="font-weight:400;font-size:11px;">(optional — find child element to act on)</span></label>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+          <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">value equals</label>
+          <input id="condChildValueEquals" placeholder='e.g. 1, 2, 3' style="flex:1;margin:0;font-size:12px;" />
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">text contains</label>
+          <input id="condChildTextContains" placeholder='e.g. Abc, Def' style="flex:1;margin:0;font-size:12px;" />
+        </div>
+        <span class="helper-text">Selector above = parent container. Child matching the condition will be acted on.</span>
+      </div>
+
       <div class="hidden-by-default" id="manualValueWrapper">
         <div class="step-label">③ Value</div>
         <textarea id="manualValue" placeholder="Value (for input/navigate) or JS code (for script)" style="width:100%; height:80px; margin-top:6px;"></textarea>

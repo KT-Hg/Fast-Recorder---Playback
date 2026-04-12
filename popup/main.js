@@ -252,25 +252,37 @@ const CARD_HELP_DATA = {
         • <b>CSS</b> — e.g. <code>#submit-btn</code>, <code>.form-input</code>, <code>div &gt; span</code><br>
         • <b>XPath</b> — e.g. <code>//button[@type="submit"]</code><br>
         • <b>ID</b> — just the id value, e.g. <code>submit-btn</code><br>
-        • <b>Name</b> — the element's <code>name</code> attribute value, e.g. <code>email</code><br>
+        • <b>Name</b> — the element's <code>name</code> attribute, e.g. <code>email</code><br>
         • <b>Text</b> — visible text of the element, e.g. <code>Sign In</code><br>
         • <b>Full XPath</b> — absolute path, e.g. <code>/html/body/div[1]/button</code><br><br>
-        🎯 Click the <b>picker</b> button to pick an element directly from the page — the extension auto-fills all available selector types.</p></div>
+        Click the <b>picker (🎯)</b> button to pick an element directly from the page — all selector types are filled automatically.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">② Action Type</span><span class="ch-title">Action type</span></div><p class="ch-desc">
-        • <b>Click</b> — click the element. For checkbox/radio: toggles the checked state.<br>
-        • <b>Input</b> — type a value into a text field, textarea, or select an option from &lt;select&gt;. Fires <code>input</code> and <code>change</code> events automatically.<br>
-        • <b>Navigate</b> — go to a URL. The extension waits for the page to finish loading (<code>status: complete</code>) before continuing.<br>
-        • <b>Run JS</b> — execute arbitrary JavaScript in the page context. E.g. <code>window.scrollTo(0, 500)</code> or <code>document.title = 'Test'</code>.<br>
-        • <b>Condition (If)</b> — evaluate a condition; if <b>FALSE</b>, skip the next N actions. Click the <b>?</b> button next to the dropdown for a detailed guide.<br>
+        • <b>Click</b> — click the element. Toggles checked state for checkbox/radio.<br>
+        • <b>Input</b> — set a value on a text input, textarea, or &lt;select&gt;. Fires <code>input</code> and <code>change</code> events automatically.<br>
+        • <b>Hover</b> — simulate mouse hover (fires <code>mouseover</code> / <code>mouseenter</code> / <code>mousemove</code>).<br>
+        • <b>Drag &amp; Drop</b> — drag the source element (Selector above) and drop it onto a target element.<br>
+        • <b>Navigate</b> — go to a URL. Waits for <code>status: complete</code> before continuing.<br>
+        • <b>Wait (ms)</b> — pause for a fixed number of milliseconds. No selector needed.<br>
+        • <b>Run JS</b> — execute arbitrary JavaScript via CDP (bypasses page CSP). E.g. <code>window.scrollTo(0, 500)</code>.<br>
+        • <b>Condition (If)</b> — evaluate a condition; if <b>FALSE</b>, skip the next N actions. Click <b>?</b> next to the dropdown for condition types.<br>
+        • <b>Switch (Variable → Scenario)</b> — branch to a different scenario based on a variable value. Define cases value → scenario.<br>
+        • <b>Read DOM → Variable</b> — read an element's text, value, or attribute and store it in a variable for later use.<br>
         • <b>Screenshot (Visible)</b> — capture the visible viewport.<br>
-        • <b>Screenshot (Full Page)</b> — capture the entire page (scrolls and stitches).</p></div>
+        • <b>Screenshot (Full Page)</b> — capture the entire page by scrolling and stitching tiles.<br>
+        • <b>Screenshot (Element)</b> — capture a specific element by its selector.<br>
+        • <b>Screenshot → Variable (CSV)</b> — capture a screenshot and store the filename/base64 in a variable (useful for CSV export with images).</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Child Condition</span><span class="ch-title">Find child element by condition</span></div><p class="ch-desc">Available for <b>Click</b>, <b>Input</b>, <b>Hover</b>. When filled, the <b>Selector</b> field becomes the <b>parent container</b>, and the extension searches its children for one matching the condition:<br>
+        • <b>value equals</b> — matches <code>el.value === "..."</code> (inputs, selects, checkboxes)<br>
+        • <b>text contains</b> — matches elements whose text content contains the string (case-insensitive)<br>
+        Leave both empty to act on the selector directly as usual.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">③ Value</span><span class="ch-title">Value</span></div><p class="ch-desc">
         • <b>Input</b>: text to type into the field<br>
         • <b>Navigate</b>: full URL, e.g. <code>https://example.com/login</code><br>
+        • <b>Wait</b>: milliseconds to pause, e.g. <code>2000</code> = 2 s<br>
         • <b>Run JS</b>: JavaScript code (multi-line supported)<br>
         • <b>Screenshot</b>: optional filename (leave empty to use the default prefix)<br><br>
         Supports dynamic variables: <code>\${varName}</code> is replaced with the value from the Variables table at runtime.</p></div>
-      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">④ Delay</span><span class="ch-title">Post-action delay</span></div><p class="ch-desc">Wait time (ms) <b>after</b> the action completes before moving to the next action. E.g. set <code>1000</code> to wait 1 second after clicking Submit to let the page respond. Default = 0 (no wait).</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">④ Delay</span><span class="ch-title">Post-action delay</span></div><p class="ch-desc">Wait time (ms) <b>after</b> the action completes before moving to the next action. E.g. <code>1000</code> = wait 1 s after clicking Submit to let the page respond. Default = 0 (no wait).</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">⑤ Label</span><span class="ch-title">Label / note</span></div><p class="ch-desc">Display name shown in the action list for easy identification. Does not affect execution. E.g. <i>"Click login button"</i>, <i>"Enter email"</i>.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Variables</span><span class="ch-title">Variable table</span></div><p class="ch-desc">Declare <code>key = value</code> pairs in the table. Use <code>\${key}</code> anywhere (selector, value, URL, JS code). Variables are saved to <code>chrome.storage.local</code> and auto-loaded on popup open.<br><br>
         • <b>+ Add Row</b>: add a new variable row<br>
@@ -544,6 +556,12 @@ const manualSelector = document.getElementById("manualSelector");
 const selectorType = document.getElementById("selectorType");
 const pickedSelectorsInfo = document.getElementById("pickedSelectorsInfo");
 const pickedSelectorsWrap = document.getElementById("pickedSelectorsWrap");
+// Hide on startup — will be shown later if there are picked selectors
+if (pickedSelectorsWrap && !manualSelector?.value?.trim()) {
+  pickedSelectorsWrap.style.display = "none";
+}
+// Clear pick-done badge if set
+chrome.action.setBadgeText({ text: "" });
 const manualActionType = document.getElementById("manualActionType");
 const manualValue = document.getElementById("manualValue");
 const manualDelay = document.getElementById("manualDelay");
@@ -1791,6 +1809,13 @@ manualActionType.onchange = () => {
     if (type === "switch") populateSwitchScenarioSelect();
   }
 
+  // Show child condition wrapper for action types that act on elements
+  const childConditionWrapper = document.getElementById("childConditionWrapper");
+  if (childConditionWrapper) {
+    const supportsChildCondition = ["click", "input", "hover"].includes(type);
+    childConditionWrapper.style.display = supportsChildCondition ? "block" : "none";
+  }
+
   // Show value wrapper for types that need it
   const needsValue = ["input", "navigate", "script", "screenshot", "screenshot_full", "wait"].includes(type);
   manualValueWrapper.style.display = needsValue ? "block" : "none";
@@ -1963,6 +1988,17 @@ addManualAction.onclick = () => {
     }
   }
 
+  // For click/input/hover: attach child conditions if filled
+  if (["click", "input", "hover"].includes(type)) {
+    const ve = document.getElementById("condChildValueEquals")?.value?.trim();
+    const tc = document.getElementById("condChildTextContains")?.value?.trim();
+    if (ve || tc) {
+      action.conditions = {};
+      if (ve) action.conditions.valueEquals = ve;
+      if (tc) action.conditions.textContains = tc;
+    }
+  }
+
   // For dragdrop actions store target selector
   if (type === "dragdrop") {
     const target = document.getElementById("dragdropTarget")?.value?.trim();
@@ -2019,76 +2055,7 @@ addManualAction.onclick = () => {
         scenarioId: scenarioList.value || null,
       },
       () => {
-        manualSelector.value = "";
-        manualActionType.value = "";
-        manualValue.value = "";
-        setManualDelayUI("");
-
-        // Reset UI visibility
-        const manualValueWrapper = document.getElementById("manualValueWrapper");
-        const manualDelayWrapper = document.getElementById("manualDelayWrapper");
-        const selectorRow = document.getElementById("selectorRow");
-
-        if (manualValueWrapper) manualValueWrapper.style.display = "none";
-        if (manualDelayWrapper) manualDelayWrapper.style.display = "none";
-        if (selectorRow) selectorRow.style.display = "flex";
-
-        // Reset picked selectors
-        currentPickedSelectors = null;
-        if (pickedSelectorsInfo) {
-          pickedSelectorsWrap.style.display = "none";
-          pickedSelectorsInfo.innerHTML = "";
-        }
-        if (selectorType) selectorType.value = "css";
-
-        // Reset condition fields
-        if (conditionWrapper) conditionWrapper.style.display = "none";
-        if (conditionType) conditionType.value = "elementExists";
-        if (conditionExpectedValue) conditionExpectedValue.value = "";
-        if (conditionSkipCount) conditionSkipCount.value = "1";
-
-        // Reset dragdrop fields
-        const ddWrapEl = document.getElementById("dragdropWrapper");
-        if (ddWrapEl) ddWrapEl.style.display = "none";
-        const ddTargetEl = document.getElementById("dragdropTarget");
-        if (ddTargetEl) ddTargetEl.value = "";
-
-        // Reset screenshot_tovar fields
-        const ssTovarWrapEl = document.getElementById("screenshotTovarWrapper");
-        if (ssTovarWrapEl) ssTovarWrapEl.style.display = "none";
-        const ssTovarVarEl = document.getElementById("screenshotTovarVarName");
-        if (ssTovarVarEl) ssTovarVarEl.value = "";
-        const ssTovarTargetEl = document.getElementById("screenshotTovarTarget");
-        if (ssTovarTargetEl) ssTovarTargetEl.value = "page";
-        const ssTovarSelRowEl = document.getElementById("screenshotTovarSelectorRow");
-        if (ssTovarSelRowEl) ssTovarSelRowEl.style.display = "none";
-        const ssTovarSelEl = document.getElementById("screenshotTovarSelector");
-        if (ssTovarSelEl) ssTovarSelEl.value = "";
-
-        // Reset readdom fields
-        const readdomWrapperEl = document.getElementById("readdomWrapper");
-        if (readdomWrapperEl) readdomWrapperEl.style.display = "none";
-        const rdVarName = document.getElementById("readdomVarName");
-        if (rdVarName) rdVarName.value = "";
-        const rdReadFrom = document.getElementById("readdomReadFrom");
-        if (rdReadFrom) rdReadFrom.value = "text";
-        const rdAttrName = document.getElementById("readdomAttrName");
-        if (rdAttrName) { rdAttrName.value = ""; rdAttrName.style.display = "none"; }
-
-        // Reset switch fields
-        const switchWrapEl = document.getElementById("switchWrapper");
-        if (switchWrapEl) switchWrapEl.style.display = "none";
-        const switchVarEl = document.getElementById("switchVar");
-        if (switchVarEl) switchVarEl.value = "";
-        _switchCases = [];
-        renderSwitchCaseList();
-
-        // Reset label
-        const lbl = document.getElementById("manualLabel");
-        const lblW = document.getElementById("manualLabelWrapper");
-        if (lbl) lbl.value = "";
-        if (lblW) lblW.style.display = "none";
-
+        clearEditState();
         previewActions();
         updateUndoRedoState();
       }
@@ -2206,6 +2173,17 @@ function startEdit(index, action) {
   }
   setManualDelayUI(action.delay ? String(action.delay) : "");
 
+  // Restore child condition fields
+  const childCondWrap = document.getElementById("childConditionWrapper");
+  const condChildVE   = document.getElementById("condChildValueEquals");
+  const condChildTC   = document.getElementById("condChildTextContains");
+  if (childCondWrap) {
+    const supportsChildCondition = ["click", "input", "hover"].includes(action.type);
+    childCondWrap.style.display = supportsChildCondition ? "block" : "none";
+  }
+  if (condChildVE) condChildVE.value = action.conditions?.valueEquals  || "";
+  if (condChildTC) condChildTC.value = action.conditions?.textContains || "";
+
   const manualLabelEl = document.getElementById("manualLabel");
   const manualLabelWrapper = document.getElementById("manualLabelWrapper");
   if (manualLabelEl) manualLabelEl.value = action.label || "";
@@ -2226,11 +2204,19 @@ function clearEditState() {
   addManualAction.textContent = "Add Action";
   cancelEdit.style.display = "none";
   currentPickedSelectors = null;
-  if (pickedSelectorsInfo) {
-    pickedSelectorsWrap.style.display = "none";
-    pickedSelectorsInfo.innerHTML = "";
-  }
+  if (pickedSelectorsWrap) { pickedSelectorsWrap.style.display = "none"; }
+  if (pickedSelectorsInfo) { pickedSelectorsInfo.innerHTML = ""; }
   if (selectorType) selectorType.value = "css";
+
+  // Reset selectorRow and value/delay wrappers
+  const _selectorRow = document.getElementById("selectorRow");
+  if (_selectorRow) _selectorRow.style.display = "flex";
+  const _valWrap = document.getElementById("manualValueWrapper");
+  if (_valWrap) _valWrap.style.display = "none";
+  const _delWrap = document.getElementById("manualDelayWrapper");
+  if (_delWrap) _delWrap.style.display = "none";
+  const _lblWrap = document.getElementById("manualLabelWrapper");
+  if (_lblWrap) _lblWrap.style.display = "none";
 
   // Reset condition fields
   if (conditionWrapper) conditionWrapper.style.display = "none";
@@ -2268,9 +2254,15 @@ function clearEditState() {
   if (ssTovarSelClear) ssTovarSelClear.value = "";
 
   const manualLabelEl = document.getElementById("manualLabel");
-  const manualLabelWrapper = document.getElementById("manualLabelWrapper");
   if (manualLabelEl) manualLabelEl.value = "";
-  if (manualLabelWrapper) manualLabelWrapper.style.display = "none";
+
+  // Reset child condition fields
+  const childCondWrapClear = document.getElementById("childConditionWrapper");
+  if (childCondWrapClear) childCondWrapClear.style.display = "none";
+  const condChildVEClear = document.getElementById("condChildValueEquals");
+  if (condChildVEClear) condChildVEClear.value = "";
+  const condChildTCClear = document.getElementById("condChildTextContains");
+  if (condChildTCClear) condChildTCClear.value = "";
 }
 
 cancelEdit.onclick = () => {
