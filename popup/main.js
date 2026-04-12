@@ -482,38 +482,6 @@ document.getElementById('cardHelpModal')?.addEventListener('click', (e) => {
   if (e.target === e.currentTarget) { e.currentTarget.classList.remove('show'); unlockScroll(); }
 });
 
-/* === CONFIRM / ALERT MODAL === */
-function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel } = {}) {
-  const modal = document.getElementById('confirmModal');
-  document.getElementById('confirmModalTitle').textContent = title;
-  document.getElementById('confirmModalMsg').textContent = msg;
-  const okBtn = document.getElementById('confirmModalOk');
-  const cancelBtn = document.getElementById('confirmModalCancel');
-  okBtn.textContent = okLabel || (danger ? 'Delete' : 'Confirm');
-  okBtn.className = danger ? 'danger' : '';
-  cancelBtn.style.display = '';
-  modal.classList.add('show');
-  lockScroll();
-  const close = () => { modal.classList.remove('show'); unlockScroll(); };
-  cancelBtn.onclick = close;
-  okBtn.onclick = () => { close(); onConfirm(); };
-}
-
-function showAlert(msg, { title = 'Notice' } = {}) {
-  const modal = document.getElementById('confirmModal');
-  document.getElementById('confirmModalTitle').textContent = title;
-  document.getElementById('confirmModalMsg').textContent = msg;
-  const okBtn = document.getElementById('confirmModalOk');
-  const cancelBtn = document.getElementById('confirmModalCancel');
-  okBtn.textContent = 'OK';
-  okBtn.className = '';
-  cancelBtn.style.display = 'none';
-  modal.classList.add('show');
-  lockScroll();
-  const close = () => { modal.classList.remove('show'); cancelBtn.style.display = ''; unlockScroll(); };
-  cancelBtn.onclick = close;
-  okBtn.onclick = close;
-}
 
 const actionsEl = document.getElementById("actions");
 const toggleTheme = document.getElementById("toggleTheme");
@@ -525,17 +493,7 @@ const mainContent = document.getElementById("mainContent");
 const scenarioSearch = document.getElementById("scenarioSearch");
 const scenarioSort = document.getElementById("scenarioSort");
 const duplicateScenarioBtn = document.getElementById("duplicateScenario");
-const variablesTableBody = document.getElementById("variablesTableBody");
-const addVariableRowBtn = document.getElementById("addVariableRow");
-const addRandomVariableBtn = document.getElementById("addRandomVariable");
-const saveVariablesBtn = document.getElementById("saveVariables");
-const reloadVariablesBtn = document.getElementById("reloadVariables");
-const randomModal = document.getElementById("randomModal");
-const randomVarName = document.getElementById("randomVarName");
-const randomType = document.getElementById("randomType");
-const randomLength = document.getElementById("randomLength");
-const cancelRandom = document.getElementById("cancelRandom");
-const confirmRandom = document.getElementById("confirmRandom");
+
 const scenarioFolder = document.getElementById("scenarioFolder");
 const createFolderBtn = document.getElementById("createFolder");
 const filterFolder = document.getElementById("filterFolder");
@@ -840,6 +798,33 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+/* === Resumable Playback Banner === */
+let _resumeCheckpoint = null;
+const resumeBanner = document.getElementById("resumeBanner");
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "OFFER_RESUME") return;
+  _resumeCheckpoint = msg.checkpoint;
+  const { scenarioId, actionIndex } = msg.checkpoint;
+  const name = scenariosCache[scenarioId]?.name || scenarioId;
+  document.getElementById("resumeBannerMsg").textContent =
+    `Playback interrupted at action #${actionIndex + 1} of "${name}" — resume?`;
+  resumeBanner.style.display = "flex";
+});
+
+document.getElementById("resumeBtn")?.addEventListener("click", () => {
+  if (!_resumeCheckpoint) return;
+  chrome.runtime.sendMessage({ type: "RESUME_PLAYBACK", ..._resumeCheckpoint });
+  resumeBanner.style.display = "none";
+  _resumeCheckpoint = null;
+});
+
+document.getElementById("resumeDismissBtn")?.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "DISMISS_RESUME" });
+  resumeBanner.style.display = "none";
+  _resumeCheckpoint = null;
+});
+
 
 /* === Compact Mode (legacy stubs) === */
 function applyAdvancedMode() {
@@ -931,6 +916,7 @@ document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
     const tab = tabs[0];
     if (!tab?.id || !isEligibleTab(tab)) { showToast("Invalid tab for pick mode", "error"); return; }
     // Save current form state so we can restore after pick
+    chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop"]);
     chrome.storage.local.set({
       dragdropTargetPickPending: true,
       dragdropTargetPickState: {
@@ -949,19 +935,6 @@ document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
   });
 });
 
-// Element screenshot — direct pick mode (no modal)
-function startElemShotPick(crop) {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tab = tabs[0];
-    if (!tab?.id || !isEligibleTab(tab)) { showToast("Invalid tab for pick mode", "error"); return; }
-    chrome.storage.local.set({ elemShotPickPending: true, elemShotPickCrop: !!crop });
-    safeSendTabMessage(tab.id, { type: "START_PICK_MODE" });
-    chrome.runtime.sendMessage({ type: "START_PICK_MODE", tabId: tab.id });
-    window.close();
-  });
-}
-document.getElementById("screenshotElement")    ?.addEventListener("click", () => startElemShotPick(false));
-document.getElementById("cropScreenshotElement")?.addEventListener("click", () => startElemShotPick(true));
 
 // Sync compact scenario list with main list
 function renderCompactScenarioList() {
@@ -1858,6 +1831,9 @@ pickElement.onclick = () => {
       }
     });
   }
+
+  // Clear any stale Capture pick flag so R&P pick is not mistaken for a screenshot pick
+  if (pickerMode) chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop"]);
 
   // Broadcast pick mode toggle to all tabs
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -2768,136 +2744,7 @@ if (createFolderAction) {
 // MANAGE FOLDERS is now always visible, render it when folders load
 // (already called in loadScenarios)
 
-/* === VARIABLES === */
-
-function addVariableRow(key = "", value = "") {
-  // Check if there's an empty row first
-  const emptyRow = findEmptyRow();
-
-  if (emptyRow && (key || value)) {
-    // Fill the empty row instead of creating a new one
-    const keyInput = emptyRow.querySelector(".var-key");
-    const valueInput = emptyRow.querySelector(".var-value");
-    if (keyInput) keyInput.value = key;
-    if (valueInput) valueInput.value = value;
-    return;
-  }
-
-  // Otherwise create a new row
-  const row = document.createElement("tr");
-  row.innerHTML = `
-    <td><input type="text" class="var-key" value="${key}" placeholder="key" /></td>
-    <td><input type="text" class="var-value" value="${value}" placeholder="value" /></td>
-    <td><button class="delete-row">✕</button></td>
-  `;
-
-  row.querySelector(".delete-row").onclick = () => row.remove();
-
-  variablesTableBody.appendChild(row);
-}
-
-function findEmptyRow() {
-  const rows = variablesTableBody.querySelectorAll("tr");
-  for (const row of rows) {
-    const keyInput = row.querySelector(".var-key");
-    const valueInput = row.querySelector(".var-value");
-    const key = keyInput?.value.trim();
-    const value = valueInput?.value.trim();
-    if (!key && !value) {
-      return row;
-    }
-  }
-  return null;
-}
-
-function getVariablesFromTable() {
-  const result = {};
-  variablesTableBody.querySelectorAll("tr").forEach((row) => {
-    const keyInput = row.querySelector(".var-key");
-    const valueInput = row.querySelector(".var-value");
-    const key = keyInput?.value.trim();
-    const value = valueInput?.value.trim();
-    if (key) {
-      result[key] = value || "";
-    }
-  });
-  return result;
-}
-
-function loadVariables() {
-  chrome.runtime.sendMessage({ type: "GET_VARIABLES" }, (res) => {
-    variablesTableBody.innerHTML = "";
-    const vars = res?.variables || {};
-    Object.entries(vars).forEach(([k, v]) => addVariableRow(k, v));
-    // Add one empty row if no variables
-    if (Object.keys(vars).length === 0) {
-      addVariableRow();
-    }
-  });
-}
-
-if (addVariableRowBtn) {
-  addVariableRowBtn.onclick = () => addVariableRow();
-}
-
-if (addRandomVariableBtn) {
-  addRandomVariableBtn.onclick = () => {
-    randomVarName.value = "";
-    randomType.value = "alphanumeric";
-    randomLength.value = "8";
-    randomModal.classList.add("show");
-    lockScroll();
-  };
-}
-
-if (cancelRandom) {
-  cancelRandom.onclick = () => {
-    randomModal.classList.remove("show");
-    unlockScroll();
-  };
-}
-
-if (confirmRandom) {
-  confirmRandom.onclick = () => {
-    const name = randomVarName.value.trim();
-    const type = randomType.value;
-    const length = randomLength.value;
-
-    if (!name) {
-      randomVarName.classList.add("required-error");
-      setTimeout(() => randomVarName.classList.remove("required-error"), 2000);
-      return;
-    }
-
-    const value = `{random:${type}:${length}}`;
-    addVariableRow(name, value);
-    randomModal.classList.remove("show");
-    unlockScroll();
-  };
-}
-
-// Close modal when clicking outside
-if (randomModal) {
-  randomModal.onclick = (e) => {
-    if (e.target === randomModal) {
-      randomModal.classList.remove("show");
-      unlockScroll();
-    }
-  };
-}
-
-if (saveVariablesBtn) {
-  saveVariablesBtn.onclick = () => {
-    const vars = getVariablesFromTable();
-    chrome.runtime.sendMessage({ type: "SAVE_VARIABLES", variables: vars });
-  };
-}
-
-if (reloadVariablesBtn) {
-  reloadVariablesBtn.onclick = () => loadVariables();
-}
-
-loadVariables();
+// Variables UI is fully managed by popup/variables.js (initVariables called in init.js)
 
 scenarioList.onchange = () => {
   // Enable scenario actions only when a real scenario is selected

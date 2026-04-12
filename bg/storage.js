@@ -1,7 +1,7 @@
 /**
  * storage.js — Chrome storage CRUD helpers for scenarios, folders, variables
  * Exports: getScenarios, setScenarios, getFolders, setFolders, getVariables,
- *          generateId, getStack, pushUndo, undoStacks
+ *          generateId, getStack, pushUndo, undoStacks, mutateScenarioActions
  */
 
 /* === Scenarios === */
@@ -93,8 +93,24 @@ export function getStack(key) {
 
 export function pushUndo(key, snapshot) {
   const s = getStack(key);
-  s.undo.push(JSON.parse(JSON.stringify(snapshot)));
+  s.undo.push(structuredClone(snapshot));
   if (s.undo.length > 50) s.undo.shift();
   s.redo = [];
   _persistUndoStacks();
+}
+
+/* === Scenario action mutation helper ===
+ * Fetches scenarios, validates the target scenario exists, pushes undo,
+ * applies updater(actions) → newActions, saves, returns newActions.
+ * Throws if scenarioId is not found.
+ */
+export async function mutateScenarioActions(scenarioId, updater) {
+  const scenarios = await getScenarios();
+  if (!scenarios[scenarioId]) throw new Error(`Scenario "${scenarioId}" not found`);
+  const prev = scenarios[scenarioId].actions ?? [];
+  const next = updater(prev);
+  pushUndo(scenarioId, prev);
+  scenarios[scenarioId].actions = next;
+  await setScenarios(scenarios);
+  return next;
 }

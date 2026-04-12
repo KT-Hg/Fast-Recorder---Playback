@@ -8,43 +8,65 @@
 import { state } from './bg/state.js';
 import {
   getScenarios, setScenarios, getFolders, setFolders,
-  getVariables, generateId, getStack, pushUndo,
+  getVariables, generateId, getStack, pushUndo, mutateScenarioActions,
 } from './bg/storage.js';
 import { updateBadge } from './bg/utils.js';
-import { startPlayback, startSequence, startCsvPlayback } from './bg/playback.js';
+import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback } from './bg/playback.js';
 import {
   takeFullPageScreenshot, compareScreenshots, downloadDataUrl,
 } from './bg/screenshot.js';
 
-/* === SCHEDULING === */
+/* === SCHEDULING (per-schedule chrome.alarms) === */
 
-chrome.alarms.create("checkSchedules", { periodInMinutes: 1 });
+const ALARM_PREFIX = "sched_";
 
-let _lastScheduleMinute = "";
-async function checkSchedules() {
+/** Milliseconds until the next occurrence of "HH:MM" */
+function _msUntilTime(timeStr) {
+  const [hh, mm] = timeStr.split(":").map(Number);
   const now = new Date();
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const tick = `${now.toDateString()}_${hh}:${mm}`;
-  if (tick === _lastScheduleMinute) return;
-  _lastScheduleMinute = tick;
-
-  chrome.storage.local.get(["schedules"], (res) => {
-    const schedules = res.schedules || [];
-    const time = `${hh}:${mm}`;
-    let changed = false;
-    schedules.forEach((s) => {
-      if (s.enabled && s.time === time) {
-        startPlayback(s.scenarioId);
-        if (!s.repeat) { s.enabled = false; changed = true; }
-      }
-    });
-    if (changed) chrome.storage.local.set({ schedules });
-  });
+  const next = new Date(now);
+  next.setHours(hh, mm, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
 }
 
+function registerScheduleAlarm(schedule) {
+  if (!schedule?.enabled) return;
+  const name = ALARM_PREFIX + schedule.id;
+  const delayInMinutes = _msUntilTime(schedule.time) / 60000;
+  if (schedule.repeat) {
+    chrome.alarms.create(name, { delayInMinutes, periodInMinutes: 24 * 60 });
+  } else {
+    chrome.alarms.create(name, { delayInMinutes });
+  }
+}
+
+function unregisterScheduleAlarm(id) {
+  chrome.alarms.clear(ALARM_PREFIX + id);
+}
+
+/** On service worker startup — sync alarms with stored schedules */
+chrome.storage.local.get(["schedules"], (res) => {
+  const schedules = res.schedules || [];
+  schedules.forEach((s) => {
+    if (s.enabled) registerScheduleAlarm(s);
+  });
+});
+
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "checkSchedules") checkSchedules();
+  if (!alarm.name.startsWith(ALARM_PREFIX)) return;
+  const id = alarm.name.slice(ALARM_PREFIX.length);
+  chrome.storage.local.get(["schedules"], (res) => {
+    const schedules = res.schedules || [];
+    const s = schedules.find((x) => x.id === id);
+    if (!s || !s.enabled) return;
+    startPlayback(s.scenarioId);
+    if (!s.repeat) {
+      s.enabled = false;
+      chrome.storage.local.set({ schedules });
+      unregisterScheduleAlarm(id);
+    }
+  });
 });
 
 /* === MAIN MESSAGE HANDLER === */
@@ -72,8 +94,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (type === "CONTENT_READY") {
-    console.log("[BACKGROUND] Content script ready on tab", sender.tab?.id);
+    const tabId = sender.tab?.id;
+    chrome.storage.local.get(["playbackCheckpoint"], ({ playbackCheckpoint: cp }) => {
+      if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000) {
+        // Tab reloaded mid-playback — offer resume to popup
+        chrome.runtime.sendMessage({ type: "OFFER_RESUME", checkpoint: cp }).catch(() => {});
+      }
+    });
     sendResponse({ received: true });
+    return;
+  }
+
+  if (type === "RESUME_PLAYBACK") {
+    const { scenarioId, actionIndex, tabId } = request;
+    chrome.storage.local.remove("playbackCheckpoint");
+    startPlaybackFromCheckpoint(scenarioId, actionIndex + 1, tabId);
+    sendResponse({ started: true });
+    return;
+  }
+
+  if (type === "DISMISS_RESUME") {
+    chrome.storage.local.remove("playbackCheckpoint");
+    sendResponse({ ok: true });
     return;
   }
 
@@ -209,98 +251,75 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   /* --- Manual action editing --- */
   if (type === "ADD_MANUAL_ACTION") {
     if (request.scenarioId) {
-      getScenarios().then(async (scenarios) => {
-        const actions = scenarios[request.scenarioId]?.actions || [];
-        pushUndo(request.scenarioId, [...actions]);
-        actions.push(request.action);
-        scenarios[request.scenarioId].actions = actions;
-        await setScenarios(scenarios);
-        sendResponse({ success: true });
-      });
+      mutateScenarioActions(request.scenarioId, (a) => [...a, request.action])
+        .then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
       return true;
-    } else {
-      pushUndo("current", [...state.currentActions]);
-      state.currentActions.push(request.action);
-      sendResponse({ success: true });
-      return;
     }
+    pushUndo("current", [...state.currentActions]);
+    state.currentActions.push(request.action);
+    sendResponse({ success: true });
+    return;
   }
 
   if (type === "UPDATE_ACTION") {
     if (request.scenarioId) {
-      getScenarios().then(async (scenarios) => {
-        const actions = scenarios[request.scenarioId]?.actions || [];
-        pushUndo(request.scenarioId, [...actions]);
-        actions[request.index] = request.action;
-        scenarios[request.scenarioId].actions = actions;
-        await setScenarios(scenarios);
-        sendResponse({ success: true });
-      });
+      mutateScenarioActions(request.scenarioId, (a) => {
+        const next = [...a];
+        next[request.index] = request.action;
+        return next;
+      }).then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
       return true;
-    } else {
-      pushUndo("current", [...state.currentActions]);
-      state.currentActions[request.index] = request.action;
-      sendResponse({ success: true });
-      return;
     }
+    pushUndo("current", [...state.currentActions]);
+    state.currentActions[request.index] = request.action;
+    sendResponse({ success: true });
+    return;
   }
 
   if (type === "REMOVE_ACTION") {
     if (request.scenarioId) {
-      getScenarios().then(async (scenarios) => {
-        const actions = scenarios[request.scenarioId]?.actions || [];
-        pushUndo(request.scenarioId, [...actions]);
-        actions.splice(request.index, 1);
-        scenarios[request.scenarioId].actions = actions;
-        await setScenarios(scenarios);
-        sendResponse({ success: true });
-      });
+      mutateScenarioActions(request.scenarioId, (a) => a.filter((_, i) => i !== request.index))
+        .then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
       return true;
-    } else {
-      pushUndo("current", [...state.currentActions]);
-      state.currentActions.splice(request.index, 1);
-      sendResponse({ success: true });
-      return;
     }
+    pushUndo("current", [...state.currentActions]);
+    state.currentActions.splice(request.index, 1);
+    sendResponse({ success: true });
+    return;
   }
 
   if (type === "TOGGLE_ACTION_DISABLED") {
     if (request.scenarioId) {
-      getScenarios().then(async (scenarios) => {
-        const actions = scenarios[request.scenarioId]?.actions || [];
-        if (request.index < 0 || request.index >= actions.length) { sendResponse({ success: false }); return; }
-        pushUndo(request.scenarioId, [...actions]);
-        actions[request.index].disabled = !actions[request.index].disabled;
-        scenarios[request.scenarioId].actions = actions;
-        await setScenarios(scenarios);
-        sendResponse({ success: true });
-      });
+      mutateScenarioActions(request.scenarioId, (a) => {
+        if (request.index < 0 || request.index >= a.length) throw new Error("out of range");
+        const next = [...a];
+        next[request.index] = { ...next[request.index], disabled: !next[request.index].disabled };
+        return next;
+      }).then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
       return true;
-    } else {
-      if (request.index < 0 || request.index >= state.currentActions.length) { sendResponse({ success: false }); return; }
-      pushUndo("current", [...state.currentActions]);
-      state.currentActions[request.index].disabled = !state.currentActions[request.index].disabled;
-      sendResponse({ success: true });
-      return;
     }
+    if (request.index < 0 || request.index >= state.currentActions.length) { sendResponse({ success: false }); return; }
+    pushUndo("current", [...state.currentActions]);
+    state.currentActions[request.index].disabled = !state.currentActions[request.index].disabled;
+    sendResponse({ success: true });
+    return;
   }
 
   if (type === "REORDER_ACTIONS") {
     if (request.scenarioId) {
-      getScenarios().then(async (scenarios) => {
-        const actions = scenarios[request.scenarioId]?.actions || [];
-        pushUndo(request.scenarioId, [...actions]);
-        scenarios[request.scenarioId].actions = request.newOrder.map((i) => actions[i]);
-        await setScenarios(scenarios);
-        sendResponse({ success: true });
-      });
+      mutateScenarioActions(request.scenarioId, (a) => request.newOrder.map((i) => a[i]))
+        .then(() => sendResponse({ success: true }))
+        .catch(() => sendResponse({ success: false }));
       return true;
-    } else {
-      pushUndo("current", [...state.currentActions]);
-      state.currentActions = request.newOrder.map((i) => state.currentActions[i]);
-      sendResponse({ success: true });
-      return;
     }
+    pushUndo("current", [...state.currentActions]);
+    state.currentActions = request.newOrder.map((i) => state.currentActions[i]);
+    sendResponse({ success: true });
+    return;
   }
 
   /* --- Scenario CRUD --- */
@@ -589,7 +608,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const idx = schedules.findIndex((s) => s.id === request.schedule.id);
       if (idx >= 0) schedules[idx] = request.schedule;
       else schedules.push(request.schedule);
-      chrome.storage.local.set({ schedules }, () => sendResponse({ success: true }));
+      chrome.storage.local.set({ schedules }, () => {
+        // Re-register alarm with updated settings
+        unregisterScheduleAlarm(request.schedule.id);
+        registerScheduleAlarm(request.schedule);
+        sendResponse({ success: true });
+      });
     });
     return true;
   }
@@ -597,7 +621,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (type === "DELETE_SCHEDULE") {
     chrome.storage.local.get(["schedules"], (res) => {
       const schedules = (res.schedules || []).filter((s) => s.id !== request.id);
-      chrome.storage.local.set({ schedules }, () => sendResponse({ success: true }));
+      chrome.storage.local.set({ schedules }, () => {
+        unregisterScheduleAlarm(request.id);
+        sendResponse({ success: true });
+      });
     });
     return true;
   }
@@ -662,7 +689,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const _ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAA+gBkAAAAAAASUVORK5CYII=";
     chrome.storage.local.get(["elemShotPickPending", "elemShotPickCrop"], (flags) => {
       if (flags.elemShotPickPending && request.selector) {
-        chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop"]);
+        chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop", "lastPickedSelector", "lastPickedSelectors"]);
         const crop = !!flags.elemShotPickCrop;
         const tabId = request.tabId || sender.tab?.id;
         if (tabId) {

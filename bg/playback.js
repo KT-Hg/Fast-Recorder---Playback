@@ -15,13 +15,25 @@ import {
 
 /* === PLAYBACK CORE === */
 
-export async function playActionsOnTab(tabId, actions, vars = null, screenshotsResult = null, forceAutoSave = false, skipDownload = false) {
+export async function playActionsOnTab(tabId, actions, vars = null, screenshotsResult = null, forceAutoSave = false, skipDownload = false, startFromIndex = 0) {
   const resolvedVars = vars !== null ? vars : await getVariables();
 
-  for (let i = 0; i < actions.length; i++) {
+  for (let i = startFromIndex; i < actions.length; i++) {
     if (!state.playback.active) break;
 
     state.playback.actionIndex = i;
+
+    // Save checkpoint after each action so we can resume if the tab crashes/reloads
+    if (state.playback.scenarioId) {
+      chrome.storage.local.set({
+        playbackCheckpoint: {
+          scenarioId: state.playback.scenarioId,
+          actionIndex: i,
+          tabId,
+          timestamp: Date.now(),
+        },
+      });
+    }
     try {
       const action = interpolateAction(actions[i], resolvedVars);
 
@@ -178,6 +190,23 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
 
 /* === SINGLE SCENARIO PLAYBACK === */
 
+export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) {
+  const scenarios = await getScenarios();
+  const scenario = scenarios[scenarioId];
+  if (!scenario) return;
+  const actions = scenario.actions || [];
+  state.playback = { active: true, tabId, scenarioId, actionIndex: fromIndex, totalActions: actions.length, loopCurrent: 1, loopTotal: 1 };
+  updateBadge();
+  try {
+    await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex);
+  } finally {
+    state.playback.active = false;
+    updateBadge();
+    chrome.storage.local.remove("playbackCheckpoint");
+    sendCompletionNotification("Playback complete", `"${scenario.name}" resumed & finished`);
+  }
+}
+
 export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
   const scenarios = await getScenarios();
   const scenario = scenarios[scenarioId];
@@ -204,6 +233,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
   } finally {
     state.playback.active = false;
     updateBadge();
+    chrome.storage.local.remove("playbackCheckpoint");
     const loopMsg = loops > 1 ? ` (${loops} loops)` : "";
     sendCompletionNotification("Playback complete", `"${scenario.name}" finished${loopMsg}`);
   }
