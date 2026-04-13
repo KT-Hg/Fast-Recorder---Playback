@@ -235,6 +235,22 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
   const suffix = requestedFilename ? '' : suffixMap[effectiveDir] || '_full';
   const filename = buildScreenshotFilename(prefix + suffix, requestedFilename);
 
+  // For full-page mode: reset transform and scroll to origin BEFORE attaching debugger
+  // so the page is in a clean state and the user can see it happen.
+  if (!segmentClip && scrollDir === 'full') {
+    await scriptingExec(tabId, () => {
+      document.documentElement.style.transform = '';
+      document.documentElement.style.transformOrigin = '';
+      document.body.style.transform = '';
+      document.body.style.transformOrigin = '';
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.documentElement.scrollLeft = 0;
+    });
+    // Wait one frame for the DOM/scroll to settle before measuring
+    await new Promise(r => setTimeout(r, 100));
+  }
+
   const dims = await tabMsg(tabId, { type: "GET_PAGE_DIMENSIONS" });
   if (!dims) return { error: "Could not get page dimensions" };
 
@@ -272,6 +288,11 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
     });
 
     await cdpEval(tabId, CDP_HIDE_SCROLLBAR);
+
+    // Re-apply reset inside debugger session in case setDeviceMetricsOverride caused reflow/re-scroll
+    if (effectiveDir === 'full') {
+      await cdpEval(tabId, `document.documentElement.style.transform='';document.body.style.transform='';window.scrollTo(0,0);`);
+    }
 
     await new Promise((resolve) => {
       chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {

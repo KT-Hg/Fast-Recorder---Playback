@@ -1740,10 +1740,10 @@ manualActionType.onchange = () => {
 
   // Hide selector row for screenshot types and certain condition types
   if (selectorRow) {
-    const hideSelector = type === "screenshot" || type === "screenshot_full" || type === "wait" || type === "switch" || isConditionWithoutSelector;
+    const hideSelector = type === "screenshot" || type === "screenshot_full" || type === "screenshot_tovar" || type === "wait" || type === "switch" || isConditionWithoutSelector;
     selectorRow.style.display = hideSelector ? "none" : "flex";
   }
-  if (pickedSelectorsInfo && (type === "screenshot" || type === "screenshot_full" || type === "wait" || type === "switch" || isConditionWithoutSelector)) {
+  if (pickedSelectorsInfo && (type === "screenshot" || type === "screenshot_full" || type === "screenshot_tovar" || type === "wait" || type === "switch" || isConditionWithoutSelector)) {
     pickedSelectorsWrap.style.display = "none";
   }
 
@@ -1959,8 +1959,9 @@ addManualAction.onclick = () => {
     action.varName  = varName;
     action.target   = document.getElementById("screenshotTovarTarget")?.value || "page";
     if (action.target === "element") {
-      const sel = document.getElementById("screenshotTovarSelector")?.value?.trim() || selector;
-      if (sel) action.selector = sel;
+      const sel = document.getElementById("screenshotTovarSelector")?.value?.trim();
+      if (!sel) { showToast("Selector is required for Element target", "error"); return; }
+      action.selector = sel;
     }
   }
 
@@ -2046,7 +2047,7 @@ function startEdit(index, action) {
   // Handle selector row visibility for screenshot types
   const selectorRow = document.getElementById("selectorRow");
   if (selectorRow) {
-    selectorRow.style.display = (action.type === "screenshot" || action.type === "screenshot_full") ? "none" : "flex";
+    selectorRow.style.display = (action.type === "screenshot" || action.type === "screenshot_full" || action.type === "screenshot_tovar") ? "none" : "flex";
   }
 
   // Restore selectors if available
@@ -3558,6 +3559,15 @@ document.getElementById("csvFile")?.addEventListener("change", (e) => {
   reader.readAsText(file);
 });
 
+// Format failures array into a human-readable bug string
+function _formatBug(failures) {
+  if (!failures || failures.length === 0) return "";
+  return failures.map(f => {
+    const label = f.label ? ` "${f.label}"` : "";
+    return `[${f.index}] ${f.type}${label}`;
+  }).join("; ");
+}
+
 // Build and download result CSV after a CSV run
 function generateResultCsv(originalHeaders, originalRows, results) {
   // Collect any extra columns captured by readdom that weren't in original headers
@@ -3568,14 +3578,17 @@ function generateResultCsv(originalHeaders, originalRows, results) {
       if (!headerSet.has(k)) { extraCols.push(k); headerSet.add(k); }
     });
   });
-  const allHeaders = [...originalHeaders, ...extraCols];
+  const allHeaders = [...originalHeaders, ...extraCols, "Action Failed"];
 
   const escape = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const lines = [allHeaders.map(escape).join(",")];
 
   results.forEach((r) => {
     const origRow = originalRows[r.rowIndex] || {};
-    const line = allHeaders.map(h => escape(r.vars?.[h] ?? origRow[h] ?? ""));
+    const line = allHeaders.map(h => {
+      if (h === "Action Failed") return escape(_formatBug(r.failures));
+      return escape(r.vars?.[h] ?? origRow[h] ?? "");
+    });
     lines.push(line.join(","));
   });
   return lines.join("\r\n");
@@ -3649,7 +3662,7 @@ function downloadCsvText(text, filename) {
   };
 })();
 
-// Build full-header list from results + screenshots keys
+// Build full-header list from results + screenshots keys (always appends "Action Failed" last)
 function _buildAllHeaders(originalHeaders, results, screenshots) {
   const headerSet = new Set(originalHeaders);
   const extra = [];
@@ -3660,7 +3673,7 @@ function _buildAllHeaders(originalHeaders, results, screenshots) {
     const vn = key.split(':').slice(1).join(':');
     if (!headerSet.has(vn)) { extra.push(vn); headerSet.add(vn); }
   });
-  return [...originalHeaders, ...extra];
+  return [...originalHeaders, ...extra, "Action Failed"];
 }
 
 // HTML export — images as base64 <img> tags
@@ -3680,6 +3693,11 @@ function generateResultHtml(originalHeaders, originalRows, results, screenshots)
       if (imgCols.has(ci)) {
         const b64 = (screenshots || {})[`${r.rowIndex}:${h}`];
         return b64 ? `<td><img src="data:image/png;base64,${b64}" style="max-width:200px;max-height:130px;display:block;border-radius:3px;"/></td>` : '<td></td>';
+      }
+      if (h === 'Action Failed') {
+        const bugVal = _formatBug(r.failures);
+        const style = bugVal ? ' style="color:#dc2626;font-weight:600;"' : '';
+        return `<td${style}>${esc(bugVal)}</td>`;
       }
       return `<td>${esc(r.vars?.[h] ?? orig[h] ?? '')}</td>`;
     }).join('');
@@ -3735,7 +3753,8 @@ function generateResultXlsx(originalHeaders, originalRows, results, screenshots)
     const hasImg = Object.keys(ss).some(k => parseInt(k.split(':')[0],10) === r.rowIndex);
     const cells = allHeaders.map((h, ci) => {
       if (imgColIdx.has(ci)) return ''; // leave empty — image goes in drawing
-      const si = addStr(String(r.vars?.[h] ?? orig[h] ?? ''));
+      const val = h === 'Action Failed' ? _formatBug(r.failures) : String(r.vars?.[h] ?? orig[h] ?? '');
+      const si = addStr(val);
       return `<c r="${colRef(ci)}${rowNum}" t="s"><v>${si}</v></c>`;
     }).join('');
     const rowAttr = hasImg ? ` ht="80" customHeight="1"` : '';
@@ -3874,9 +3893,22 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
     const results = res?.results;
     if (!results?.length) { showToast("No results to download yet", "error"); return; }
 
+    const afterDownload = () => {
+      chrome.storage.local.remove(["csvRunResults", "csvScreenshots", "csvSessionData"]);
+      csvParsed = null;
+      const status = document.getElementById("csvStatus");
+      if (status) status.textContent = "";
+      const preview = document.getElementById("csvPreview");
+      if (preview) preview.textContent = "";
+      const fileInput = document.getElementById("csvFile");
+      if (fileInput) fileInput.value = "";
+      _setCsvState('idle');
+    };
+
     if (format === "csv") {
       const text = generateResultCsv(csvParsed.headers, csvParsed.rows, results);
       downloadCsvText(text, `csv_result_${ts}.csv`);
+      afterDownload();
     } else {
       fetchSS(ssRes => {
         const ss = ssRes?.screenshots || {};
@@ -3887,6 +3919,7 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
           const blob = generateResultXlsx(csvParsed.headers, csvParsed.rows, results, ss);
           _downloadBlob(blob, `csv_result_${ts}.xlsx`);
         }
+        afterDownload();
       });
     }
   });

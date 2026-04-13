@@ -196,13 +196,13 @@
         </div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
           <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">value equals</label>
-          <input id="condChildValueEquals" placeholder='e.g. 1, 2, 3' style="flex:1;margin:0;font-size:12px;" />
+          <input id="condChildValueEquals" placeholder='e.g. 1, 2, ${myVar}' style="flex:1;margin:0;font-size:12px;" />
         </div>
         <div style="display:flex;gap:6px;align-items:center;">
           <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">text contains</label>
-          <input id="condChildTextContains" placeholder='e.g. Abc, Def' style="flex:1;margin:0;font-size:12px;" />
+          <input id="condChildTextContains" placeholder='e.g. Abc, ${myVar}' style="flex:1;margin:0;font-size:12px;" />
         </div>
-        <span class="helper-text">Selector above = parent container. Child matching the condition will be acted on.</span>
+        <span class="helper-text">Selector above = parent container. Child matching the condition will be acted on. Supports <code>${varName}</code> variables &amp; CSV columns.</span>
       </div>
 
       <div class="hidden-by-default" id="manualValueWrapper">

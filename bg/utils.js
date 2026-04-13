@@ -62,6 +62,11 @@ export function interpolateAction(action, vars) {
   if (a.code)          a.code          = applyVars(a.code, vars);
   if (a.expectedValue) a.expectedValue = applyVars(a.expectedValue, vars);
   if (a.switchVar)     a.switchVar     = applyVars(a.switchVar, vars);
+  if (a.conditions && typeof a.conditions === 'object') {
+    a.conditions = { ...a.conditions };
+    if (a.conditions.valueEquals  != null) a.conditions.valueEquals  = applyVars(String(a.conditions.valueEquals),  vars);
+    if (a.conditions.textContains != null) a.conditions.textContains = applyVars(String(a.conditions.textContains), vars);
+  }
   return a;
 }
 

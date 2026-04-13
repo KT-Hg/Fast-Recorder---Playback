@@ -15,7 +15,7 @@ import {
 
 /* === PLAYBACK CORE === */
 
-export async function playActionsOnTab(tabId, actions, vars = null, screenshotsResult = null, forceAutoSave = false, skipDownload = false, startFromIndex = 0) {
+export async function playActionsOnTab(tabId, actions, vars = null, screenshotsResult = null, forceAutoSave = false, skipDownload = false, startFromIndex = 0, failedActions = null) {
   const resolvedVars = vars !== null ? vars : await getVariables();
 
   for (let i = startFromIndex; i < actions.length; i++) {
@@ -131,6 +131,7 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
           resolvedVars[action.varName] = rdResult.value;
         } else if (rdResult?.failed) {
           chrome.runtime.sendMessage({ type: "ACTION_FAILED", index: i, action }).catch(() => {});
+          if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || "" });
         }
         if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
         continue;
@@ -175,6 +176,7 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
 
       if (result?.failed) {
         chrome.runtime.sendMessage({ type: "ACTION_FAILED", index: i, action }).catch(() => {});
+        if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || "" });
       }
 
       if (action.delay && action.delay > 0) {
@@ -183,6 +185,7 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
     } catch (err) {
       console.error(`[PLAYBACK] Action ${i} failed:`, err);
       chrome.runtime.sendMessage({ type: "ACTION_FAILED", index: i, action: actions[i] }).catch(() => {});
+      if (failedActions) failedActions.push({ index: i + 1, type: actions[i]?.type || "unknown", label: actions[i]?.label || "" });
     }
   }
   return resolvedVars;
@@ -280,6 +283,37 @@ export async function startSequence(runList) {
 
 /* === CSV PLAYBACK === */
 
+/* Collect variable keys that are actually referenced/produced by a scenario's actions */
+function collectRelevantKeys(actions) {
+  const keys = new Set();
+  const VAR_RE = /\$\{([^}]+)\}/g;
+  const INTERP_FIELDS = ["selector", "value", "url", "code", "expectedValue", "switchVar"];
+  const COND_FIELDS   = ["valueEquals", "textContains"];
+  for (const a of actions) {
+    // Fields that support ${varName} interpolation
+    for (const f of INTERP_FIELDS) {
+      if (typeof a[f] === "string") {
+        let m; VAR_RE.lastIndex = 0;
+        while ((m = VAR_RE.exec(a[f])) !== null) keys.add(m[1]);
+      }
+    }
+    // conditions object fields
+    if (a.conditions && typeof a.conditions === "object") {
+      for (const f of COND_FIELDS) {
+        if (typeof a.conditions[f] === "string") {
+          let m; VAR_RE.lastIndex = 0;
+          while ((m = VAR_RE.exec(a.conditions[f])) !== null) keys.add(m[1]);
+        }
+      }
+    }
+    // Output vars — always include (produced by actions)
+    if ((a.type === "readdom" || a.type === "screenshot_tovar") && a.varName) {
+      keys.add(a.varName);
+    }
+  }
+  return keys;
+}
+
 export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFormat = "csv") {
   const skipDownload = exportFormat === "xlsx" || exportFormat === "html";
   state.csvPlayback = { active: true, rows, currentRow: 0, scenarioId, delayBetween };
@@ -293,6 +327,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   if (!tabId) { state.csvPlayback.active = false; updateBadge(); return; }
 
   const actions = scenario.actions || [];
+  const relevantKeys = collectRelevantKeys(actions);
   const runResults = [];
 
   await new Promise(r => chrome.storage.local.remove(["csvRunResults", "csvScreenshots"], r));
@@ -304,10 +339,15 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     const rowVars = { ...baseVars, ...rows[i] };
     state.playback = { active: true, tabId, scenarioId, actionIndex: 0, totalActions: actions.length };
     const screenshotsResult = {};
-    const finalVars = await playActionsOnTab(tabId, actions, rowVars, screenshotsResult, true, skipDownload);
+    const failedActions = [];
+    const finalVars = await playActionsOnTab(tabId, actions, rowVars, screenshotsResult, true, skipDownload, 0, failedActions);
     state.playback.active = false;
 
-    runResults.push({ rowIndex: i, vars: { ...finalVars } });
+    // Filter vars: only keep keys referenced/produced by the scenario's actions
+    const filteredVars = Object.fromEntries(
+      Object.entries(finalVars).filter(([k]) => relevantKeys.has(k))
+    );
+    runResults.push({ rowIndex: i, vars: filteredVars, failures: failedActions });
 
     if (Object.keys(screenshotsResult).length > 0) {
       Object.entries(screenshotsResult).forEach(([vn, b64]) => {
