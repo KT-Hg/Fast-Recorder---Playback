@@ -1967,12 +1967,19 @@ addManualAction.onclick = () => {
 
   // For click/input/hover: attach child conditions if filled
   if (["click", "input", "hover"].includes(type)) {
-    const ve = document.getElementById("condChildValueEquals")?.value?.trim();
-    const tc = document.getElementById("condChildTextContains")?.value?.trim();
-    if (ve || tc) {
-      action.conditions = {};
-      if (ve) action.conditions.valueEquals = ve;
-      if (tc) action.conditions.textContains = tc;
+    const ve  = document.getElementById("condChildValueEquals")?.value?.trim();
+    const tc  = document.getElementById("condChildTextContains")?.value?.trim();
+    const ic  = document.getElementById("condChildIdContains")?.value?.trim();
+    const cc  = document.getElementById("condChildClassContains")?.value?.trim();
+    const typ = document.getElementById("condChildType")?.value || "";
+    if (ve || tc || ic || cc || typ) {
+      const mode = document.querySelector('input[name="condChildMatchMode"]:checked')?.value || "any";
+      action.conditions = { matchMode: mode };
+      if (ve)  action.conditions.valueEquals   = ve;
+      if (tc)  action.conditions.textContains  = tc;
+      if (ic)  action.conditions.idContains    = ic;
+      if (cc)  action.conditions.classContains = cc;
+      if (typ) action.conditions.typeEquals    = typ;
     }
   }
 
@@ -2152,14 +2159,25 @@ function startEdit(index, action) {
 
   // Restore child condition fields
   const childCondWrap = document.getElementById("childConditionWrapper");
-  const condChildVE   = document.getElementById("condChildValueEquals");
-  const condChildTC   = document.getElementById("condChildTextContains");
   if (childCondWrap) {
     const supportsChildCondition = ["click", "input", "hover"].includes(action.type);
     childCondWrap.style.display = supportsChildCondition ? "block" : "none";
   }
-  if (condChildVE) condChildVE.value = action.conditions?.valueEquals  || "";
-  if (condChildTC) condChildTC.value = action.conditions?.textContains || "";
+  const condChildVE   = document.getElementById("condChildValueEquals");
+  const condChildTC   = document.getElementById("condChildTextContains");
+  const condChildIC   = document.getElementById("condChildIdContains");
+  const condChildCC   = document.getElementById("condChildClassContains");
+  const condChildType = document.getElementById("condChildType");
+  const restoredMode  = action.conditions?.matchMode || "any";
+  const radioAny = document.getElementById("condChildMatchAny");
+  const radioAll = document.getElementById("condChildMatchAll");
+  if (radioAny) radioAny.checked = restoredMode === "any";
+  if (radioAll) radioAll.checked = restoredMode === "all";
+  if (condChildVE)   condChildVE.value   = action.conditions?.valueEquals  || "";
+  if (condChildTC)   condChildTC.value   = action.conditions?.textContains || "";
+  if (condChildIC)   condChildIC.value   = action.conditions?.idContains   || "";
+  if (condChildCC)   condChildCC.value   = action.conditions?.classContains || "";
+  if (condChildType) condChildType.value = action.conditions?.typeEquals   || "";
 
   const manualLabelEl = document.getElementById("manualLabel");
   const manualLabelWrapper = document.getElementById("manualLabelWrapper");
@@ -2236,10 +2254,20 @@ function clearEditState() {
   // Reset child condition fields
   const childCondWrapClear = document.getElementById("childConditionWrapper");
   if (childCondWrapClear) childCondWrapClear.style.display = "none";
+  const radioAnyClear = document.getElementById("condChildMatchAny");
+  const radioAllClear = document.getElementById("condChildMatchAll");
+  if (radioAnyClear) radioAnyClear.checked = true;
+  if (radioAllClear) radioAllClear.checked = false;
   const condChildVEClear = document.getElementById("condChildValueEquals");
   if (condChildVEClear) condChildVEClear.value = "";
   const condChildTCClear = document.getElementById("condChildTextContains");
   if (condChildTCClear) condChildTCClear.value = "";
+  const condChildICClear = document.getElementById("condChildIdContains");
+  if (condChildICClear) condChildICClear.value = "";
+  const condChildCCClear = document.getElementById("condChildClassContains");
+  if (condChildCCClear) condChildCCClear.value = "";
+  const condChildTypeClear = document.getElementById("condChildType");
+  if (condChildTypeClear) condChildTypeClear.value = "";
 }
 
 cancelEdit.onclick = () => {

@@ -280,39 +280,68 @@ function findElementWithFallback(selectors, timeout = 5000) {
 }
 
 /**
- * Find a descendant of `root` matching one or more conditions.
+ * Find a descendant of `root` matching conditions.
  *
  * conditions: {
+ *   matchMode    : "any" | "all"  — default "any" (OR). "all" = AND across filled fields.
  *   valueEquals  : string  — matches el.value === value
- *   textContains : string  — matches el.textContent includes text (case-insensitive)
+ *   textContains : string  — matches el's own text nodes include text (case-insensitive)
+ *   idContains   : string  — matches el.id includes string (case-insensitive)
+ *   classContains: string  — matches el.className includes string (case-insensitive)
+ *   typeEquals   : string  — matches el.type === value (exact)
  * }
  *
- * Multiple conditions are evaluated as OR (first match wins).
- * Returns the first matching element, or null.
+ * Returns the first matching element in DOM order, or null.
  */
 function findElementByCondition(root, conditions) {
   if (!root || !conditions) return null;
-  const { valueEquals, textContains } = conditions;
+  const { matchMode = "any", valueEquals, textContains, idContains, classContains, typeEquals } = conditions;
   const normalize = (s) => (s ?? "").toString().trim().toLowerCase();
-  const needle = textContains != null ? normalize(textContains) : null;
 
-  const candidates = root.querySelectorAll("*");
-  for (const el of candidates) {
-    if (valueEquals !== undefined && el.value !== undefined) {
-      if (String(el.value) === String(valueEquals)) return el;
-    }
-    if (needle !== null) {
-      // Only check leaf-ish nodes to avoid matching ancestors with accumulated text
+  // Build list of active checks (only fields that were filled)
+  const checks = [];
+
+  if (valueEquals !== undefined && valueEquals !== "") {
+    checks.push(el => el.value !== undefined && String(el.value) === String(valueEquals));
+  }
+
+  if (textContains != null && textContains !== "") {
+    const needle = normalize(textContains);
+    checks.push(el => {
       const ownText = normalize(
         Array.from(el.childNodes)
           .filter(n => n.nodeType === Node.TEXT_NODE)
           .map(n => n.textContent)
           .join("")
       );
-      if (ownText.includes(needle)) return el;
-      // Also accept elements whose full trimmed text matches (for simple text nodes)
-      if (normalize(el.textContent).includes(needle)) return el;
-    }
+      if (ownText.includes(needle)) return true;
+      return normalize(el.textContent).includes(needle);
+    });
+  }
+
+  if (idContains != null && idContains !== "") {
+    const needle = normalize(idContains);
+    checks.push(el => normalize(el.id).includes(needle));
+  }
+
+  if (classContains != null && classContains !== "") {
+    const needle = normalize(classContains);
+    checks.push(el => normalize(el.className).includes(needle));
+  }
+
+  if (typeEquals != null && typeEquals !== "") {
+    checks.push(el => el.type === typeEquals);
+  }
+
+  if (checks.length === 0) return null;
+
+  const test = matchMode === "all"
+    ? (el) => checks.every(fn => fn(el))
+    : (el) => checks.some(fn => fn(el));
+
+  const candidates = root.querySelectorAll("*");
+  for (const el of candidates) {
+    if (test(el)) return el;
   }
   return null;
 }

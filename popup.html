@@ -191,16 +191,58 @@
       </div>
       <!-- CHILD CONDITION (optional) — shown for click/input/hover -->
       <div class="hidden-by-default" id="childConditionWrapper" style="margin-top:8px;padding:8px;border:1px dashed var(--border,#d1d5db);border-radius:6px;">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
-          <label style="font-size:12px;font-weight:600;color:var(--muted);">Child Condition <span style="font-weight:400;font-size:11px;">(optional — find child element to act on)</span></label>
+        <div style="margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);">Child Condition <span style="font-weight:400;font-size:11px;color:var(--muted);">(optional — find child element to act on)</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap;">Match</span>
+          <div style="display:flex;gap:4px;">
+            <label class="cond-match-label" id="condMatchLabelAny">
+              <input type="radio" name="condChildMatchMode" id="condChildMatchAny" value="any" checked />
+              ANY <span style="font-size:10px;color:var(--muted);">(OR)</span>
+            </label>
+            <label class="cond-match-label" id="condMatchLabelAll">
+              <input type="radio" name="condChildMatchMode" id="condChildMatchAll" value="all" />
+              ALL <span style="font-size:10px;color:var(--muted);">(AND)</span>
+            </label>
+          </div>
         </div>
         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
           <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">value equals</label>
           <input id="condChildValueEquals" placeholder='e.g. 1, 2, ${myVar}' style="flex:1;margin:0;font-size:12px;" />
         </div>
-        <div style="display:flex;gap:6px;align-items:center;">
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
           <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">text contains</label>
           <input id="condChildTextContains" placeholder='e.g. Abc, ${myVar}' style="flex:1;margin:0;font-size:12px;" />
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+          <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">id contains</label>
+          <input id="condChildIdContains" placeholder='e.g. submit-btn, ${myVar}' style="flex:1;margin:0;font-size:12px;" />
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+          <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">class contains</label>
+          <input id="condChildClassContains" placeholder='e.g. active, btn-primary' style="flex:1;margin:0;font-size:12px;" />
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <label style="font-size:11px;color:var(--muted);white-space:nowrap;width:90px;">type</label>
+          <select id="condChildType" style="flex:1;margin:0;font-size:12px;">
+            <option value="">(any)</option>
+            <option value="text">text</option>
+            <option value="checkbox">checkbox</option>
+            <option value="radio">radio</option>
+            <option value="submit">submit</option>
+            <option value="button">button</option>
+            <option value="select">select</option>
+            <option value="textarea">textarea</option>
+            <option value="hidden">hidden</option>
+            <option value="number">number</option>
+            <option value="email">email</option>
+            <option value="password">password</option>
+            <option value="file">file</option>
+            <option value="date">date</option>
+            <option value="url">url</option>
+            <option value="range">range</option>
+          </select>
         </div>
         <span class="helper-text">Selector above = parent container. Child matching the condition will be acted on. Supports <code>${varName}</code> variables &amp; CSV columns.</span>
       </div>
