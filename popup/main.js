@@ -1432,6 +1432,7 @@ let previewRequestId = 0; // Guard against race conditions
 
 function previewActions() {
   const scenarioId = scenarioList.value || null;
+  const savedScroll = actionsEl.scrollTop;
   actionsEl.innerHTML = "";
 
   const currentRequestId = ++previewRequestId;
@@ -1622,6 +1623,7 @@ function previewActions() {
         actionCount.style.display = count > 0 ? "inline-block" : "none";
       }
 
+      actionsEl.scrollTop = savedScroll;
       updateUndoRedoState();
     }
   );
