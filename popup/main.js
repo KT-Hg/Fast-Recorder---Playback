@@ -644,20 +644,96 @@ function populateSwitchScenarioSelect() {
   });
 }
 
-function renderSwitchCaseList() {
+function renderSwitchCaseList(editingIdx = -1) {
   const list = document.getElementById("switchCaseList");
   if (!list) return;
   list.innerHTML = "";
   _switchCases.forEach((c, idx) => {
     const row = document.createElement("div");
-    row.style.cssText = "display:flex; gap:6px; align-items:center; background:var(--secondary-bg); border:1px solid var(--border); border-radius:6px; padding:4px 6px;";
-    const label = c.value === "__default__" ? "⬡ default" : `"${c.value}"`;
-    row.innerHTML = `
-      <span style="font-size:12px; color:#e879f9; font-weight:600; min-width:70px; white-space:nowrap;">${label}</span>
-      <span style="font-size:11px; color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">→ ${c.scenarioName || c.scenarioId}</span>
-      <button data-idx="${idx}" class="sw-case-del secondary" style="width:auto; flex:0 0 auto; margin:0; padding:2px 7px; font-size:11px;">🗑</button>
-    `;
-    list.appendChild(row);
+
+    if (idx === editingIdx) {
+      // ── Edit mode ──
+      row.style.cssText = "display:flex; flex-direction:column; gap:5px; background:var(--secondary-bg); border:1px solid var(--primary); border-radius:6px; padding:6px;";
+      const isDefault = c.value === "__default__";
+
+      // Build scenario options
+      const scenarios = scenariosCache || {};
+      const folders = foldersCache || {};
+      const grouped = {};
+      Object.entries(scenarios).forEach(([id, s]) => {
+        const fid = s.folderId || "";
+        if (!grouped[fid]) grouped[fid] = [];
+        grouped[fid].push({ id, name: s.name });
+      });
+      let optionsHtml = "";
+      (grouped[""] || []).sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
+        const sel = s.id === c.scenarioId ? " selected" : "";
+        optionsHtml += `<option value="${s.id}"${sel}>${s.name}</option>`;
+      });
+      Object.entries(folders).forEach(([fid, f]) => {
+        if (!grouped[fid]?.length) return;
+        optionsHtml += `<optgroup label="${f.name}">`;
+        grouped[fid].sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
+          const sel = s.id === c.scenarioId ? " selected" : "";
+          optionsHtml += `<option value="${s.id}"${sel}>${s.name}</option>`;
+        });
+        optionsHtml += `</optgroup>`;
+      });
+
+      row.innerHTML = `
+        <div style="display:flex; gap:5px; align-items:center;">
+          <input class="sw-edit-val" placeholder="Case value (empty = default)"
+            value="${isDefault ? "" : c.value}"
+            ${isDefault ? 'disabled title="Default case — value cannot be changed"' : ""}
+            style="flex:1; margin:0; font-size:12px; ${isDefault ? "opacity:0.5;" : ""}" />
+        </div>
+        <div style="display:flex; gap:5px; align-items:center;">
+          <select class="sw-edit-scen" style="flex:1; margin:0; font-size:12px;">${optionsHtml}</select>
+        </div>
+        <div style="display:flex; gap:5px; justify-content:flex-end;">
+          <button class="sw-edit-confirm secondary" style="width:auto; margin:0; padding:2px 10px; font-size:11px;">✓</button>
+          <button class="sw-edit-cancel secondary" style="width:auto; margin:0; padding:2px 8px; font-size:11px;">✕</button>
+        </div>
+      `;
+
+      list.appendChild(row);
+
+      row.querySelector(".sw-edit-confirm").addEventListener("click", () => {
+        const newVal = row.querySelector(".sw-edit-val").value.trim();
+        const newScenId = row.querySelector(".sw-edit-scen").value;
+        const newScenName = row.querySelector(".sw-edit-scen").selectedOptions[0]?.textContent || newScenId;
+        const resolvedVal = (isDefault || newVal === "") ? "__default__" : newVal;
+        // Check duplicate (skip self)
+        if (_switchCases.some((x, i) => i !== idx && x.value === resolvedVal)) {
+          showToast(`Case "${resolvedVal === "__default__" ? "default" : resolvedVal}" already exists`, "error");
+          return;
+        }
+        _switchCases[idx] = { value: resolvedVal, scenarioId: newScenId, scenarioName: newScenName };
+        renderSwitchCaseList();
+      });
+
+      row.querySelector(".sw-edit-cancel").addEventListener("click", () => {
+        renderSwitchCaseList();
+      });
+
+    } else {
+      // ── View mode ──
+      row.style.cssText = "display:flex; gap:6px; align-items:center; background:var(--secondary-bg); border:1px solid var(--border); border-radius:6px; padding:4px 6px;";
+      const label = c.value === "__default__" ? "⬡ default" : `"${c.value}"`;
+      row.innerHTML = `
+        <span style="font-size:12px; color:#e879f9; font-weight:600; min-width:70px; white-space:nowrap;">${label}</span>
+        <span style="font-size:11px; color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">→ ${c.scenarioName || c.scenarioId}</span>
+        <button data-idx="${idx}" class="sw-case-edit secondary" style="width:auto; flex:0 0 auto; margin:0; padding:2px 7px; font-size:11px;" title="Edit case">✎</button>
+        <button data-idx="${idx}" class="sw-case-del secondary" style="width:auto; flex:0 0 auto; margin:0; padding:2px 7px; font-size:11px;" title="Delete case">🗑</button>
+      `;
+      list.appendChild(row);
+    }
+  });
+
+  list.querySelectorAll(".sw-case-edit").forEach(btn => {
+    btn.addEventListener("click", () => {
+      renderSwitchCaseList(Number(btn.dataset.idx));
+    });
   });
   list.querySelectorAll(".sw-case-del").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -911,11 +987,6 @@ if (stopPlayCompact) {
 /* === SCREENSHOT BUTTONS === */
 
 /* === Recording, Scenarios, Sequence, Playback === */
-document.getElementById("screenshotTovarTarget")?.addEventListener("change", () => {
-  const target = document.getElementById("screenshotTovarTarget")?.value;
-  const row = document.getElementById("screenshotTovarSelectorRow");
-  if (row) row.style.display = target === "element" ? "flex" : "none";
-});
 
 // Dragdrop target pick mode
 document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
@@ -1823,6 +1894,42 @@ manualActionType.onchange = () => {
   if (manualLabelWrapper) manualLabelWrapper.style.display = type ? "block" : "none";
 };
 
+/* === Child Condition toggle === */
+function _hasChildCondData() {
+  return !!(
+    document.getElementById("condChildValueEquals")?.value?.trim() ||
+    document.getElementById("condChildTextContains")?.value?.trim() ||
+    document.getElementById("condChildIdContains")?.value?.trim() ||
+    document.getElementById("condChildClassContains")?.value?.trim() ||
+    document.getElementById("condChildType")?.value
+  );
+}
+
+function _updateChildCondBadge() {
+  const badge = document.getElementById("childConditionBadge");
+  if (badge) badge.style.display = _hasChildCondData() ? "" : "none";
+}
+
+function _setChildCondExpanded(expanded) {
+  const toggle = document.getElementById("childConditionToggle");
+  const body   = document.getElementById("childConditionBody");
+  if (!toggle || !body) return;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  body.style.display = expanded ? "block" : "none";
+}
+
+document.getElementById("childConditionToggle")?.addEventListener("click", () => {
+  const toggle = document.getElementById("childConditionToggle");
+  const expanded = toggle?.getAttribute("aria-expanded") === "true";
+  _setChildCondExpanded(!expanded);
+});
+
+// Update badge when any child condition input changes
+["condChildValueEquals","condChildTextContains","condChildIdContains","condChildClassContains","condChildType"].forEach(id => {
+  document.getElementById(id)?.addEventListener("input", _updateChildCondBadge);
+  document.getElementById(id)?.addEventListener("change", _updateChildCondBadge);
+});
+
 pickElement.onclick = () => {
   pickerMode = !pickerMode;
   pickElement.textContent = pickerMode ? "✓ Pick Mode" : "🎯";
@@ -1968,9 +2075,8 @@ addManualAction.onclick = () => {
     action.varName  = varName;
     action.target   = document.getElementById("screenshotTovarTarget")?.value || "page";
     if (action.target === "element") {
-      const sel = document.getElementById("screenshotTovarSelector")?.value?.trim();
-      if (!sel) { showToast("Selector is required for Element target", "error"); return; }
-      action.selector = sel;
+      if (!selector) { showToast("Selector (①) is required for Element target", "error"); return; }
+      action.selector = selector;
     }
   }
 
@@ -2110,10 +2216,9 @@ function startEdit(index, action) {
     if (ssTovarWrap) ssTovarWrap.style.display = "block";
     const ssTovarTarget = document.getElementById("screenshotTovarTarget");
     if (ssTovarTarget) ssTovarTarget.value = action.target || "page";
-    const ssTovarSelRow = document.getElementById("screenshotTovarSelectorRow");
-    if (ssTovarSelRow) ssTovarSelRow.style.display = action.target === "element" ? "flex" : "none";
-    const ssTovarSel = document.getElementById("screenshotTovarSelector");
-    if (ssTovarSel) ssTovarSel.value = action.selector || "";
+    if (action.target === "element" && action.selector) {
+      manualSelector.value = action.selector;
+    }
     const ssTovarVar = document.getElementById("screenshotTovarVarName");
     if (ssTovarVar) ssTovarVar.value = action.varName || "";
   } else if (action.type === "dragdrop") {
@@ -2196,6 +2301,10 @@ function startEdit(index, action) {
   if (condChildIC)   condChildIC.value   = action.conditions?.idContains   || "";
   if (condChildCC)   condChildCC.value   = action.conditions?.classContains || "";
   if (condChildType) condChildType.value = action.conditions?.typeEquals   || "";
+  // Auto-expand if there is existing condition data
+  const hasCondData = !!(action.conditions?.valueEquals || action.conditions?.textContains || action.conditions?.idContains || action.conditions?.classContains || action.conditions?.typeEquals);
+  _setChildCondExpanded(hasCondData);
+  _updateChildCondBadge();
 
   const manualLabelEl = document.getElementById("manualLabel");
   const manualLabelWrapper = document.getElementById("manualLabelWrapper");
@@ -2261,10 +2370,6 @@ function clearEditState() {
   if (ssTovarVarClear) ssTovarVarClear.value = "";
   const ssTovarTargetClear = document.getElementById("screenshotTovarTarget");
   if (ssTovarTargetClear) ssTovarTargetClear.value = "page";
-  const ssTovarSelRowClear = document.getElementById("screenshotTovarSelectorRow");
-  if (ssTovarSelRowClear) ssTovarSelRowClear.style.display = "none";
-  const ssTovarSelClear = document.getElementById("screenshotTovarSelector");
-  if (ssTovarSelClear) ssTovarSelClear.value = "";
 
   // Reset switch fields
   _switchCases = [];
@@ -2295,6 +2400,8 @@ function clearEditState() {
   if (condChildCCClear) condChildCCClear.value = "";
   const condChildTypeClear = document.getElementById("condChildType");
   if (condChildTypeClear) condChildTypeClear.value = "";
+  _setChildCondExpanded(false);
+  _updateChildCondBadge();
 }
 
 cancelEdit.onclick = () => {
@@ -3081,7 +3188,12 @@ playScenario.onclick = () => {
   const scenarioId = scenarioList.value;
   if (!scenarioId) return;
   const loopCount = Math.max(1, parseInt(document.getElementById("loopCount")?.value || "1", 10));
-  const loopDelay = Math.max(0, parseInt(document.getElementById("loopDelay")?.value || "0", 10));
+  const loopDelayPreset = document.getElementById("loopDelayPreset");
+  const loopDelayCustom = document.getElementById("loopDelay");
+  const loopDelayRaw = loopDelayPreset?.value === "custom"
+    ? parseInt(loopDelayCustom?.value || "500", 10)
+    : parseInt(loopDelayPreset?.value || "500", 10);
+  const loopDelay = Math.max(500, isNaN(loopDelayRaw) ? 500 : loopDelayRaw);
   chrome.runtime.sendMessage({ type: "START_PLAYBACK_SCENARIO", scenarioId, loopCount, loopDelay });
 };
 
@@ -3105,6 +3217,12 @@ delayPreset?.addEventListener("change", () => {
   if (!isCustom) delayAfterScenario.value = "";
 });
 
+document.getElementById("loopDelayPreset")?.addEventListener("change", function () {
+  const isCustom = this.value === "custom";
+  const customEl = document.getElementById("loopDelay");
+  if (customEl) { customEl.style.display = isCustom ? "" : "none"; if (!isCustom) customEl.value = ""; }
+});
+
 document.getElementById("manualDelayPreset")?.addEventListener("change", function () {
   const isCustom = this.value === "custom";
   const customEl = document.getElementById("manualDelay");
@@ -3125,9 +3243,9 @@ addToRunList.onclick = () => {
   let finalDelay;
   if (delayPreset?.value === "custom") {
     const v = parseInt(delayAfterScenario.value, 10);
-    finalDelay = !isNaN(v) && v >= 0 ? v : 500;
+    finalDelay = !isNaN(v) && v >= 500 ? v : 500;
   } else {
-    finalDelay = parseInt(delayPreset?.value ?? "500", 10) || 0;
+    finalDelay = parseInt(delayPreset?.value ?? "500", 10) || 500;
   }
 
   const scenarioName = scenariosCache[scenarioId]?.name || "Unknown";
@@ -4017,9 +4135,9 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
   const _csvPresetEl = document.getElementById("csvDelayBetweenPreset");
   const delayVal = _csvPresetEl?.value === "custom"
     ? document.getElementById("csvDelayBetween")?.value?.trim()
-    : (_csvPresetEl?.value || "1000");
+    : (_csvPresetEl?.value || "500");
   const delayMs = parseInt(delayVal, 10);
-  const delayBetween = !isNaN(delayMs) && delayMs >= 0 ? delayMs : 1000;
+  const delayBetween = !isNaN(delayMs) && delayMs >= 500 ? delayMs : 500;
 
   const status = document.getElementById("csvStatus");
   if (status) status.textContent = `Starting CSV run: ${csvParsed.rows.length} rows...`;

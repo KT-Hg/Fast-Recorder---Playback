@@ -130,12 +130,6 @@ export function initScreenshots() {
   document.getElementById('screenshotElement')    ?.addEventListener('click', () => startElemShotPick(false));
   document.getElementById('cropScreenshotElement')?.addEventListener('click', () => startElemShotPick(true));
 
-  /* Screenshot-to-var target toggle */
-  document.getElementById('screenshotTovarTarget')?.addEventListener('change', () => {
-    const target = document.getElementById('screenshotTovarTarget')?.value;
-    const row = document.getElementById('screenshotTovarSelectorRow');
-    if (row) row.style.display = target === 'element' ? 'flex' : 'none';
-  });
 
   /* Image diff */
   initDiff();

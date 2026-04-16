@@ -16,6 +16,8 @@ export const state = {
     active: false,
     tabId: null,
     scenarioId: null,
+    scenarioName: null,
+    originalScenarioName: null,
     actionIndex: 0,
     totalActions: 0,
   },

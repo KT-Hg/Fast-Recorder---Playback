@@ -165,9 +165,13 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
           const targetScenario = scenarios[matched.scenarioId];
           if (targetScenario?.actions?.length) {
             const caseLabel = matched.value === "__default__" ? "default" : matched.value;
+            const switchedName = targetScenario.name || matched.scenarioId;
+            state.playback.scenarioName = switchedName;
+            state.playback.actionIndex = 0;
+            state.playback.totalActions = targetScenario.actions.length;
             chrome.runtime.sendMessage({
               type: "SWITCH_SCENARIO",
-              scenarioName: targetScenario.name || matched.scenarioId,
+              scenarioName: switchedName,
               caseLabel,
             }).catch(() => {});
             await playActionsOnTab(tabId, targetScenario.actions, { ...resolvedVars }, screenshotsResult, forceAutoSave, skipDownload);
@@ -218,7 +222,7 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
   const scenario = scenarios[scenarioId];
   if (!scenario) return;
   const actions = scenario.actions || [];
-  state.playback = { active: true, tabId, scenarioId, actionIndex: fromIndex, totalActions: actions.length, loopCurrent: 1, loopTotal: 1 };
+  state.playback = { active: true, tabId, scenarioId, scenarioName: scenario.name || scenarioId, originalScenarioName: scenario.name || scenarioId, actionIndex: fromIndex, totalActions: actions.length, loopCurrent: 1, loopTotal: 1 };
   updateBadge();
   try {
     await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex);
@@ -240,7 +244,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
 
   const actions = scenario.actions || [];
   const loops = Math.max(1, Math.floor(loopCount));
-  state.playback = { active: true, tabId, scenarioId, actionIndex: 0, totalActions: actions.length, loopCurrent: 1, loopTotal: loops };
+  state.playback = { active: true, tabId, scenarioId, scenarioName: scenario.name || scenarioId, originalScenarioName: scenario.name || scenarioId, actionIndex: 0, totalActions: actions.length, loopCurrent: 1, loopTotal: loops };
   updateBadge();
 
   try {
@@ -283,7 +287,7 @@ export async function startSequence(runList) {
       if (!scenario) continue;
 
       const actions = scenario.actions || [];
-      state.playback = { active: true, tabId, scenarioId: item.id, actionIndex: 0, totalActions: actions.length };
+      state.playback = { active: true, tabId, scenarioId: item.id, scenarioName: scenario.name || item.id, originalScenarioName: scenario.name || item.id, actionIndex: 0, totalActions: actions.length };
       await playActionsOnTab(tabId, actions);
       state.playback.active = false;
 
@@ -357,7 +361,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     if (!state.csvPlayback.active) break;
     state.csvPlayback.currentRow = i;
     const rowVars = { ...baseVars, ...rows[i] };
-    state.playback = { active: true, tabId, scenarioId, actionIndex: 0, totalActions: actions.length };
+    state.playback = { active: true, tabId, scenarioId, scenarioName: scenario.name || scenarioId, originalScenarioName: scenario.name || scenarioId, actionIndex: 0, totalActions: actions.length };
     const screenshotsResult = {};
     const failedActions = [];
     const finalVars = await playActionsOnTab(tabId, actions, rowVars, screenshotsResult, true, skipDownload, 0, failedActions);
