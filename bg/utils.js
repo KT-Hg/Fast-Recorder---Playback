@@ -66,6 +66,8 @@ export function interpolateAction(action, vars) {
     a.conditions = { ...a.conditions };
     if (a.conditions.valueEquals  != null) a.conditions.valueEquals  = applyVars(String(a.conditions.valueEquals),  vars);
     if (a.conditions.textContains != null) a.conditions.textContains = applyVars(String(a.conditions.textContains), vars);
+    if (a.conditions.idContains   != null) a.conditions.idContains   = applyVars(String(a.conditions.idContains),   vars);
+    if (a.conditions.classContains != null) a.conditions.classContains = applyVars(String(a.conditions.classContains), vars);
   }
   return a;
 }
