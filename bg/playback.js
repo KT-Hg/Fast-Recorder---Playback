@@ -164,8 +164,28 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
           const scenarios = await getScenarios();
           const targetScenario = scenarios[matched.scenarioId];
           if (targetScenario?.actions?.length) {
+            const caseLabel = matched.value === "__default__" ? "default" : matched.value;
+            chrome.runtime.sendMessage({
+              type: "SWITCH_SCENARIO",
+              scenarioName: targetScenario.name || matched.scenarioId,
+              caseLabel,
+            }).catch(() => {});
             await playActionsOnTab(tabId, targetScenario.actions, { ...resolvedVars }, screenshotsResult, forceAutoSave, skipDownload);
+          } else {
+            chrome.runtime.sendMessage({
+              type: "ACTION_FAILED",
+              index: i,
+              action,
+              reason: `Switch: scenario "${matched.scenarioName || matched.scenarioId}" not found or has no actions`,
+            }).catch(() => {});
           }
+        } else {
+          chrome.runtime.sendMessage({
+            type: "ACTION_FAILED",
+            index: i,
+            action,
+            reason: `Switch: no case matched value "${switchVal}" and no default case set`,
+          }).catch(() => {});
         }
         if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
         continue;

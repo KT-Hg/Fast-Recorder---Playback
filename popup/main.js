@@ -785,7 +785,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== "ACTION_FAILED") return;
   const label = msg.action?.type ? `[${msg.action.type}]` : "";
-  showToast(`✗ Action ${msg.index + 1} failed ${label} — element not found`, "error");
+  const reason = msg.reason || "element not found";
+  showToast(`✗ Action ${msg.index + 1} failed ${label} — ${reason}`, "error");
+});
+
+// Notify user when a Switch action branches to another scenario
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "SWITCH_SCENARIO") return;
+  showToast(`🔀 Switch [${msg.caseLabel}] → "${msg.scenarioName}"`, "success");
 });
 
 // Fix #10: notify user on storage warnings / errors
