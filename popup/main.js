@@ -2144,6 +2144,15 @@ function startEdit(index, action) {
   } else if (action.type === "switch") {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
+    // Hide all other type-specific wrappers
+    if (conditionWrapper) conditionWrapper.style.display = "none";
+    const readdomWrapperSW = document.getElementById("readdomWrapper");
+    if (readdomWrapperSW) readdomWrapperSW.style.display = "none";
+    const dragdropWrapperSW = document.getElementById("dragdropWrapper");
+    if (dragdropWrapperSW) dragdropWrapperSW.style.display = "none";
+    const ssTovarWrapperSW = document.getElementById("screenshotTovarWrapper");
+    if (ssTovarWrapperSW) ssTovarWrapperSW.style.display = "none";
+    // Show switch wrapper and populate
     const switchWrapEl = document.getElementById("switchWrapper");
     if (switchWrapEl) switchWrapEl.style.display = "block";
     const switchVarEl = document.getElementById("switchVar");
@@ -2249,6 +2258,15 @@ function clearEditState() {
   if (ssTovarSelRowClear) ssTovarSelRowClear.style.display = "none";
   const ssTovarSelClear = document.getElementById("screenshotTovarSelector");
   if (ssTovarSelClear) ssTovarSelClear.value = "";
+
+  // Reset switch fields
+  _switchCases = [];
+  const switchWrapperClear = document.getElementById("switchWrapper");
+  if (switchWrapperClear) switchWrapperClear.style.display = "none";
+  const switchVarClear = document.getElementById("switchVar");
+  if (switchVarClear) switchVarClear.value = "";
+  const switchCaseListClear = document.getElementById("switchCaseList");
+  if (switchCaseListClear) switchCaseListClear.innerHTML = "";
 
   const manualLabelEl = document.getElementById("manualLabel");
   if (manualLabelEl) manualLabelEl.value = "";
