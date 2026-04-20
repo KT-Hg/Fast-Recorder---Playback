@@ -976,6 +976,7 @@ if (playScenarioCompact) {
     const scenarioId = scenarioListCompact?.value;
     if (!scenarioId) return;
     chrome.runtime.sendMessage({ type: "START_PLAYBACK_SCENARIO", scenarioId });
+    window.close();
   };
 }
 
@@ -3195,6 +3196,7 @@ playScenario.onclick = () => {
     : parseInt(loopDelayPreset?.value || "500", 10);
   const loopDelay = Math.max(500, isNaN(loopDelayRaw) ? 500 : loopDelayRaw);
   chrome.runtime.sendMessage({ type: "START_PLAYBACK_SCENARIO", scenarioId, loopCount, loopDelay });
+  window.close();
 };
 
 stopPlay.onclick = () => chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" });
@@ -4156,10 +4158,8 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
     delayBetween,
     exportFormat,
   }, () => {
-    showToast("CSV run started", "success");
+    window.close();
   });
-
-  startCsvPoll(status);
 });
 
 function startCsvPoll(statusEl) {

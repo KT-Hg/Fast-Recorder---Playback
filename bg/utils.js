@@ -19,6 +19,9 @@ export function updateBadge() {
   } else if (state.recording) {
     text = "REC";
     color = "#ef4444"; // red
+  } else if (state.csvPlayback.active) {
+    text = "CSV";
+    color = "#3b82f6"; // blue
   } else if (state.sequencePlayback.active) {
     text = "SEQ";
     color = "#f97316"; // orange
