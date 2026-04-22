@@ -108,24 +108,9 @@
     <!-- ADD MANUAL ACTION -->
     <div class="card collapsible collapsed" id="addManualActionCard">
       <h3 role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;">Add Manual Action <span class="caret">▸</span><button class="card-help-btn" data-card="addManual" title="Manual action guide" style="margin-left:auto;">?</button></h3>
-      <div class="step-label">① Selector</div>
-      <div class="row" id="selectorRow">
-        <select id="selectorType" class="w-100" style="font-size: 11px;">
-          <option value="css">CSS</option>
-          <option value="xpath">XPath</option>
-          <option value="id">ID</option>
-          <option value="name">Name</option>
-          <option value="text">Text</option>
-          <option value="fullXpath">Full XPath</option>
-        </select>
-        <input id="manualSelector" class="flex-1" placeholder="Selector (e.g., #btn, .class, //div)" />
-        <button id="pickElement" class="secondary w-auto">🎯</button>
-      </div>
-      <div id="pickedSelectorsWrap" class="hidden-by-default">
-        <div id="pickedSelectorsInfo"></div>
-        <button id="clearPickedSelectorsBtn" class="secondary w-auto" title="Clear picked selector">✕ Clear</button>
-      </div>
-      <div class="step-label" style="margin-top: 8px;">② Action Type</div>
+
+      <!-- ① Action Type — always first -->
+      <div class="step-label">① Action Type</div>
       <select id="manualActionType">
         <option value="">-- Select Action Type --</option>
         <option value="click">Click</option>
@@ -143,7 +128,31 @@
         <option value="screenshot_element">Screenshot (Element)</option>
         <option value="screenshot_tovar">Screenshot → Variable (CSV)</option>
       </select>
+
+      <!-- SELECTOR SECTION — shown only when selected type needs a selector -->
+      <div class="hidden-by-default" id="selectorSection">
+        <div class="step-label" id="selectorStepLabel">② Selector</div>
+        <div class="row" id="selectorRow">
+          <select id="selectorType" class="w-100" style="font-size: 11px;">
+            <option value="css">CSS</option>
+            <option value="xpath">XPath</option>
+            <option value="id">ID</option>
+            <option value="name">Name</option>
+            <option value="text">Text</option>
+            <option value="fullXpath">Full XPath</option>
+          </select>
+          <input id="manualSelector" class="flex-1" placeholder="Selector (e.g., #btn, .class, //div)" />
+          <button id="pickElement" class="secondary w-auto">🎯</button>
+        </div>
+        <div id="pickedSelectorsWrap" class="hidden-by-default">
+          <div id="pickedSelectorsInfo"></div>
+          <button id="clearPickedSelectorsBtn" class="secondary w-auto" title="Clear picked selector">✕ Clear</button>
+        </div>
+      </div>
+
+      <!-- READ DOM SETTINGS — shown for readdom type -->
       <div class="hidden-by-default" id="readdomWrapper" style="margin-top:6px;">
+        <div class="step-label" id="readdomStepLabel">③ Read DOM Settings</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap;">Save to var</label>
           <input id="readdomVarName" placeholder="${varName}" style="flex:1; margin:0;" />
@@ -158,7 +167,10 @@
           <input id="readdomAttrName" placeholder="attr name" style="width:90px; margin:0; display:none;" />
         </div>
       </div>
+
+      <!-- SCREENSHOT → VARIABLE SETTINGS — shown for screenshot_tovar type -->
       <div class="hidden-by-default" id="screenshotTovarWrapper" style="margin-top:6px;">
+        <div class="step-label" id="screenshotTovarStepLabel">② Screenshot Settings</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Target</label>
           <select id="screenshotTovarTarget" style="flex:1; margin:0;">
@@ -173,15 +185,32 @@
         </div>
         <span class="helper-text">Image saved to disk + stored in variable for HTML/XLSX export</span>
       </div>
+
+      <!-- DROP TARGET — shown for dragdrop type (after source selector) -->
       <div class="hidden-by-default" id="dragdropWrapper" style="margin-top:6px;">
-        <div style="display:flex; gap:6px; align-items:center;">
-          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Drop target</label>
-          <input id="dragdropTarget" placeholder="CSS selector of drop target" style="flex:1; margin:0;" />
-          <button id="dragdropTargetPick" class="secondary" style="width:auto; padding:4px 8px; font-size:12px; flex:0 0 auto;" title="Click element on page to pick drop target">🎯</button>
+        <div class="step-label" id="dragdropStepLabel">③ Drop Target</div>
+        <div class="row" id="dragdropTargetRow">
+          <select id="dragdropTargetSelectorType" class="w-100" style="font-size: 11px;">
+            <option value="css">CSS</option>
+            <option value="xpath">XPath</option>
+            <option value="id">ID</option>
+            <option value="name">Name</option>
+            <option value="text">Text</option>
+            <option value="fullXpath">Full XPath</option>
+          </select>
+          <input id="dragdropTarget" class="flex-1" placeholder="CSS selector of drop target" />
+          <button id="dragdropTargetPick" class="secondary w-auto" title="Pick drop target element on page">🎯</button>
+        </div>
+        <div id="pickedDragdropTargetWrap" class="hidden-by-default">
+          <div id="pickedDragdropTargetInfo"></div>
+          <button id="clearDragdropTargetBtn" class="secondary w-auto" title="Clear picked drop target">✕ Clear</button>
         </div>
         <span class="helper-text">Source = main selector above. Target = where to drop.</span>
       </div>
+
+      <!-- CONDITION SETTINGS — shown for condition type -->
       <div class="hidden-by-default" id="conditionWrapper">
+        <div class="step-label" id="conditionStepLabel">② Condition</div>
         <div class="row" style="margin-top: 6px; gap: 6px;">
           <select id="conditionType" style="flex: 1; margin: 0;">
             <option value="elementExists">Element Exists</option>
@@ -205,7 +234,10 @@
         <input id="conditionSkipCount" type="number" min="1" value="1" placeholder="Actions to skip if false" style="margin-top: 6px;" />
         <span class="helper-text">If condition is FALSE, skip next N actions</span>
       </div>
+
+      <!-- SWITCH SETTINGS — shown for switch type -->
       <div class="hidden-by-default" id="switchWrapper" style="margin-top:6px;">
+        <div class="step-label" id="switchStepLabel">② Switch Variable</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Variable</label>
           <input id="switchVar" placeholder="${varName}  e.g. ${role}" style="flex:1; margin:0;" />
@@ -218,7 +250,8 @@
         </div>
         <span class="helper-text">Leave case value empty to set as <strong>default</strong>. Cases are checked top-to-bottom; first match wins.</span>
       </div>
-      <!-- CHILD CONDITION (optional) — shown for click/input/hover -->
+
+      <!-- CHILD CONDITION (optional collapsible) — shown for click/input/hover -->
       <div class="hidden-by-default child-cond-outer" id="childConditionWrapper" style="margin-top:8px;">
         <button type="button" class="child-cond-toggle" id="childConditionToggle" aria-expanded="false">
           <span class="child-cond-caret">▸</span>
@@ -281,12 +314,15 @@
         </div>
       </div>
 
+      <!-- VALUE FIELD — shown for input/navigate/script/wait/screenshot/screenshot_full -->
       <div class="hidden-by-default" id="manualValueWrapper">
-        <div class="step-label">③ Value</div>
+        <div class="step-label" id="valueStepLabel">③ Value</div>
         <textarea id="manualValue" placeholder="Value (for input/navigate) or JS code (for script)" style="width:100%; height:80px; margin-top:6px;"></textarea>
       </div>
+
+      <!-- DELAY -->
       <div class="hidden-by-default" id="manualDelayWrapper">
-        <div class="step-label">④ Delay (optional)</div>
+        <div class="step-label" id="delayStepLabel">④ Delay (optional)</div>
         <div class="row" style="gap:6px; margin-top:0;">
           <select id="manualDelayPreset" style="flex: 1;">
             <option value="500" selected>0.5s (default)</option>
@@ -301,10 +337,13 @@
                  style="display:none; width: 80px; flex: 0 0 80px;" />
         </div>
       </div>
+
+      <!-- LABEL -->
       <div class="hidden-by-default" id="manualLabelWrapper">
-        <div class="step-label">⑤ Label (optional)</div>
+        <div class="step-label" id="labelStepLabel">⑤ Label (optional)</div>
         <input id="manualLabel" placeholder="Short description for this action" />
       </div>
+
       <div class="row">
         <button id="addManualAction">Add Action</button>
         <button id="cancelEdit" class="secondary w-auto" style="display: none;">Cancel</button>

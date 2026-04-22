@@ -22,6 +22,7 @@ let foldersCache = {};
 let editing = null;
 let dragFromIndex = null;
 let currentPickedSelectors = null;
+let currentPickedDragdropTargetSelectors = null;
 let actionClipboard = null;
 let pickerMode = false;
 
@@ -584,14 +585,67 @@ const conditionSkipCount = document.getElementById("conditionSkipCount");
 const CONDITION_NO_SELECTOR = ["urlContains", "urlEquals"];
 const CONDITION_NO_EXPECTED_VALUE = ["elementExists", "elementNotExists", "elementVisible", "elementHidden"];
 
+/* === Types that never need a selector === */
+const TYPES_NO_SELECTOR = new Set(["navigate", "wait", "script", "screenshot", "screenshot_full", "switch"]);
+
+/* === Step label renumbering after visibility changes === */
+const _STEP_CIRCLES = ['①','②','③','④','⑤','⑥','⑦'];
+const _STEP_LABEL_TEXTS = {
+  selectorStepLabel:       'Selector',
+  readdomStepLabel:        'Read DOM Settings',
+  screenshotTovarStepLabel:'Screenshot Settings',
+  dragdropStepLabel:       'Drop Target',
+  conditionStepLabel:      'Condition',
+  switchStepLabel:         'Switch Variable',
+  delayStepLabel:          'Delay (optional)',
+  labelStepLabel:          'Label (optional)',
+};
+const _VALUE_LABEL_TEXTS = {
+  script:          'Code JS',
+  navigate:        'URL',
+  wait:            'Duration (ms)',
+  screenshot:      'Filename (optional)',
+  screenshot_full: 'Filename (optional)',
+};
+// Ordered list of [stepLabelId, parentWrapperId] in DOM appearance order
+const _STEP_ORDER = [
+  ['selectorStepLabel',        'selectorSection'],
+  ['readdomStepLabel',         'readdomWrapper'],
+  ['screenshotTovarStepLabel', 'screenshotTovarWrapper'],
+  ['dragdropStepLabel',        'dragdropWrapper'],
+  ['conditionStepLabel',       'conditionWrapper'],
+  ['switchStepLabel',          'switchWrapper'],
+  ['valueStepLabel',           'manualValueWrapper'],
+  ['delayStepLabel',           'manualDelayWrapper'],
+  ['labelStepLabel',           'manualLabelWrapper'],
+];
+
+function _updateStepLabels() {
+  const type = manualActionType.value;
+  let n = 2; // ① is always Action Type
+  for (const [labelId, parentId] of _STEP_ORDER) {
+    const parent = document.getElementById(parentId);
+    const label  = document.getElementById(labelId);
+    if (!parent || !label) continue;
+    // Visible = inline style explicitly set to block/flex (not '', not 'none')
+    const vis = parent.style.display !== '' && parent.style.display !== 'none';
+    if (!vis) continue;
+    const text = labelId === 'valueStepLabel'
+      ? (_VALUE_LABEL_TEXTS[type] || 'Value')
+      : (_STEP_LABEL_TEXTS[labelId] || '');
+    label.textContent = `${_STEP_CIRCLES[n - 1]} ${text}`;
+    n++;
+  }
+}
+
 // Update visibility of condition fields based on selected condition type
 function updateConditionFieldsVisibility() {
   const ct = conditionType ? conditionType.value : "";
-  const selectorRow = document.getElementById("selectorRow");
+  const selectorSection = document.getElementById("selectorSection");
 
-  // Hide selector for URL-based conditions
-  if (selectorRow && manualActionType.value === "condition") {
-    selectorRow.style.display = CONDITION_NO_SELECTOR.includes(ct) ? "none" : "flex";
+  // Hide selector section for URL-based conditions
+  if (selectorSection && manualActionType.value === "condition") {
+    selectorSection.style.display = CONDITION_NO_SELECTOR.includes(ct) ? "none" : "block";
   }
   if (pickedSelectorsInfo && manualActionType.value === "condition" && CONDITION_NO_SELECTOR.includes(ct)) {
     pickedSelectorsWrap.style.display = "none";
@@ -601,6 +655,8 @@ function updateConditionFieldsVisibility() {
   if (conditionExpectedValueWrapper) {
     conditionExpectedValueWrapper.style.display = CONDITION_NO_EXPECTED_VALUE.includes(ct) ? "none" : "block";
   }
+
+  _updateStepLabels();
 }
 
 // Listen for conditionType changes
@@ -612,6 +668,13 @@ if (conditionType) {
 document.getElementById("readdomReadFrom")?.addEventListener("change", function() {
   const attrNameEl = document.getElementById("readdomAttrName");
   if (attrNameEl) attrNameEl.style.display = this.value === "attr" ? "block" : "none";
+});
+
+// For screenshot_tovar: show selector section only when target = element
+document.getElementById("screenshotTovarTarget")?.addEventListener("change", function() {
+  const selectorSection = document.getElementById("selectorSection");
+  if (selectorSection) selectorSection.style.display = this.value === "element" ? "block" : "none";
+  _updateStepLabels();
 });
 
 // Status indicator elements
@@ -1002,7 +1065,9 @@ document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
         scenarioId: scenarioList.value || null,
         editingIndex: editing ? editing.index : null,
         sourceSelector: manualSelector.value?.trim() || "",
+        sourceSelectors: currentPickedSelectors || null,
         existingTarget: document.getElementById("dragdropTarget")?.value?.trim() || "",
+        targetSelectorType: document.getElementById("dragdropTargetSelectorType")?.value || "css",
         actionType: manualActionType.value,
         delay: manualDelay.value,
         label: document.getElementById("manualLabel")?.value?.trim() || "",
@@ -1179,6 +1244,56 @@ function displayPickedSelectors(selectors) {
   });
 }
 
+// Display picked selectors for drag & drop TARGET (mirrors displayPickedSelectors)
+function displayPickedDragdropTargetSelectors(selectors) {
+  const info = document.getElementById('pickedDragdropTargetInfo');
+  const wrap = document.getElementById('pickedDragdropTargetWrap');
+  if (!selectors || !info || !wrap) return;
+
+  currentPickedDragdropTargetSelectors = selectors;
+
+  const selectorLabels = {
+    css: 'CSS', xpath: 'XPath', fullXpath: 'Full XPath',
+    id: 'ID', name: 'Name', text: 'Text', testId: 'Test ID', dataId: 'Data ID'
+  };
+
+  let html = '<div style="color:var(--muted);margin-bottom:4px;font-weight:500;">📋 Available selectors (click to use):</div>';
+  for (const [type, value] of Object.entries(selectors)) {
+    if (type === 'textTag' || !value) continue;
+    const label = selectorLabels[type] || type;
+    const displayValue = value.length > 60 ? value.substring(0, 60) + '…' : value;
+    html += `<div class="selector-option" data-type="${type}" data-value="${encodeURIComponent(value)}">
+      <strong style="color:var(--primary);">${label}:</strong>
+      <code style="font-size:9px;word-break:break-all;">${displayValue}</code>
+    </div>`;
+  }
+  info.innerHTML = html;
+  wrap.style.display = 'flex';
+
+  const clearBtn = document.getElementById('clearDragdropTargetBtn');
+  if (clearBtn) {
+    clearBtn.onclick = (e) => {
+      e.stopPropagation();
+      currentPickedDragdropTargetSelectors = null;
+      const t = document.getElementById('dragdropTarget');
+      if (t) t.value = '';
+      info.innerHTML = '';
+      wrap.style.display = 'none';
+    };
+  }
+
+  info.querySelectorAll('.selector-option').forEach(opt => {
+    opt.onclick = () => {
+      const dtType = document.getElementById('dragdropTargetSelectorType');
+      if (dtType) dtType.value = opt.dataset.type;
+      const t = document.getElementById('dragdropTarget');
+      if (t) t.value = decodeURIComponent(opt.dataset.value);
+    };
+    opt.onmouseover = () => { opt.style.background = 'var(--secondary-bg)'; };
+    opt.onmouseout  = () => { opt.style.background = 'transparent'; };
+  });
+}
+
 /* === LISTEN FOR ELEMENT PICKED (EARLY REGISTER) === */
 // Register early so ELEMENT_PICKED is caught even if popup opens later
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1209,24 +1324,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 // If popup opens after picking, restore the cached selector from storage
-chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingEdit", "dragdropTargetPickPending", "dragdropTargetPickState", "elemShotPickPending"], (res) => {
-  // Restore pending edit state first
+chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingEdit", "dragdropTargetPickPending", "dragdropTargetPickState", "elemShotPickPending", "manualFormDraft"], (res) => {
+  // Restore pending edit/add state (saved before pick mode opens)
   if (res?.pendingEdit) {
     const pe = res.pendingEdit;
-    editing = { scenarioId: pe.scenarioId, index: pe.index };
+    // Only restore as edit if it was an existing action (has index)
+    if (!pe.isNew && pe.index != null) {
+      editing = { scenarioId: pe.scenarioId, index: pe.index };
+      addManualAction.textContent = "Save Edit";
+      cancelEdit.style.display = "inline-block";
+    }
     manualActionType.value = pe.actionType || "";
     manualValue.value = pe.actionValue || "";
-    setManualDelayUI(pe.actionDelay || "");
+    setManualDelayUI(pe.actionDelay || "500");
 
-    // Show appropriate fields based on action type
-    const type = pe.actionType;
-    manualValueWrapper.style.display = (type === "input" || type === "navigate" || type === "script") ? "block" : "none";
-    manualDelayWrapper.style.display = type ? "block" : "none";
+    // Trigger onchange to restore all field visibility correctly
+    manualActionType.onchange?.();
 
-    addManualAction.textContent = "Save Edit";
-    cancelEdit.style.display = "inline-block";
-
-    // Open the collapsible card if editing
+    // Open the collapsible card
     const card = document.getElementById("addManualActionCard");
     if (card && card.classList.contains("collapsed")) {
       card.classList.remove("collapsed");
@@ -1244,9 +1359,23 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
     manualActionType.value = "dragdrop";
     manualSelector.value = st.sourceSelector || "";
     manualActionType.onchange?.();  // trigger show/hide
-    const ddTarget = document.getElementById("dragdropTarget");
-    if (ddTarget) ddTarget.value = picked;
-    setManualDelayUI(st.delay || "");
+    // Restore target selector with full selector display
+    const ddPickedSelectors = res.lastPickedSelectors || (picked ? { css: picked } : null);
+    const dtSelectorType = document.getElementById("dragdropTargetSelectorType");
+    if (ddPickedSelectors) {
+      displayPickedDragdropTargetSelectors(ddPickedSelectors);
+      if (dtSelectorType) dtSelectorType.value = st.targetSelectorType || "css";
+      const ddTarget = document.getElementById("dragdropTarget");
+      if (ddTarget) ddTarget.value = ddPickedSelectors[st.targetSelectorType || "css"] || picked;
+    } else {
+      const ddTarget = document.getElementById("dragdropTarget");
+      if (ddTarget) ddTarget.value = st.existingTarget || "";
+    }
+    if (st.sourceSelectors) {
+      currentPickedSelectors = st.sourceSelectors;
+      displayPickedSelectors(currentPickedSelectors);
+    }
+    setManualDelayUI(st.delay || "500");
     const lblEl = document.getElementById("manualLabel");
     const lblW  = document.getElementById("manualLabelWrapper");
     if (lblEl) lblEl.value = st.label || "";
@@ -1278,6 +1407,11 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
         manualSelector.value = res.lastPickedSelector;
         chrome.storage.local.remove("lastPickedSelector");
       } catch (e) { /* ignore */ }
+    }
+
+    // Restore draft (only if not coming from any pick mode)
+    if (!res?.pendingEdit && !res?.dragdropTargetPickPending && res?.manualFormDraft) {
+      restoreDraft(res.manualFormDraft);
     }
   }
 });
@@ -1675,10 +1809,9 @@ function previewActions() {
       if (actionClipboard) {
         const pasteLi = document.createElement("li");
         pasteLi.className = "action-navigate";
-        pasteLi.style.justifyContent = "center";
-        pasteLi.style.cursor = "default";
+        pasteLi.style.cssText = "justify-content:center;cursor:default;gap:6px;";
         const pasteBtn = document.createElement("button");
-        pasteBtn.textContent = `Paste: ${actionClipboard.type}${actionClipboard.label ? ` (${actionClipboard.label})` : ""}`;
+        pasteBtn.textContent = `📋 Paste: ${actionClipboard.type}${actionClipboard.label ? ` (${actionClipboard.label})` : ""}`;
         pasteBtn.className = "secondary";
         pasteBtn.style.cssText = "width:auto;font-size:11px;margin:0;";
         pasteBtn.onclick = () => {
@@ -1691,7 +1824,17 @@ function previewActions() {
             updateUndoRedoState();
           });
         };
+        const clearClipboardBtn = document.createElement("button");
+        clearClipboardBtn.textContent = "✕";
+        clearClipboardBtn.className = "secondary";
+        clearClipboardBtn.title = "Clear clipboard";
+        clearClipboardBtn.style.cssText = "width:auto;font-size:11px;margin:0;opacity:0.65;";
+        clearClipboardBtn.onclick = () => {
+          actionClipboard = null;
+          previewActions();
+        };
         pasteLi.appendChild(pasteBtn);
+        pasteLi.appendChild(clearClipboardBtn);
         actionsEl.appendChild(pasteLi);
       }
 
@@ -1809,74 +1952,52 @@ function setManualDelayUI(ms) {
 
 manualActionType.onchange = () => {
   const type = manualActionType.value;
-  // Show textarea and delay input only when action type is selected
   const manualValueWrapper = document.getElementById("manualValueWrapper");
   const manualDelayWrapper = document.getElementById("manualDelayWrapper");
-  const selectorRow = document.getElementById("selectorRow");
+  const selectorSection    = document.getElementById("selectorSection");
 
-  // Condition types that don't need selector
-  const noSelectorConditions = ["urlContains", "urlEquals"];
-  const currentConditionType = conditionType ? conditionType.value : "";
-  const isConditionWithoutSelector = type === "condition" && noSelectorConditions.includes(currentConditionType);
+  // --- Selector section ---
+  // screenshot_tovar shows selector only when target = element
+  const ssTovarTarget = document.getElementById("screenshotTovarTarget");
+  const isConditionUrlType = type === "condition" && CONDITION_NO_SELECTOR.includes(conditionType ? conditionType.value : "");
+  const showSelector = !TYPES_NO_SELECTOR.has(type) &&
+    type !== "" &&
+    !(type === "screenshot_tovar" && ssTovarTarget?.value !== "element") &&
+    !isConditionUrlType;
+  if (selectorSection) selectorSection.style.display = showSelector ? "block" : "none";
+  if (pickedSelectorsInfo && !showSelector) pickedSelectorsWrap.style.display = "none";
 
-  // Hide selector row for screenshot types and certain condition types
-  if (selectorRow) {
-    const hideSelector = type === "screenshot" || type === "screenshot_full" || type === "screenshot_tovar" || type === "wait" || type === "switch" || isConditionWithoutSelector;
-    selectorRow.style.display = hideSelector ? "none" : "flex";
-  }
-  if (pickedSelectorsInfo && (type === "screenshot" || type === "screenshot_full" || type === "screenshot_tovar" || type === "wait" || type === "switch" || isConditionWithoutSelector)) {
-    pickedSelectorsWrap.style.display = "none";
-  }
-
-  // Show condition wrapper for condition type
+  // --- Special wrappers ---
   if (conditionWrapper) {
     conditionWrapper.style.display = type === "condition" ? "block" : "none";
-
-    // Update condition field visibility based on conditionType
-    if (type === "condition") {
-      updateConditionFieldsVisibility();
-    }
+    if (type === "condition") updateConditionFieldsVisibility();
   }
 
-  // Show readdom wrapper for readdom type
   const readdomWrapper = document.getElementById("readdomWrapper");
-  if (readdomWrapper) {
-    readdomWrapper.style.display = type === "readdom" ? "block" : "none";
-  }
+  if (readdomWrapper) readdomWrapper.style.display = type === "readdom" ? "block" : "none";
 
-  // Show dragdrop wrapper for dragdrop type
   const dragdropWrapper = document.getElementById("dragdropWrapper");
-  if (dragdropWrapper) {
-    dragdropWrapper.style.display = type === "dragdrop" ? "block" : "none";
-  }
+  if (dragdropWrapper) dragdropWrapper.style.display = type === "dragdrop" ? "block" : "none";
 
-  // Show screenshot_tovar wrapper
   const ssTovarWrapper = document.getElementById("screenshotTovarWrapper");
-  if (ssTovarWrapper) {
-    ssTovarWrapper.style.display = type === "screenshot_tovar" ? "block" : "none";
-  }
+  if (ssTovarWrapper) ssTovarWrapper.style.display = type === "screenshot_tovar" ? "block" : "none";
 
-  // Show switch wrapper
   const switchWrapper = document.getElementById("switchWrapper");
   if (switchWrapper) {
     switchWrapper.style.display = type === "switch" ? "block" : "none";
     if (type === "switch") populateSwitchScenarioSelect();
   }
 
-  // Show child condition wrapper for action types that act on elements
   const childConditionWrapper = document.getElementById("childConditionWrapper");
   if (childConditionWrapper) {
-    const supportsChildCondition = ["click", "input", "hover"].includes(type);
-    childConditionWrapper.style.display = supportsChildCondition ? "block" : "none";
+    childConditionWrapper.style.display = ["click", "input", "hover"].includes(type) ? "block" : "none";
   }
 
-  // Show value wrapper for types that need it
+  // --- Value field ---
   const needsValue = ["input", "navigate", "script", "screenshot", "screenshot_full", "wait"].includes(type);
   manualValueWrapper.style.display = needsValue ? "block" : "none";
-  // Reset inline display set by clearEditState so the textarea is visible inside the wrapper
   manualValue.style.display = "";
 
-  // Update placeholder based on action type
   if (type === "screenshot" || type === "screenshot_full") {
     manualValue.placeholder = "Filename (optional, e.g., my-screenshot.png)";
     manualValue.style.height = "40px";
@@ -1891,10 +2012,14 @@ manualActionType.onchange = () => {
     manualValue.style.height = "80px";
   }
 
+  // --- Delay & Label ---
   manualDelayWrapper.style.display = type ? "block" : "none";
-
   const manualLabelWrapper = document.getElementById("manualLabelWrapper");
   if (manualLabelWrapper) manualLabelWrapper.style.display = type ? "block" : "none";
+
+  // Renumber step labels
+  if (type !== "condition") _updateStepLabels();
+  // (condition calls updateConditionFieldsVisibility which calls _updateStepLabels)
 };
 
 /* === Child Condition toggle === */
@@ -1939,14 +2064,15 @@ pickElement.onclick = () => {
   pickElement.style.background = pickerMode ? "#22c55e" : "#e5e7eb";
   pickElement.style.color = pickerMode ? "white" : "#111827";
 
-  // Save editing state before picking (for pick element during edit)
-  if (pickerMode && editing) {
+  // Save form state before picking so it can be restored when popup reopens
+  if (pickerMode) {
     chrome.storage.local.set({
       pendingEdit: {
-        ...editing,
+        ...(editing || {}),
         actionType: manualActionType.value,
         actionValue: manualValue.value,
-        actionDelay: manualDelay.value
+        actionDelay: manualDelay.value,
+        isNew: !editing,
       }
     });
   }
@@ -2106,6 +2232,8 @@ addManualAction.onclick = () => {
     const target = document.getElementById("dragdropTarget")?.value?.trim();
     if (!target) { showToast("Drop target selector is required for Drag & Drop action", "error"); return; }
     action.targetSelector = target;
+    const dtSelectorType = document.getElementById("dragdropTargetSelectorType")?.value || "css";
+    action.targetSelectors = currentPickedDragdropTargetSelectors || { [dtSelectorType]: target };
   }
 
   // For condition actions store condition parameters
@@ -2145,6 +2273,7 @@ addManualAction.onclick = () => {
       },
       () => {
         clearEditState();
+        chrome.storage.local.remove("manualFormDraft");
         previewActions();
         updateUndoRedoState();
       }
@@ -2158,6 +2287,7 @@ addManualAction.onclick = () => {
       },
       () => {
         clearEditState();
+        chrome.storage.local.remove("manualFormDraft");
         previewActions();
         updateUndoRedoState();
       }
@@ -2169,10 +2299,13 @@ function startEdit(index, action) {
   manualSelector.value = action.selector || "";
   manualActionType.value = action.type || "";
 
-  // Handle selector row visibility for screenshot types
-  const selectorRow = document.getElementById("selectorRow");
-  if (selectorRow) {
-    selectorRow.style.display = (action.type === "screenshot" || action.type === "screenshot_full" || action.type === "screenshot_tovar") ? "none" : "flex";
+  // Show/hide selector section based on type
+  const selectorSection = document.getElementById("selectorSection");
+  if (selectorSection) {
+    const ssTovarTargetVal = action.target || "page";
+    const hideSelector = TYPES_NO_SELECTOR.has(action.type) ||
+      (action.type === "screenshot_tovar" && ssTovarTargetVal !== "element");
+    selectorSection.style.display = hideSelector ? "none" : "block";
   }
 
   // Restore selectors if available
@@ -2231,6 +2364,17 @@ function startEdit(index, action) {
     const dragdropTarget  = document.getElementById("dragdropTarget");
     if (dragdropWrapper) dragdropWrapper.style.display = "block";
     if (dragdropTarget)  dragdropTarget.value = action.targetSelector || "";
+    // Restore target selector type and picked selectors display
+    const dtSelectorType = document.getElementById("dragdropTargetSelectorType");
+    if (action.targetSelectors) {
+      displayPickedDragdropTargetSelectors(action.targetSelectors);
+      const savedType = Object.keys(action.targetSelectors)[0] || "css";
+      if (dtSelectorType) dtSelectorType.value = savedType;
+    } else {
+      if (dtSelectorType) dtSelectorType.value = "css";
+      const pickedDdWrap = document.getElementById("pickedDragdropTargetWrap");
+      if (pickedDdWrap) pickedDdWrap.style.display = "none";
+    }
   } else if (action.type === "hover") {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
@@ -2275,13 +2419,13 @@ function startEdit(index, action) {
     _switchCases = (action.cases || []).map(c => ({ ...c }));
     populateSwitchScenarioSelect();
     renderSwitchCaseList();
-    if (selectorRow) selectorRow.style.display = "none";
+    if (selectorSection) selectorSection.style.display = "none";
   } else {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
     manualValue.value = "";
   }
-  setManualDelayUI(action.delay ? String(action.delay) : "");
+  setManualDelayUI(action.delay ? String(action.delay) : "500");
 
   // Restore child condition fields
   const childCondWrap = document.getElementById("childConditionWrapper");
@@ -2317,6 +2461,8 @@ function startEdit(index, action) {
   editing = { scenarioId: scenarioList.value || null, index };
   addManualAction.textContent = "Save Edit";
   cancelEdit.style.display = "inline-block";
+  _updateStepLabels();
+  saveDraft();
 }
 
 function clearEditState() {
@@ -2324,7 +2470,7 @@ function clearEditState() {
   manualSelector.value = "";
   manualActionType.value = "";
   manualValue.value = "";
-  setManualDelayUI("");
+  setManualDelayUI("500");
   manualValue.style.display = "none";
   addManualAction.textContent = "Add Action";
   cancelEdit.style.display = "none";
@@ -2333,9 +2479,9 @@ function clearEditState() {
   if (pickedSelectorsInfo) { pickedSelectorsInfo.innerHTML = ""; }
   if (selectorType) selectorType.value = "css";
 
-  // Reset selectorRow and value/delay wrappers
-  const _selectorRow = document.getElementById("selectorRow");
-  if (_selectorRow) _selectorRow.style.display = "flex";
+  // Reset selectorSection and value/delay wrappers
+  const _selectorSection = document.getElementById("selectorSection");
+  if (_selectorSection) _selectorSection.style.display = "none";
   const _valWrap = document.getElementById("manualValueWrapper");
   if (_valWrap) _valWrap.style.display = "none";
   const _delWrap = document.getElementById("manualDelayWrapper");
@@ -2355,6 +2501,13 @@ function clearEditState() {
   if (dragdropWrapperEl) dragdropWrapperEl.style.display = "none";
   const dragdropTargetEl = document.getElementById("dragdropTarget");
   if (dragdropTargetEl) dragdropTargetEl.value = "";
+  const dragdropTargetTypeEl = document.getElementById("dragdropTargetSelectorType");
+  if (dragdropTargetTypeEl) dragdropTargetTypeEl.value = "css";
+  currentPickedDragdropTargetSelectors = null;
+  const pickedDdTargetWrap = document.getElementById("pickedDragdropTargetWrap");
+  if (pickedDdTargetWrap) pickedDdTargetWrap.style.display = "none";
+  const pickedDdTargetInfo = document.getElementById("pickedDragdropTargetInfo");
+  if (pickedDdTargetInfo) pickedDdTargetInfo.innerHTML = "";
 
   // Reset readdom fields
   const readdomWrapper = document.getElementById("readdomWrapper");
@@ -2409,7 +2562,217 @@ function clearEditState() {
 
 cancelEdit.onclick = () => {
   clearEditState();
+  chrome.storage.local.remove("manualFormDraft");
 };
+
+/* === DRAFT: persist Add Manual Action card across popup close/reopen === */
+
+function saveDraft() {
+  // Don't overwrite pick-mode saves (those use pendingEdit)
+  if (pickerMode) return;
+
+  const card = document.getElementById("addManualActionCard");
+  const cardOpen = card && !card.classList.contains("collapsed");
+  const type = manualActionType.value;
+
+  // Only save if card is open or we're in edit mode
+  if (!cardOpen && !editing) return;
+  // Don't save if nothing meaningful is in the form
+  if (!type && !editing) return;
+
+  const draft = {
+    actionType:  type,
+    selector:    manualSelector.value?.trim() || "",
+    selectorType: document.getElementById("selectorType")?.value || "css",
+    pickedSelectors: currentPickedSelectors || null,
+    value:       manualValue.value || "",
+    delay:       (() => {
+      const preset = document.getElementById("manualDelayPreset");
+      return preset?.value === "custom"
+        ? (document.getElementById("manualDelay")?.value?.trim() || "")
+        : (preset?.value || "");
+    })(),
+    label:       document.getElementById("manualLabel")?.value?.trim() || "",
+    cardOpen,
+
+    // dragdrop
+    dragdropTarget:            document.getElementById("dragdropTarget")?.value?.trim() || "",
+    dragdropTargetSelectorType: document.getElementById("dragdropTargetSelectorType")?.value || "css",
+    pickedDragdropTargetSelectors: currentPickedDragdropTargetSelectors || null,
+
+    // condition
+    conditionType:          document.getElementById("conditionType")?.value || "",
+    conditionExpectedValue: document.getElementById("conditionExpectedValue")?.value?.trim() || "",
+    conditionSkipCount:     document.getElementById("conditionSkipCount")?.value || "1",
+    childCond: {
+      matchAny:      document.getElementById("condChildMatchAny")?.checked ?? true,
+      valueEquals:   document.getElementById("condChildValueEquals")?.value?.trim() || "",
+      textContains:  document.getElementById("condChildTextContains")?.value?.trim() || "",
+      idContains:    document.getElementById("condChildIdContains")?.value?.trim() || "",
+      classContains: document.getElementById("condChildClassContains")?.value?.trim() || "",
+      childType:     document.getElementById("condChildType")?.value?.trim() || "",
+    },
+
+    // readdom
+    readdomVarName:  document.getElementById("readdomVarName")?.value?.trim() || "",
+    readdomReadFrom: document.getElementById("readdomReadFrom")?.value || "text",
+    readdomAttrName: document.getElementById("readdomAttrName")?.value?.trim() || "",
+
+    // screenshot_tovar
+    screenshotTovarVarName: document.getElementById("screenshotTovarVarName")?.value?.trim() || "",
+    screenshotTovarTarget:  document.getElementById("screenshotTovarTarget")?.value || "page",
+
+    // switch
+    switchVar:   document.getElementById("switchVar")?.value?.trim() || "",
+    switchCases: _switchCases ? [..._switchCases] : [],
+
+    // editing state
+    editing: editing ? { scenarioId: editing.scenarioId, index: editing.index } : null,
+    scenarioId: document.getElementById("scenarioList")?.value || null,
+  };
+
+  chrome.storage.local.set({ manualFormDraft: draft });
+}
+
+function restoreDraft(draft) {
+  if (!draft) return;
+
+  // Restore editing state
+  if (draft.editing) {
+    editing = draft.editing;
+    addManualAction.textContent = "Save Edit";
+    cancelEdit.style.display = "inline-block";
+  }
+
+  // Restore scenario
+  if (draft.scenarioId) {
+    const sl = document.getElementById("scenarioList");
+    if (sl) sl.value = draft.scenarioId;
+  }
+
+  // Core fields
+  manualActionType.value = draft.actionType || "";
+  manualSelector.value   = draft.selector || "";
+  manualValue.value      = draft.value || "";
+  setManualDelayUI(draft.delay || "500");
+
+  // Trigger visibility
+  manualActionType.onchange?.();
+
+  // Restore selector type + picked selectors panel
+  if (draft.selectorType) {
+    const st = document.getElementById("selectorType");
+    if (st) st.value = draft.selectorType;
+  }
+  if (draft.pickedSelectors) {
+    currentPickedSelectors = draft.pickedSelectors;
+    displayPickedSelectors(currentPickedSelectors);
+    const selectorSection = document.getElementById("selectorSection");
+    if (selectorSection && draft.selector) selectorSection.style.display = "block";
+  }
+
+  // Label
+  const lblEl = document.getElementById("manualLabel");
+  const lblW  = document.getElementById("manualLabelWrapper");
+  if (lblEl) lblEl.value = draft.label || "";
+  if (draft.label && lblW) lblW.style.display = "block";
+
+  // Dragdrop
+  if (draft.actionType === "dragdrop") {
+    const ddTarget   = document.getElementById("dragdropTarget");
+    const ddTypeEl   = document.getElementById("dragdropTargetSelectorType");
+    if (ddTarget)  ddTarget.value  = draft.dragdropTarget || "";
+    if (ddTypeEl)  ddTypeEl.value  = draft.dragdropTargetSelectorType || "css";
+    if (draft.pickedDragdropTargetSelectors) {
+      currentPickedDragdropTargetSelectors = draft.pickedDragdropTargetSelectors;
+      displayPickedDragdropTargetSelectors(currentPickedDragdropTargetSelectors);
+    }
+  }
+
+  // Condition
+  if (draft.actionType === "condition") {
+    const ctEl  = document.getElementById("conditionType");
+    const cevEl = document.getElementById("conditionExpectedValue");
+    const cscEl = document.getElementById("conditionSkipCount");
+    if (ctEl)  ctEl.value  = draft.conditionType || "elementExists";
+    if (cevEl) cevEl.value = draft.conditionExpectedValue || "";
+    if (cscEl) cscEl.value = draft.conditionSkipCount || "1";
+    updateConditionFieldsVisibility?.();
+
+    if (draft.childCond) {
+      const cc = draft.childCond;
+      const radioAny = document.getElementById("condChildMatchAny");
+      const radioAll = document.getElementById("condChildMatchAll");
+      if (radioAny) radioAny.checked = cc.matchAny !== false;
+      if (radioAll) radioAll.checked = cc.matchAny === false;
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+      set("condChildValueEquals", cc.valueEquals);
+      set("condChildTextContains", cc.textContains);
+      set("condChildIdContains", cc.idContains);
+      set("condChildClassContains", cc.classContains);
+      set("condChildType", cc.childType);
+      _updateChildCondBadge?.();
+    }
+  }
+
+  // Readdom
+  if (draft.actionType === "readdom") {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
+    set("readdomVarName",  draft.readdomVarName);
+    set("readdomReadFrom", draft.readdomReadFrom || "text");
+    set("readdomAttrName", draft.readdomAttrName);
+    const attrEl = document.getElementById("readdomAttrName");
+    if (attrEl) attrEl.style.display = (draft.readdomReadFrom === "attr") ? "inline-block" : "none";
+  }
+
+  // Screenshot_tovar
+  if (draft.actionType === "screenshot_tovar") {
+    const vEl = document.getElementById("screenshotTovarVarName");
+    const tEl = document.getElementById("screenshotTovarTarget");
+    if (vEl) vEl.value = draft.screenshotTovarVarName || "";
+    if (tEl) { tEl.value = draft.screenshotTovarTarget || "page"; tEl.onchange?.(); }
+  }
+
+  // Switch
+  if (draft.actionType === "switch") {
+    const svEl = document.getElementById("switchVar");
+    if (svEl) svEl.value = draft.switchVar || "";
+    _switchCases = draft.switchCases ? [...draft.switchCases] : [];
+    renderSwitchCaseList?.();
+  }
+
+  _updateStepLabels?.();
+
+  // Open card
+  if (draft.cardOpen || draft.editing) {
+    const card = document.getElementById("addManualActionCard");
+    if (card?.classList.contains("collapsed")) card.classList.remove("collapsed");
+  }
+}
+
+// Save draft continuously (debounced) so Chrome popup close doesn't lose async writes
+const debouncedSaveDraft = debounce(saveDraft, 600);
+
+// Attach to all manual form inputs
+[
+  "manualActionType", "selectorType", "manualSelector",
+  "manualValue", "manualDelayPreset", "manualDelay", "manualLabel",
+  "dragdropTarget", "dragdropTargetSelectorType",
+  "conditionType", "conditionExpectedValue", "conditionSkipCount",
+  "condChildValueEquals", "condChildTextContains", "condChildIdContains",
+  "condChildClassContains", "condChildType",
+  "readdomVarName", "readdomReadFrom", "readdomAttrName",
+  "screenshotTovarVarName", "screenshotTovarTarget",
+  "switchVar",
+].forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener("input", debouncedSaveDraft);
+    el.addEventListener("change", debouncedSaveDraft);
+  }
+});
+document.getElementById("condChildMatchAny")?.addEventListener("change", debouncedSaveDraft);
+document.getElementById("condChildMatchAll")?.addEventListener("change", debouncedSaveDraft);
 
 /* === SAVE === */
 
