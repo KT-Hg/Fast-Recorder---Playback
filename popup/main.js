@@ -1873,6 +1873,8 @@ manualActionType.onchange = () => {
   // Show value wrapper for types that need it
   const needsValue = ["input", "navigate", "script", "screenshot", "screenshot_full", "wait"].includes(type);
   manualValueWrapper.style.display = needsValue ? "block" : "none";
+  // Reset inline display set by clearEditState so the textarea is visible inside the wrapper
+  manualValue.style.display = "";
 
   // Update placeholder based on action type
   if (type === "screenshot" || type === "screenshot_full") {
