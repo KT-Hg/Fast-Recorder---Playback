@@ -586,6 +586,9 @@ const conditionSkipCount = document.getElementById("conditionSkipCount");
 const CONDITION_NO_SELECTOR = ["urlContains", "urlEquals"];
 const CONDITION_NO_EXPECTED_VALUE = ["elementExists", "elementNotExists", "elementVisible", "elementHidden"];
 
+/* === Default delay (ms) for all new actions === */
+const DEFAULT_DELAY_MS = "500";
+
 /* === Types that never need a selector === */
 const TYPES_NO_SELECTOR = new Set(["navigate", "wait", "script", "screenshot", "screenshot_full", "switch"]);
 
@@ -604,7 +607,6 @@ const _STEP_LABEL_TEXTS = {
 const _VALUE_LABEL_TEXTS = {
   script:          'Code JS',
   navigate:        'URL',
-  wait:            'Duration (ms)',
   screenshot:      'Filename (optional)',
   screenshot_full: 'Filename (optional)',
 };
@@ -633,7 +635,9 @@ function _updateStepLabels() {
     if (!vis) continue;
     const text = labelId === 'valueStepLabel'
       ? (_VALUE_LABEL_TEXTS[type] || 'Value')
-      : (_STEP_LABEL_TEXTS[labelId] || '');
+      : labelId === 'delayStepLabel' && type === 'wait'
+        ? 'Duration (ms)'
+        : (_STEP_LABEL_TEXTS[labelId] || '');
     label.textContent = `${_STEP_CIRCLES[n - 1]} ${text}`;
     n++;
   }
@@ -1337,7 +1341,11 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
     }
     manualActionType.value = pe.actionType || "";
     manualValue.value = pe.actionValue || "";
-    setManualDelayUI(pe.actionDelay || "500");
+    setManualDelayUI(pe.actionDelay || DEFAULT_DELAY_MS);
+    if (pe.actionDelayPreset) {
+      const presetEl = document.getElementById("manualDelayPreset");
+      if (presetEl) presetEl.value = pe.actionDelayPreset;
+    }
 
     // Trigger onchange to restore all field visibility correctly
     manualActionType.onchange?.();
@@ -1376,7 +1384,7 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
       currentPickedSelectors = st.sourceSelectors;
       displayPickedSelectors(currentPickedSelectors);
     }
-    setManualDelayUI(st.delay || "500");
+    setManualDelayUI(st.delay || DEFAULT_DELAY_MS);
     const lblEl = document.getElementById("manualLabel");
     const lblW  = document.getElementById("manualLabelWrapper");
     if (lblEl) lblEl.value = st.label || "";
@@ -1678,7 +1686,13 @@ function previewActions() {
         li.draggable = true;
 
         let value = a.selector || a.url || a.value || a.code || "";
-        const delayText = a.delay ? ` (${a.delay}ms)` : "";
+        const delayText = (a.delay && a.type !== "wait") ? ` (${a.delay}ms)` : "";
+
+        // Show wait info (support both old actions saved with a.value and new ones with a.delay)
+        if (a.type === "wait") {
+          const dur = a.delay || a.value;
+          value = dur ? `${dur}ms` : "(no duration)";
+        }
 
         // Show condition info for condition actions
         if (a.type === "condition") {
@@ -1744,16 +1758,12 @@ function previewActions() {
 
         /* ===== Toggle Disable / Edit / Delete buttons ===== */
         const btnRow = document.createElement("div");
-        btnRow.style.marginLeft = "auto";
-        btnRow.style.display = "flex";
-        btnRow.style.gap = "6px";
+        btnRow.className = "btn-row";
 
         // Toggle disable button
         const toggleBtn = document.createElement("button");
         toggleBtn.textContent = a.disabled ? "Enable" : "Disable";
         toggleBtn.className = "secondary";
-        toggleBtn.style.width = "auto";
-        toggleBtn.style.fontSize = "10px";
         toggleBtn.onclick = () => {
           chrome.runtime.sendMessage(
             { type: "TOGGLE_ACTION_DISABLED", scenarioId, index: i },
@@ -1767,13 +1777,11 @@ function previewActions() {
         const editBtn = document.createElement("button");
         editBtn.textContent = "Edit";
         editBtn.className = "secondary";
-        editBtn.style.width = "auto";
         editBtn.onclick = () => startEdit(i, a);
 
         const delBtn = document.createElement("button");
         delBtn.textContent = "Delete";
         delBtn.className = "danger";
-        delBtn.style.width = "auto";
         delBtn.onclick = () => {
           showConfirm("Delete this action?", () => {
             chrome.runtime.sendMessage(
@@ -1789,8 +1797,6 @@ function previewActions() {
         const copyBtn = document.createElement("button");
         copyBtn.textContent = "Copy";
         copyBtn.className = "secondary";
-        copyBtn.style.width = "auto";
-        copyBtn.style.fontSize = "10px";
         copyBtn.onclick = () => {
           actionClipboard = JSON.parse(JSON.stringify(a));
           showToast("Action copied to clipboard", "success");
@@ -1996,7 +2002,7 @@ manualActionType.onchange = () => {
   }
 
   // --- Value field ---
-  const needsValue = ["input", "navigate", "script", "screenshot", "screenshot_full", "wait"].includes(type);
+  const needsValue = ["input", "navigate", "script", "screenshot", "screenshot_full"].includes(type);
   manualValueWrapper.style.display = needsValue ? "block" : "none";
   manualValue.style.display = "";
 
@@ -2006,9 +2012,6 @@ manualActionType.onchange = () => {
   } else if (type === "script") {
     manualValue.placeholder = "JavaScript code to execute";
     manualValue.style.height = "80px";
-  } else if (type === "wait") {
-    manualValue.placeholder = "Milliseconds (e.g. 1000 = 1s)";
-    manualValue.style.height = "40px";
   } else {
     manualValue.placeholder = "Value (for input/navigate)";
     manualValue.style.height = "80px";
@@ -2074,6 +2077,7 @@ pickElement.onclick = () => {
         actionType: manualActionType.value,
         actionValue: manualValue.value,
         actionDelay: manualDelay.value,
+        actionDelayPreset: document.getElementById("manualDelayPreset")?.value || "500",
         isNew: !editing,
       }
     });
@@ -2186,6 +2190,17 @@ addManualAction.onclick = () => {
   }
 
   manualActionType.classList.remove('required-error');
+
+  // Validate wait duration
+  if (type === "wait") {
+    const d = parseInt(delayVal, 10);
+    if (!delayVal || isNaN(d) || d <= 0) {
+      const preset = document.getElementById("manualDelayPreset");
+      if (preset) { preset.classList.add('required-error'); setTimeout(() => preset.classList.remove('required-error'), 2000); }
+      showToast("Wait action requires a duration greater than 0ms", "error");
+      return;
+    }
+  }
 
   const action = { type };
 
@@ -2390,7 +2405,10 @@ function startEdit(index, action) {
     const ssTovarWrap = document.getElementById("screenshotTovarWrapper");
     if (ssTovarWrap) ssTovarWrap.style.display = "block";
     const ssTovarTarget = document.getElementById("screenshotTovarTarget");
-    if (ssTovarTarget) ssTovarTarget.value = action.target || "page";
+    if (ssTovarTarget) {
+      ssTovarTarget.value = action.target || "page";
+      ssTovarTarget.dispatchEvent(new Event("change"));
+    }
     if (action.target === "element" && action.selector) {
       manualSelector.value = action.selector;
     }
@@ -2464,7 +2482,11 @@ function startEdit(index, action) {
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
     manualValue.value = "";
   }
-  setManualDelayUI(action.delay ? String(action.delay) : "500");
+  // For wait: support old actions that stored duration in action.value
+  const delayForUI = action.type === "wait"
+    ? String(action.delay || action.value || DEFAULT_DELAY_MS)
+    : (action.delay ? String(action.delay) : DEFAULT_DELAY_MS);
+  setManualDelayUI(delayForUI);
 
   // Restore child condition fields
   const childCondWrap = document.getElementById("childConditionWrapper");
@@ -2509,7 +2531,7 @@ function clearEditState() {
   manualSelector.value = "";
   manualActionType.value = "";
   manualValue.value = "";
-  setManualDelayUI("500");
+  setManualDelayUI(DEFAULT_DELAY_MS);
   manualValue.style.display = "none";
   addManualAction.textContent = "Add Action";
   cancelEdit.style.display = "none";
@@ -2631,6 +2653,7 @@ function saveDraft() {
         ? (document.getElementById("manualDelay")?.value?.trim() || "")
         : (preset?.value || "");
     })(),
+    delayPreset: document.getElementById("manualDelayPreset")?.value || "500",
     label:       document.getElementById("manualLabel")?.value?.trim() || "",
     cardOpen,
 
@@ -2693,7 +2716,11 @@ function restoreDraft(draft) {
   manualActionType.value = draft.actionType || "";
   manualSelector.value   = draft.selector || "";
   manualValue.value      = draft.value || "";
-  setManualDelayUI(draft.delay || "500");
+  setManualDelayUI(draft.delay || DEFAULT_DELAY_MS);
+  if (draft.delayPreset) {
+    const presetEl = document.getElementById("manualDelayPreset");
+    if (presetEl) presetEl.value = draft.delayPreset;
+  }
 
   // Trigger visibility
   manualActionType.onchange?.();
@@ -3700,20 +3727,16 @@ function updateRunListDisplay() {
     });
 
     const btnRow = document.createElement("div");
-    btnRow.style.cssText = "margin-left:auto; display:flex; gap:6px;";
+    btnRow.className = "btn-row";
 
     const disableBtn = document.createElement("button");
     disableBtn.textContent = scenarioItem.disabled ? "Enable" : "Disable";
     disableBtn.className = "secondary";
-    disableBtn.style.width = "auto";
-    disableBtn.style.fontSize = "10px";
     disableBtn.onclick = () => { scenarioItem.disabled = !scenarioItem.disabled; updateRunListDisplay(); };
 
     const copyBtn = document.createElement("button");
     copyBtn.textContent = "Copy";
     copyBtn.className = "secondary";
-    copyBtn.style.width = "auto";
-    copyBtn.style.fontSize = "10px";
     copyBtn.onclick = () => {
       sequenceClipboard = { id: scenarioItem.id, name: scenarioItem.name, delay: scenarioItem.delay };
       showToast("Item copied", "success");
@@ -3723,7 +3746,6 @@ function updateRunListDisplay() {
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
     editBtn.className = "secondary";
-    editBtn.style.width = "auto";
     editBtn.onclick = () => {
       const newDelay = prompt("Delay (ms):", String(scenarioItem.delay));
       if (newDelay === null) return;
@@ -3735,7 +3757,6 @@ function updateRunListDisplay() {
     const delBtn = document.createElement("button");
     delBtn.textContent = "Delete";
     delBtn.className = "danger";
-    delBtn.style.width = "auto";
     delBtn.onclick = () => { runList.splice(index, 1); updateRunListDisplay(); };
 
     btnRow.appendChild(disableBtn);
@@ -3890,13 +3911,11 @@ function renderScheduleList(schedules) {
     });
 
     const btnRow = document.createElement("div");
-    btnRow.style.cssText = "margin-left:auto; display:flex; gap:6px;";
+    btnRow.className = "btn-row";
 
     const disableBtn = document.createElement("button");
     disableBtn.textContent = s.enabled ? "Disable" : "Enable";
     disableBtn.className = "secondary";
-    disableBtn.style.width = "auto";
-    disableBtn.style.fontSize = "10px";
     disableBtn.onclick = () => {
       s.enabled = !s.enabled;
       chrome.runtime.sendMessage({ type: "SAVE_SCHEDULE", schedule: s }, loadSchedules);
@@ -3905,8 +3924,6 @@ function renderScheduleList(schedules) {
     const copyBtn = document.createElement("button");
     copyBtn.textContent = "Copy";
     copyBtn.className = "secondary";
-    copyBtn.style.width = "auto";
-    copyBtn.style.fontSize = "10px";
     copyBtn.onclick = () => {
       const copy = { ...s, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 5) };
       chrome.runtime.sendMessage({ type: "SAVE_SCHEDULE", schedule: copy }, () => {
@@ -3918,7 +3935,6 @@ function renderScheduleList(schedules) {
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
     editBtn.className = "secondary";
-    editBtn.style.width = "auto";
     editBtn.onclick = () => {
       editingScheduleId = s.id;
       document.getElementById("scheduleScenarioSelect").value = s.scenarioId;
@@ -3933,7 +3949,6 @@ function renderScheduleList(schedules) {
     const delBtn = document.createElement("button");
     delBtn.textContent = "Delete";
     delBtn.className = "danger";
-    delBtn.style.width = "auto";
     delBtn.onclick = () => {
       if (editingScheduleId === s.id) {
         editingScheduleId = null;
