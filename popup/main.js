@@ -11,6 +11,7 @@ import { escHtml, getActionIcon, showToast, showConfirm, showAlert,
          safeSendTabMessage, isEligibleTab, debounce } from './utils.js';
 import { updateRangeFill } from './settings.js';
 import { startConnectionCheck } from './connection.js';
+import { addVariableRow } from './variables.js';
 
 /* === Init Main === */
 
@@ -2107,6 +2108,41 @@ pickElement.onclick = () => {
 
 // Selector listener is registered at top already
 
+function extractVarNames(action) {
+  const VAR_RE = /\$\{([^}]+)\}/g;
+  const names = new Set();
+  const scan = (str) => {
+    if (typeof str !== 'string') return;
+    for (const m of str.matchAll(VAR_RE)) names.add(m[1]);
+  };
+  scan(action.selector);
+  scan(action.value);
+  scan(action.url);
+  scan(action.code);
+  scan(action.expectedValue);
+  scan(action.switchVar);
+  if (action.conditions && typeof action.conditions === 'object') {
+    Object.values(action.conditions).forEach(v => scan(String(v)));
+  }
+  return names;
+}
+
+function autoCreateMissingVariables(action) {
+  const needed = extractVarNames(action);
+  if (!needed.size) return;
+  chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, (res) => {
+    const existing = res?.variables || {};
+    const newVars = [...needed].filter(n => !(n in existing));
+    if (!newVars.length) return;
+    const merged = { ...existing };
+    newVars.forEach(n => { merged[n] = ''; });
+    chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: merged }, () => {
+      newVars.forEach(n => addVariableRow(n, ''));
+      showToast(`Đã tự động tạo variable: ${newVars.join(', ')}`, 'success');
+    });
+  });
+}
+
 addManualAction.onclick = () => {
   const selector = manualSelector.value?.trim() || "";
   const type = manualActionType.value?.trim() || "";
@@ -2261,6 +2297,8 @@ addManualAction.onclick = () => {
   // Include label if provided
   const labelVal = document.getElementById("manualLabel")?.value?.trim();
   if (labelVal) action.label = labelVal;
+
+  autoCreateMissingVariables(action);
 
   // If editing an existing action, send UPDATE_ACTION
   if (editing) {
