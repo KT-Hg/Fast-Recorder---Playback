@@ -1668,6 +1668,7 @@ function previewActions() {
       }
 
       res.actions.forEach((a, i) => {
+        if (a == null) return;
         const li = document.createElement("li");
         li.classList.add("action", `action-${a.type}`);
         if (a.disabled) {
