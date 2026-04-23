@@ -739,6 +739,15 @@ button:disabled {
   display: none !important;
 }
 
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.card.collapsible:not(.collapsed) > *:not(h3) {
+  animation: fadeSlideIn 0.18s ease forwards;
+}
+
 /* === Nested Collapsible Sub-cards === */
 .sub-card {
   border: 1px solid var(--border);
@@ -792,6 +801,29 @@ button:disabled {
 /* === Hidden Elements === */
 .hidden-by-default {
   display: none;
+}
+
+/* === Action List Loading State === */
+.action-loading {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px;
+  opacity: 0.7;
+  animation: pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  from { opacity: 0.4; }
+  to   { opacity: 0.9; }
+}
+
+/* === Field Validation Error Message === */
+.field-error {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 3px;
+  animation: fadeSlideIn 0.15s ease forwards;
 }
 
 /* === Picked Selectors Panel === */
@@ -1222,7 +1254,7 @@ body.modal-open {
 
 /* === Condition Help Modal === */
 .condition-help-modal {
-  display: none;
+  display: flex;
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
@@ -1231,8 +1263,21 @@ body.modal-open {
   align-items: flex-start;
   justify-content: center;
   padding-top: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
 }
-.condition-help-modal.show { display: flex; }
+.condition-help-modal.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+.condition-help-modal .condition-help-content {
+  transform: translateY(-6px);
+  transition: transform 0.18s ease;
+}
+.condition-help-modal.show .condition-help-content {
+  transform: translateY(0);
+}
 
 .condition-help-content {
   background: var(--card);
@@ -1470,6 +1515,94 @@ textarea:focus-visible,
   padding: 6px 12px;
 }
 #pickerInstructionBar.show { display: block; }
+
+/* === Picker Active State === */
+#pickElement.picker-active {
+  background: var(--success) !important;
+  color: #fff !important;
+  border-color: var(--success-dark) !important;
+}
+
+/* === Switch-case row layout === */
+.sw-case-row-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--secondary-bg);
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  padding: 6px;
+}
+.sw-case-row-view {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: var(--secondary-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.sw-case-label {
+  font-size: 12px;
+  color: #e879f9;
+  font-weight: 600;
+  min-width: 70px;
+  white-space: nowrap;
+}
+.sw-case-target {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-case-btn {
+  width: auto !important;
+  flex: 0 0 auto;
+  margin: 0 !important;
+  padding: 2px 7px !important;
+  font-size: 11px !important;
+}
+.sw-inline-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.sw-inline-row-end {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+.sw-edit-input {
+  flex: 1;
+  margin: 0 !important;
+  font-size: 12px !important;
+}
+.sw-edit-btn {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 2px 10px !important;
+  font-size: 11px !important;
+}
+.sw-edit-btn-cancel {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 2px 8px !important;
+  font-size: 11px !important;
+}
+
+/* === Paste row in action/sequence list === */
+.action-paste-li {
+  justify-content: center;
+  cursor: default;
+  gap: 6px;
+}
+.action-paste-btn {
+  width: auto !important;
+  font-size: 11px !important;
+  margin: 0 !important;
+}
 
 /* === Screenshot Grid === */
 .screenshot-grid {

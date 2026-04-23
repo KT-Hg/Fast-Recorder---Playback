@@ -17,7 +17,11 @@ import { addVariableRow } from './variables.js';
 
 export function initMain() {
 
-/* === Undeclared globals from original popup.js === */
+/* === Timing constants === */
+const FOCUS_DELAY_MS   = 50;   // wait for modal DOM to paint before focusing
+const PICKER_RESET_DELAY_MS = 150; // brief wait after stop-record before preview
+
+/* === Module state === */
 let scenariosCache = {};
 let foldersCache = {};
 let editing = null;
@@ -181,25 +185,72 @@ function applyCondLang(lang) {
   chrome.storage.local.set({ condHelpLang: lang });
 }
 
-document.getElementById("conditionHelpBtn")?.addEventListener("click", () => {
+function _getFocusableElements(container) {
+  return Array.from(container.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  ));
+}
+
+function _openModal(modalId, firstFocusSelector) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.classList.add("show");
+  lockScroll();
+  // Focus first focusable element
+  const target = firstFocusSelector
+    ? modal.querySelector(firstFocusSelector)
+    : _getFocusableElements(modal)[0];
+  setTimeout(() => target?.focus(), FOCUS_DELAY_MS);
+}
+
+function _closeModal(modalId, returnFocusEl) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.classList.remove("show");
+  unlockScroll();
+  returnFocusEl?.focus();
+}
+
+function _attachModalKeyHandlers(modalId, closeFn) {
+  const modal = document.getElementById(modalId);
+  if (!modal) return;
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeFn(); return; }
+    if (e.key !== "Tab") return;
+    const focusable = _getFocusableElements(modal);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  });
+}
+
+let _condHelpOpener = null;
+document.getElementById("conditionHelpBtn")?.addEventListener("click", (e) => {
+  _condHelpOpener = e.currentTarget;
   chrome.storage.local.get('condHelpLang', ({ condHelpLang }) => {
     applyCondLang(condHelpLang || 'vi');
   });
-  document.getElementById("conditionHelpModal")?.classList.add("show");
-  lockScroll();
+  _openModal("conditionHelpModal", "#conditionHelpClose");
 });
+
+_attachModalKeyHandlers("conditionHelpModal", () => _closeModal("conditionHelpModal", _condHelpOpener));
 
 document.getElementById("condLangToggle")?.addEventListener("click", () => {
   applyCondLang(_condLang === 'vi' ? 'en' : 'vi');
 });
 
 document.getElementById("conditionHelpClose")?.addEventListener("click", () => {
-  document.getElementById("conditionHelpModal")?.classList.remove("show");
-  unlockScroll();
+  _closeModal("conditionHelpModal", _condHelpOpener);
 });
 
 document.getElementById("conditionHelpModal")?.addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) { e.currentTarget.classList.remove("show"); unlockScroll(); }
+  if (e.target === e.currentTarget) { _closeModal("conditionHelpModal", _condHelpOpener); }
 });
 
 /* === CARD HELP MODALS === */
@@ -440,18 +491,6 @@ const CARD_HELP_DATA = {
 let _cardHelpLang = 'vi';
 let _cardHelpKey = null;
 
-function openCardHelp(cardKey) {
-  const data = CARD_HELP_DATA[cardKey];
-  if (!data) return;
-  _cardHelpKey = cardKey;
-  chrome.storage.local.get('cardHelpLang', ({ cardHelpLang }) => {
-    _cardHelpLang = cardHelpLang || 'vi';
-    _renderCardHelp();
-  });
-  document.getElementById('cardHelpModal').classList.add('show');
-  lockScroll();
-}
-
 function _renderCardHelp() {
   const data = CARD_HELP_DATA[_cardHelpKey];
   if (!data) return;
@@ -462,12 +501,43 @@ function _renderCardHelp() {
   document.getElementById('cardHelpBody').innerHTML = data[_cardHelpLang];
 }
 
+const CARD_HELP_LABELS = {
+  recording: 'Open Recording guide',
+  addManual: 'Open Manual Action guide',
+  save: 'Open Save Scenario guide',
+  manage: 'Open Manage Scenarios guide',
+  folders: 'Open Manage Folders guide',
+  importExport: 'Open Import / Export guide',
+  sequence: 'Open Sequence Scenarios guide',
+  schedule: 'Open Scheduled Playback guide',
+  csv: 'Open CSV Data-Driven Run guide',
+};
+
+let _cardHelpOpener = null;
+
 document.querySelectorAll('.card-help-btn').forEach(btn => {
+  const cardKey = btn.dataset.card;
+  btn.setAttribute('aria-label', CARD_HELP_LABELS[cardKey] || `Open ${cardKey} help`);
+  btn.setAttribute('aria-haspopup', 'dialog');
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    openCardHelp(btn.dataset.card);
+    _cardHelpOpener = btn;
+    openCardHelp(cardKey);
   });
 });
+
+function openCardHelp(cardKey) {
+  const data = CARD_HELP_DATA[cardKey];
+  if (!data) return;
+  _cardHelpKey = cardKey;
+  chrome.storage.local.get('cardHelpLang', ({ cardHelpLang }) => {
+    _cardHelpLang = cardHelpLang || 'vi';
+    _renderCardHelp();
+  });
+  _openModal('cardHelpModal', '#cardHelpClose');
+}
+
+_attachModalKeyHandlers('cardHelpModal', () => _closeModal('cardHelpModal', _cardHelpOpener));
 
 document.getElementById('cardHelpLangToggle')?.addEventListener('click', () => {
   _cardHelpLang = _cardHelpLang === 'vi' ? 'en' : 'vi';
@@ -476,16 +546,20 @@ document.getElementById('cardHelpLangToggle')?.addEventListener('click', () => {
 });
 
 document.getElementById('cardHelpClose')?.addEventListener('click', () => {
-  document.getElementById('cardHelpModal').classList.remove('show');
-  unlockScroll();
+  _closeModal('cardHelpModal', _cardHelpOpener);
 });
 
 document.getElementById('cardHelpModal')?.addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) { e.currentTarget.classList.remove('show'); unlockScroll(); }
+  if (e.target === e.currentTarget) { _closeModal('cardHelpModal', _cardHelpOpener); }
 });
 
 
 const actionsEl = document.getElementById("actions");
+// Announce list updates to screen readers
+if (actionsEl) {
+  actionsEl.setAttribute("aria-live", "polite");
+  actionsEl.setAttribute("aria-label", "Recorded action list");
+}
 const toggleTheme = document.getElementById("toggleTheme");
 const activationCard = document.getElementById("activationCard");
 const activationStatus = document.getElementById("activationStatus");
@@ -721,7 +795,7 @@ function renderSwitchCaseList(editingIdx = -1) {
 
     if (idx === editingIdx) {
       // ── Edit mode ──
-      row.style.cssText = "display:flex; flex-direction:column; gap:5px; background:var(--secondary-bg); border:1px solid var(--primary); border-radius:6px; padding:6px;";
+      row.className = "sw-case-row-edit";
       const isDefault = c.value === "__default__";
 
       // Build scenario options
@@ -749,18 +823,18 @@ function renderSwitchCaseList(editingIdx = -1) {
       });
 
       row.innerHTML = `
-        <div style="display:flex; gap:5px; align-items:center;">
-          <input class="sw-edit-val" placeholder="Case value (empty = default)"
+        <div class="sw-inline-row">
+          <input class="sw-edit-val sw-edit-input" placeholder="Case value (empty = default)"
             value="${isDefault ? "" : c.value}"
             ${isDefault ? 'disabled title="Default case — value cannot be changed"' : ""}
-            style="flex:1; margin:0; font-size:12px; ${isDefault ? "opacity:0.5;" : ""}" />
+            ${isDefault ? 'style="opacity:0.5;"' : ""} />
         </div>
-        <div style="display:flex; gap:5px; align-items:center;">
-          <select class="sw-edit-scen" style="flex:1; margin:0; font-size:12px;">${optionsHtml}</select>
+        <div class="sw-inline-row">
+          <select class="sw-edit-scen sw-edit-input">${optionsHtml}</select>
         </div>
-        <div style="display:flex; gap:5px; justify-content:flex-end;">
-          <button class="sw-edit-confirm secondary" style="width:auto; margin:0; padding:2px 10px; font-size:11px;">✓</button>
-          <button class="sw-edit-cancel secondary" style="width:auto; margin:0; padding:2px 8px; font-size:11px;">✕</button>
+        <div class="sw-inline-row-end">
+          <button class="sw-edit-confirm secondary sw-edit-btn">✓</button>
+          <button class="sw-edit-cancel secondary sw-edit-btn-cancel">✕</button>
         </div>
       `;
 
@@ -786,13 +860,13 @@ function renderSwitchCaseList(editingIdx = -1) {
 
     } else {
       // ── View mode ──
-      row.style.cssText = "display:flex; gap:6px; align-items:center; background:var(--secondary-bg); border:1px solid var(--border); border-radius:6px; padding:4px 6px;";
+      row.className = "sw-case-row-view";
       const label = c.value === "__default__" ? "⬡ default" : `"${c.value}"`;
       row.innerHTML = `
-        <span style="font-size:12px; color:#e879f9; font-weight:600; min-width:70px; white-space:nowrap;">${label}</span>
-        <span style="font-size:11px; color:var(--muted); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">→ ${c.scenarioName || c.scenarioId}</span>
-        <button data-idx="${idx}" class="sw-case-edit secondary" style="width:auto; flex:0 0 auto; margin:0; padding:2px 7px; font-size:11px;" title="Edit case">✎</button>
-        <button data-idx="${idx}" class="sw-case-del secondary" style="width:auto; flex:0 0 auto; margin:0; padding:2px 7px; font-size:11px;" title="Delete case">🗑</button>
+        <span class="sw-case-label">${label}</span>
+        <span class="sw-case-target">→ ${c.scenarioName || c.scenarioId}</span>
+        <button data-idx="${idx}" class="sw-case-edit secondary sw-case-btn" title="Edit case">✎</button>
+        <button data-idx="${idx}" class="sw-case-del secondary sw-case-btn" title="Delete case">🗑</button>
       `;
       list.appendChild(row);
     }
@@ -868,50 +942,68 @@ function saveCollapsibleState(cardId, isOpen) {
   });
 }
 
+function _toggleCollapsibleCard(h3) {
+  const card = h3.closest(".card.collapsible");
+  card.classList.toggle("collapsed");
+  const isExpanded = !card.classList.contains("collapsed");
+  h3.setAttribute("aria-expanded", String(isExpanded));
+
+  if (card.id) {
+    saveCollapsibleState(card.id, isExpanded);
+  }
+
+  if (isExpanded && card.querySelector("#manualActionType")) {
+    setTimeout(() => { manualActionType.dispatchEvent(new Event("change")); }, 50);
+  }
+}
+
 document.querySelectorAll(".card.collapsible h3").forEach((h3) => {
-  h3.onclick = (e) => {
-    // Don't toggle if clicking on nested interactive elements
+  // Ensure all collapsible headers are keyboard-focusable
+  if (!h3.hasAttribute("tabindex")) h3.setAttribute("tabindex", "0");
+  // Sync aria-expanded with initial CSS state
+  const card = h3.closest(".card.collapsible");
+  h3.setAttribute("aria-expanded", String(!card.classList.contains("collapsed")));
+  h3.setAttribute("role", "button");
+
+  h3.addEventListener("click", (e) => {
     if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
+    _toggleCollapsibleCard(h3);
+  });
 
-    const card = h3.closest(".card.collapsible");
-    card.classList.toggle("collapsed");
-    h3.setAttribute('aria-expanded', String(!card.classList.contains('collapsed')));
-
-    // Save state
-    if (card.id) {
-      saveCollapsibleState(card.id, !card.classList.contains("collapsed"));
-    }
-
-    // If card is being opened and contains manualActionType, trigger onchange
-    if (!card.classList.contains("collapsed") && card.querySelector("#manualActionType")) {
-      setTimeout(() => {
-        manualActionType.dispatchEvent(new Event("change"));
-      }, 50);
-    }
-  };
-});
-
-// Keyboard support for collapsible card headers
-document.querySelectorAll('.card.collapsible h3[tabindex]').forEach(h3 => {
-  h3.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
+  h3.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      h3.click();
+      _toggleCollapsibleCard(h3);
     }
   });
 });
 
 // Handle nested sub-card collapsible (Variables sub-card)
 document.querySelectorAll(".sub-card h4").forEach((h4) => {
-  h4.onclick = (e) => {
-    if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
-    const subCard = h4.closest(".sub-card");
-    subCard.classList.toggle("collapsed");
+  if (!h4.hasAttribute("tabindex")) h4.setAttribute("tabindex", "0");
+  h4.setAttribute("role", "button");
+  const subCard = h4.closest(".sub-card");
+  h4.setAttribute("aria-expanded", String(!subCard.classList.contains("collapsed")));
 
-    // Save state using h4 text as identifier
+  function _toggleSubCard() {
+    subCard.classList.toggle("collapsed");
+    const isExpanded = !subCard.classList.contains("collapsed");
+    h4.setAttribute("aria-expanded", String(isExpanded));
     const subCardId = `sub-${h4.textContent?.trim() || ""}`;
-    saveCollapsibleState(subCardId, !subCard.classList.contains("collapsed"));
-  };
+    saveCollapsibleState(subCardId, isExpanded);
+  }
+
+  h4.addEventListener("click", (e) => {
+    if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
+    _toggleSubCard();
+  });
+
+  h4.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      _toggleSubCard();
+    }
+  });
 });
 
 /* === Message Listeners === */
@@ -984,13 +1076,12 @@ function applyAdvancedMode() {
 }
 
 if (toggleAdvancedMode) {
-  toggleAdvancedMode.onclick = () => {
-    // Toggle: if compact-mode exists, we're in compact → switch to advanced
+  toggleAdvancedMode.addEventListener('click', () => {
     const isAdvanced = document.body.classList.contains("compact-mode");
     applyAdvancedMode(isAdvanced);
     chrome.storage.local.set({ [ADVANCED_MODE_KEY]: isAdvanced });
     document.getElementById('toggleAdvancedMode')?.setAttribute('aria-checked', String(isAdvanced));
-  };
+  });
   toggleAdvancedMode.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -1001,7 +1092,7 @@ if (toggleAdvancedMode) {
 
 // Compact mode button handlers
 if (startRecordCompact) {
-  startRecordCompact.onclick = async () => {
+  startRecordCompact.addEventListener('click', async () => {
     // Query current tab directly to ensure we have the correct tabId
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tab = tabs[0];
@@ -1029,27 +1120,27 @@ if (startRecordCompact) {
       chrome.runtime.sendMessage({ type: "START_RECORD", tabId });
       window.close(); // Close popup so recording can proceed
     });
-  };
+  });
 }
 
 if (stopRecordCompact) {
-  stopRecordCompact.onclick = () => {
+  stopRecordCompact.addEventListener('click', () => {
     chrome.runtime.sendMessage({ type: "STOP_RECORD" });
     setTimeout(previewActionsCompact, 150);
-  };
+  });
 }
 
 if (playScenarioCompact) {
-  playScenarioCompact.onclick = () => {
+  playScenarioCompact.addEventListener('click', () => {
     const scenarioId = scenarioListCompact?.value;
     if (!scenarioId) return;
     chrome.runtime.sendMessage({ type: "START_PLAYBACK_SCENARIO", scenarioId });
     window.close();
-  };
+  });
 }
 
 if (stopPlayCompact) {
-  stopPlayCompact.onclick = () => chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" });
+  stopPlayCompact.addEventListener('click', () => chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" }));
 }
 
 
@@ -1116,13 +1207,31 @@ function renderCompactFolderList() {
   });
 }
 
+function _showFieldError(inputEl, message) {
+  inputEl.classList.add("required-error");
+  inputEl.setAttribute("aria-invalid", "true");
+  let errorEl = inputEl.parentElement.querySelector('[role="alert"].field-error');
+  if (!errorEl) {
+    errorEl = document.createElement("div");
+    errorEl.setAttribute("role", "alert");
+    errorEl.className = "field-error";
+    errorEl.style.cssText = "color:var(--danger);font-size:11px;margin-top:3px;";
+    inputEl.parentElement.insertBefore(errorEl, inputEl.nextSibling);
+  }
+  errorEl.textContent = message;
+  setTimeout(() => {
+    inputEl.classList.remove("required-error");
+    inputEl.setAttribute("aria-invalid", "false");
+    errorEl.textContent = "";
+  }, 2500);
+}
+
 // Compact mode save handler
 if (saveFlowCompact) {
-  saveFlowCompact.onclick = () => {
+  saveFlowCompact.addEventListener('click', () => {
     const name = (scenarioNameCompact?.value || "").trim();
     if (!name) {
-      scenarioNameCompact.classList.add("required-error");
-      setTimeout(() => scenarioNameCompact.classList.remove("required-error"), 2000);
+      _showFieldError(scenarioNameCompact, "Scenario name is required");
       return;
     }
     const folderId = scenarioFolderCompact?.value || null;
@@ -1133,7 +1242,7 @@ if (saveFlowCompact) {
         loadScenarios();
       }
     );
-  };
+  });
 }
 
 // Compact mode preview handler (recorded actions buffer)
@@ -1161,7 +1270,7 @@ function previewActionsCompact() {
 }
 
 if (previewCompact) {
-  previewCompact.onclick = previewActionsCompact;
+  previewCompact.addEventListener('click', previewActionsCompact);
 }
 
 // Compact mode preview handler (selected scenario actions)
@@ -1198,104 +1307,92 @@ function previewScenarioActionsCompact() {
 }
 
 if (previewScenarioCompact) {
-  previewScenarioCompact.onclick = previewScenarioActionsCompact;
+  previewScenarioCompact.addEventListener('click', previewScenarioActionsCompact);
+}
+
+const SELECTOR_LABELS = {
+  css: 'CSS', xpath: 'XPath', fullXpath: 'Full XPath',
+  id: 'ID', name: 'Name', text: 'Text', testId: 'Test ID', dataId: 'Data ID'
+};
+
+function _buildSelectorOptionsHtml(selectors) {
+  let html = '<div style="color:var(--muted);margin-bottom:4px;font-weight:500;">📋 Available selectors (click to use):</div>';
+  for (const [type, value] of Object.entries(selectors)) {
+    if (type === 'textTag' || !value) continue;
+    const label = SELECTOR_LABELS[type] || type;
+    const displayValue = value.length > 60 ? value.substring(0, 60) + '…' : value;
+    html += `<div class="selector-option" data-type="${type}" data-value="${encodeURIComponent(value)}">
+      <strong style="color:var(--primary);">${label}:</strong>
+      <code style="font-size:9px;word-break:break-all;">${displayValue}</code>
+    </div>`;
+  }
+  return html;
+}
+
+function _renderSelectorPanel(selectors, { infoEl, wrapEl, clearBtnId, onSelect, onClear }) {
+  if (!selectors || !infoEl || !wrapEl) return;
+  infoEl.innerHTML = _buildSelectorOptionsHtml(selectors);
+  wrapEl.style.display = 'flex';
+
+  const clearBtn = document.getElementById(clearBtnId);
+  if (clearBtn) {
+    const newBtn = clearBtn.cloneNode(true); // remove prior listeners
+    clearBtn.parentNode.replaceChild(newBtn, clearBtn);
+    newBtn.addEventListener('click', (e) => { e.stopPropagation(); onClear(); });
+  }
+
+  infoEl.querySelectorAll('.selector-option').forEach(opt => {
+    opt.addEventListener('click', () => onSelect(opt.dataset.type, decodeURIComponent(opt.dataset.value)));
+    opt.addEventListener('mouseover', () => { opt.style.background = 'var(--secondary-bg)'; });
+    opt.addEventListener('mouseout', () => { opt.style.background = 'transparent'; });
+  });
 }
 
 // Helper to display all available selectors
 function displayPickedSelectors(selectors) {
   if (!selectors || !pickedSelectorsInfo || !pickedSelectorsWrap) return;
-
   currentPickedSelectors = selectors;
-
-  const selectorLabels = {
-    css: 'CSS', xpath: 'XPath', fullXpath: 'Full XPath',
-    id: 'ID', name: 'Name', text: 'Text', testId: 'Test ID', dataId: 'Data ID'
-  };
-
-  let html = '<div style="color:var(--muted);margin-bottom:4px;font-weight:500;">📋 Available selectors (click to use):</div>';
-  for (const [type, value] of Object.entries(selectors)) {
-    if (type === 'textTag' || !value) continue;
-    const label = selectorLabels[type] || type;
-    const displayValue = value.length > 60 ? value.substring(0, 60) + '…' : value;
-    html += `<div class="selector-option" data-type="${type}" data-value="${encodeURIComponent(value)}">
-      <strong style="color:var(--primary);">${label}:</strong>
-      <code style="font-size:9px;word-break:break-all;">${displayValue}</code>
-    </div>`;
-  }
-  pickedSelectorsInfo.innerHTML = html;
-  pickedSelectorsWrap.style.display = 'flex';
-
-  // Wire up the static Clear button from HTML
-  const clearBtn = document.getElementById('clearPickedSelectorsBtn');
-  if (clearBtn) {
-    clearBtn.onclick = (e) => {
-      e.stopPropagation();
+  _renderSelectorPanel(selectors, {
+    infoEl: pickedSelectorsInfo,
+    wrapEl: pickedSelectorsWrap,
+    clearBtnId: 'clearPickedSelectorsBtn',
+    onSelect: (type, value) => {
+      selectorType.value = type;
+      manualSelector.value = value;
+    },
+    onClear: () => {
       currentPickedSelectors = null;
       manualSelector.value = '';
       pickedSelectorsInfo.innerHTML = '';
       pickedSelectorsWrap.style.display = 'none';
       chrome.storage.local.remove(["lastPickedSelector", "lastPickedSelectors"]);
-    };
-  }
-
-  // Selector option click/hover handlers
-  pickedSelectorsInfo.querySelectorAll('.selector-option').forEach(opt => {
-    opt.onclick = () => {
-      selectorType.value = opt.dataset.type;
-      manualSelector.value = decodeURIComponent(opt.dataset.value);
-    };
-    opt.onmouseover = () => { opt.style.background = 'var(--secondary-bg)'; };
-    opt.onmouseout  = () => { opt.style.background = 'transparent'; };
+    },
   });
 }
 
-// Display picked selectors for drag & drop TARGET (mirrors displayPickedSelectors)
+// Display picked selectors for drag & drop TARGET
 function displayPickedDragdropTargetSelectors(selectors) {
   const info = document.getElementById('pickedDragdropTargetInfo');
   const wrap = document.getElementById('pickedDragdropTargetWrap');
   if (!selectors || !info || !wrap) return;
-
   currentPickedDragdropTargetSelectors = selectors;
-
-  const selectorLabels = {
-    css: 'CSS', xpath: 'XPath', fullXpath: 'Full XPath',
-    id: 'ID', name: 'Name', text: 'Text', testId: 'Test ID', dataId: 'Data ID'
-  };
-
-  let html = '<div style="color:var(--muted);margin-bottom:4px;font-weight:500;">📋 Available selectors (click to use):</div>';
-  for (const [type, value] of Object.entries(selectors)) {
-    if (type === 'textTag' || !value) continue;
-    const label = selectorLabels[type] || type;
-    const displayValue = value.length > 60 ? value.substring(0, 60) + '…' : value;
-    html += `<div class="selector-option" data-type="${type}" data-value="${encodeURIComponent(value)}">
-      <strong style="color:var(--primary);">${label}:</strong>
-      <code style="font-size:9px;word-break:break-all;">${displayValue}</code>
-    </div>`;
-  }
-  info.innerHTML = html;
-  wrap.style.display = 'flex';
-
-  const clearBtn = document.getElementById('clearDragdropTargetBtn');
-  if (clearBtn) {
-    clearBtn.onclick = (e) => {
-      e.stopPropagation();
+  _renderSelectorPanel(selectors, {
+    infoEl: info,
+    wrapEl: wrap,
+    clearBtnId: 'clearDragdropTargetBtn',
+    onSelect: (type, value) => {
+      const dtType = document.getElementById('dragdropTargetSelectorType');
+      if (dtType) dtType.value = type;
+      const t = document.getElementById('dragdropTarget');
+      if (t) t.value = value;
+    },
+    onClear: () => {
       currentPickedDragdropTargetSelectors = null;
       const t = document.getElementById('dragdropTarget');
       if (t) t.value = '';
       info.innerHTML = '';
       wrap.style.display = 'none';
-    };
-  }
-
-  info.querySelectorAll('.selector-option').forEach(opt => {
-    opt.onclick = () => {
-      const dtType = document.getElementById('dragdropTargetSelectorType');
-      if (dtType) dtType.value = opt.dataset.type;
-      const t = document.getElementById('dragdropTarget');
-      if (t) t.value = decodeURIComponent(opt.dataset.value);
-    };
-    opt.onmouseover = () => { opt.style.background = 'var(--secondary-bg)'; };
-    opt.onmouseout  = () => { opt.style.background = 'transparent'; };
+    },
   });
 }
 
@@ -1306,11 +1403,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // If pick was triggered by element screenshot, don't populate the form
     chrome.storage.local.get(["elemShotPickPending"], (flags) => {
       if (flags.elemShotPickPending) {
-        // screenshot flow handles this — just reset picker UI
         pickerMode = false;
         pickElement.textContent = "🎯";
-        pickElement.style.background = "";
-        pickElement.style.color = "";
+        pickElement.classList.remove('picker-active');
         document.getElementById('pickerInstructionBar')?.classList.remove('show');
         return;
       }
@@ -1320,8 +1415,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       selectorType.value = 'css';
       pickerMode = false;
       pickElement.textContent = "🎯";
-      pickElement.style.background = "";
-      pickElement.style.color = "";
+      pickElement.classList.remove('picker-active');
       document.getElementById('pickerInstructionBar')?.classList.remove('show');
     });
     sendResponse({ success: true });
@@ -1496,29 +1590,23 @@ function checkTabActivation() {
 }
 
 if (activateTab) {
-  activateTab.onclick = async () => {
+  activateTab.addEventListener('click', async () => {
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tab = tabs[0];
       if (!tab || !isEligibleTab(tab)) return;
 
       try {
-        // Inject content script
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ["content.js"]
         });
 
-        // Mark tab as activated
         activatedTabs.add(tab.id);
         chrome.storage.local.set({ activatedTabs: Array.from(activatedTabs) });
 
-        // Update UI
         checkTabActivation();
-
-        // Reset connection retry count on successful activation
         connectionRetryCount = 0;
 
-        // Show success message briefly
         activationStatus.textContent = "✓ Activated successfully!";
         activationStatus.style.color = "var(--success)";
         setTimeout(() => checkTabActivation(), 1500);
@@ -1528,11 +1616,11 @@ if (activateTab) {
         activationStatus.style.color = "var(--danger)";
       }
     });
-  };
+  });
 }
 
 if (deactivateTab) {
-  deactivateTab.onclick = () => {
+  deactivateTab.addEventListener('click', () => {
     showConfirm("Remove extension from this tab? You'll need to reactivate to use it again.", () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
@@ -1558,7 +1646,7 @@ if (deactivateTab) {
       });
     });
     }, { title: 'Remove Extension' });
-  };
+  });
 }
 
 // Remove tab from activated list when closed
@@ -1571,15 +1659,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 /* === RECORD === */
 
-startRecord.onclick = async () => {
-  // Query current tab directly to ensure we have the correct tabId
+startRecord.addEventListener('click', async () => {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     const tab = tabs[0];
     if (!tab) return;
 
     const tabId = tab.id;
 
-    // Ensure content script is injected first
     try {
       await chrome.scripting.executeScript({
         target: { tabId: tabId },
@@ -1589,83 +1675,192 @@ startRecord.onclick = async () => {
       console.log("Content script already injected or error:", err);
     }
 
-    // Add to activated tabs if not already
     if (!activatedTabs.has(tabId)) {
       activatedTabs.add(tabId);
       chrome.storage.local.set({ activatedTabs: Array.from(activatedTabs) });
     }
 
-    // Start recording — if a scenario is selected, record into it directly
     const scenarioId = scenarioList?.value || null;
     chrome.runtime.sendMessage({ type: "START_RECORD", tabId, scenarioId });
-    window.close(); // Close popup so recording can proceed
+    window.close();
   });
-};
+});
 
-stopRecord.onclick = () => {
+stopRecord.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: "STOP_RECORD" }, (res) => {
-    void chrome.runtime.lastError;
-    // If recorded into a specific scenario, restore its selection before previewing
+    if (chrome.runtime.lastError) {
+      console.error("STOP_RECORD:", chrome.runtime.lastError.message);
+      return;
+    }
     if (res?.scenarioId && scenarioList) {
       scenarioList.value = res.scenarioId;
     }
     previewActions();
   });
-};
+});
 
 /* === UNDO/REDO === */
 
 function updateUndoRedoState() {
   const scenarioId = scenarioList?.value || null;
   chrome.runtime.sendMessage({ type: "GET_UNDO_REDO_STATE", scenarioId }, (res) => {
-    void chrome.runtime.lastError;
+    if (chrome.runtime.lastError) return; // popup may have lost connection briefly
     if (undoAction) undoAction.disabled = !res?.canUndo;
     if (redoAction) redoAction.disabled = !res?.canRedo;
   });
 }
 
 if (undoAction) {
-  undoAction.onclick = () => {
+  undoAction.addEventListener('click', () => {
     const scenarioId = scenarioList?.value || null;
     chrome.runtime.sendMessage({ type: "UNDO_ACTION", scenarioId }, (res) => {
-      if (res?.success) {
-        previewActions();
-        updateUndoRedoState();
-      }
+      if (res?.success) { previewActions(); updateUndoRedoState(); }
     });
-  };
+  });
 }
 
 if (redoAction) {
-  redoAction.onclick = () => {
+  redoAction.addEventListener('click', () => {
     const scenarioId = scenarioList?.value || null;
     chrome.runtime.sendMessage({ type: "REDO_ACTION", scenarioId }, (res) => {
-      if (res?.success) {
-        previewActions();
-        updateUndoRedoState();
-      }
+      if (res?.success) { previewActions(); updateUndoRedoState(); }
     });
-  };
+  });
 }
 
 /* === PREVIEW === */
 
 let previewRequestId = 0; // Guard against race conditions
 
+function _getActionDisplayValue(a) {
+  let value = a.selector || a.url || a.value || a.code || "";
+  if (a.type === "wait") {
+    const dur = a.delay || a.value;
+    return dur ? `${dur}ms` : "(no duration)";
+  }
+  if (a.type === "condition") {
+    return `${a.conditionType || 'elementExists'}: ${a.selector || a.expectedValue || ''} [skip ${a.skipCount || 1}]`;
+  }
+  if (a.type === "dragdrop") {
+    return `${a.selector || "(no source)"} → ${a.targetSelector || "(no target)"}`;
+  }
+  if (a.type === "screenshot_element") {
+    return a.selector || "(no selector)";
+  }
+  if (a.type === "screenshot_tovar") {
+    const tgt = a.target === "element" ? (a.selector || "?") : a.target === "full" ? "full-page" : "visible";
+    return `${tgt} → $\{${a.varName || "?"}}`;
+  }
+  if (a.type === "switch") {
+    const caseLabels = (a.cases || []).map(c =>
+      `${c.value === "__default__" ? "default" : c.value}→${c.scenarioName || c.scenarioId || "?"}`
+    ).join(" | ");
+    return `${a.switchVar || "?"}: ${caseLabels || "(no cases)"}`;
+  }
+  if (a.type === "readdom") {
+    const from = a.readFrom === "attr" ? `attr:${a.attrName || "?"}` : (a.readFrom || "text");
+    return `${a.selector || "(no selector)"} → ${from} → $\{${a.varName || "?"}}`;
+  }
+  return value;
+}
+
+function createActionListItem(a, i, scenarioId) {
+  const li = document.createElement("li");
+  li.classList.add("action", `action-${a.type}`);
+  if (a.disabled) li.classList.add("action-disabled");
+  li.dataset.index = i;
+  li.draggable = true;
+
+  const value = _getActionDisplayValue(a);
+  const delayText = (a.delay && a.type !== "wait") ? ` (${a.delay}ms)` : "";
+  const labelHtml = a.label
+    ? `<span style="display:block;font-size:10px;color:var(--primary);opacity:0.8;font-style:italic;margin-top:1px;">${escHtml(a.label)}</span>`
+    : "";
+
+  li.innerHTML = `
+    <span class="index">${i + 1}.</span>
+    <span class="type">${getActionIcon(a.type)}${escHtml(a.type)}</span>
+    <span class="value" title="${escHtml(value)}${escHtml(delayText)}">
+      ${escHtml(value)}${escHtml(delayText)}
+      ${labelHtml}
+    </span>
+  `;
+
+  li.addEventListener("dragstart", (e) => {
+    dragFromIndex = Number(li.dataset.index);
+    li.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+  });
+  li.addEventListener("dragend", () => {
+    li.classList.remove("dragging");
+    document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+  });
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "btn-row";
+
+  const actionLabel = a.label ? `"${a.label}"` : `${a.type} #${i + 1}`;
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.textContent = a.disabled ? "Enable" : "Disable";
+  toggleBtn.className = "secondary";
+  toggleBtn.setAttribute("aria-label", `${a.disabled ? "Enable" : "Disable"} action ${i + 1}: ${actionLabel}`);
+  toggleBtn.addEventListener("click", () => {
+    chrome.runtime.sendMessage(
+      { type: "TOGGLE_ACTION_DISABLED", scenarioId, index: i },
+      () => { previewActions(); updateUndoRedoState(); }
+    );
+  });
+
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "Edit";
+  editBtn.className = "secondary";
+  editBtn.setAttribute("aria-label", `Edit action ${i + 1}: ${actionLabel}`);
+  editBtn.addEventListener("click", () => startEdit(i, a));
+
+  const delBtn = document.createElement("button");
+  delBtn.textContent = "Delete";
+  delBtn.className = "danger";
+  delBtn.setAttribute("aria-label", `Delete action ${i + 1}: ${actionLabel}`);
+  delBtn.addEventListener("click", () => {
+    showConfirm("Delete this action?", () => {
+      chrome.runtime.sendMessage(
+        { type: "REMOVE_ACTION", scenarioId, index: i },
+        () => { previewActions(); updateUndoRedoState(); }
+      );
+    }, { title: 'Delete Action', danger: true });
+  });
+
+  const copyBtn = document.createElement("button");
+  copyBtn.textContent = "Copy";
+  copyBtn.className = "secondary";
+  copyBtn.setAttribute("aria-label", `Copy action ${i + 1}: ${actionLabel}`);
+  copyBtn.addEventListener("click", () => {
+    actionClipboard = JSON.parse(JSON.stringify(a));
+    showToast("Action copied to clipboard", "success");
+    previewActions();
+  });
+
+  btnRow.appendChild(toggleBtn);
+  btnRow.appendChild(copyBtn);
+  btnRow.appendChild(editBtn);
+  btnRow.appendChild(delBtn);
+  li.appendChild(btnRow);
+  return li;
+}
+
 function previewActions() {
   const scenarioId = scenarioList.value || null;
   const savedScroll = actionsEl.scrollTop;
-  actionsEl.innerHTML = "";
-
   const currentRequestId = ++previewRequestId;
+
+  actionsEl.innerHTML = '<li class="action-loading">Loading…</li>';
 
   chrome.runtime.sendMessage(
     { type: "GET_PREVIEW_ACTIONS", scenarioId },
     (res) => {
-      // Ignore if a newer request has been made
       if (currentRequestId !== previewRequestId) return;
 
-      // Clear again to avoid duplicates from race conditions
       actionsEl.innerHTML = "";
 
       if (!res?.actions?.length) {
@@ -1676,153 +1871,17 @@ function previewActions() {
       }
 
       res.actions.forEach((a, i) => {
-        if (a == null) return;
-        const li = document.createElement("li");
-        li.classList.add("action", `action-${a.type}`);
-        if (a.disabled) {
-          li.classList.add("action-disabled");
-        }
-        li.dataset.index = i;
-        li.draggable = true;
-
-        let value = a.selector || a.url || a.value || a.code || "";
-        const delayText = (a.delay && a.type !== "wait") ? ` (${a.delay}ms)` : "";
-
-        // Show wait info (support both old actions saved with a.value and new ones with a.delay)
-        if (a.type === "wait") {
-          const dur = a.delay || a.value;
-          value = dur ? `${dur}ms` : "(no duration)";
-        }
-
-        // Show condition info for condition actions
-        if (a.type === "condition") {
-          value = `${a.conditionType || 'elementExists'}: ${a.selector || a.expectedValue || ''} [skip ${a.skipCount || 1}]`;
-        }
-
-        // Show dragdrop info
-        if (a.type === "dragdrop") {
-          value = `${a.selector || "(no source)"} → ${a.targetSelector || "(no target)"}`;
-        }
-
-        // Show screenshot_element info
-        if (a.type === "screenshot_element") {
-          value = a.selector || "(no selector)";
-        }
-
-        // Show screenshot_tovar info
-        if (a.type === "screenshot_tovar") {
-          const tgt = a.target === "element" ? (a.selector || "?") : a.target === "full" ? "full-page" : "visible";
-          value = `${tgt} → $\{${a.varName || "?"}}`;
-        }
-
-        // Show switch info
-        if (a.type === "switch") {
-          const caseLabels = (a.cases || []).map(c =>
-            `${c.value === "__default__" ? "default" : c.value}→${c.scenarioName || c.scenarioId || "?"}`
-          ).join(" | ");
-          value = `${a.switchVar || "?"}: ${caseLabels || "(no cases)"}`;
-        }
-
-        // Show readdom info
-        if (a.type === "readdom") {
-          const from = a.readFrom === "attr" ? `attr:${a.attrName || "?"}` : (a.readFrom || "text");
-          value = `${a.selector || "(no selector)"} → ${from} → $\{${a.varName || "?"}}`;
-        }
-
-        // Show indicator if multiple selectors available
-        const labelHtml = a.label
-          ? `<span style="display:block;font-size:10px;color:var(--primary);opacity:0.8;font-style:italic;margin-top:1px;">${escHtml(a.label)}</span>`
-          : "";
-        li.innerHTML = `
-          <span class="index">${i + 1}.</span>
-          <span class="type">${getActionIcon(a.type)}${escHtml(a.type)}</span>
-          <span class="value" title="${escHtml(value)}${escHtml(delayText)}">
-            ${escHtml(value)}${escHtml(delayText)}
-            ${labelHtml}
-          </span>
-        `;
-
-        /* ===== Drag events ===== */
-        li.addEventListener("dragstart", (e) => {
-          dragFromIndex = Number(li.dataset.index);
-          li.classList.add("dragging");
-          e.dataTransfer.effectAllowed = "move";
-        });
-
-        li.addEventListener("dragend", () => {
-          li.classList.remove("dragging");
-          document
-            .querySelectorAll(".drag-over")
-            .forEach((el) => el.classList.remove("drag-over"));
-        });
-
-        /* ===== Toggle Disable / Edit / Delete buttons ===== */
-        const btnRow = document.createElement("div");
-        btnRow.className = "btn-row";
-
-        // Toggle disable button
-        const toggleBtn = document.createElement("button");
-        toggleBtn.textContent = a.disabled ? "Enable" : "Disable";
-        toggleBtn.className = "secondary";
-        toggleBtn.onclick = () => {
-          chrome.runtime.sendMessage(
-            { type: "TOGGLE_ACTION_DISABLED", scenarioId, index: i },
-            () => {
-              previewActions();
-              updateUndoRedoState();
-            }
-          );
-        };
-
-        const editBtn = document.createElement("button");
-        editBtn.textContent = "Edit";
-        editBtn.className = "secondary";
-        editBtn.onclick = () => startEdit(i, a);
-
-        const delBtn = document.createElement("button");
-        delBtn.textContent = "Delete";
-        delBtn.className = "danger";
-        delBtn.onclick = () => {
-          showConfirm("Delete this action?", () => {
-            chrome.runtime.sendMessage(
-              { type: "REMOVE_ACTION", scenarioId, index: i },
-              () => {
-                previewActions();
-                updateUndoRedoState();
-              }
-            );
-          }, { title: 'Delete Action', danger: true });
-        };
-
-        const copyBtn = document.createElement("button");
-        copyBtn.textContent = "Copy";
-        copyBtn.className = "secondary";
-        copyBtn.onclick = () => {
-          actionClipboard = JSON.parse(JSON.stringify(a));
-          showToast("Action copied to clipboard", "success");
-          // Refresh to show/hide paste button
-          previewActions();
-        };
-
-        btnRow.appendChild(toggleBtn);
-        btnRow.appendChild(copyBtn);
-        btnRow.appendChild(editBtn);
-        btnRow.appendChild(delBtn);
-        li.appendChild(btnRow);
-
-        actionsEl.appendChild(li);
+        if (a != null) actionsEl.appendChild(createActionListItem(a, i, scenarioId));
       });
 
       // Paste button — shown when clipboard has data
       if (actionClipboard) {
         const pasteLi = document.createElement("li");
-        pasteLi.className = "action-navigate";
-        pasteLi.style.cssText = "justify-content:center;cursor:default;gap:6px;";
+        pasteLi.className = "action-navigate action-paste-li";
         const pasteBtn = document.createElement("button");
         pasteBtn.textContent = `📋 Paste: ${actionClipboard.type}${actionClipboard.label ? ` (${actionClipboard.label})` : ""}`;
-        pasteBtn.className = "secondary";
-        pasteBtn.style.cssText = "width:auto;font-size:11px;margin:0;";
-        pasteBtn.onclick = () => {
+        pasteBtn.className = "secondary action-paste-btn";
+        pasteBtn.addEventListener("click", () => {
           const newAction = JSON.parse(JSON.stringify(actionClipboard));
           delete newAction.disabled;
           const sid = scenarioList.value || null;
@@ -1831,22 +1890,18 @@ function previewActions() {
             previewActions();
             updateUndoRedoState();
           });
-        };
+        });
         const clearClipboardBtn = document.createElement("button");
         clearClipboardBtn.textContent = "✕";
-        clearClipboardBtn.className = "secondary";
+        clearClipboardBtn.className = "secondary action-paste-btn";
         clearClipboardBtn.title = "Clear clipboard";
-        clearClipboardBtn.style.cssText = "width:auto;font-size:11px;margin:0;opacity:0.65;";
-        clearClipboardBtn.onclick = () => {
-          actionClipboard = null;
-          previewActions();
-        };
+        clearClipboardBtn.style.opacity = "0.65";
+        clearClipboardBtn.addEventListener("click", () => { actionClipboard = null; previewActions(); });
         pasteLi.appendChild(pasteBtn);
         pasteLi.appendChild(clearClipboardBtn);
         actionsEl.appendChild(pasteLi);
       }
 
-      // Update action count badge
       const count = res.actions?.length || 0;
       if (actionCount) {
         actionCount.textContent = count;
@@ -1938,7 +1993,7 @@ function updateActionOrderFromDOM() {
   );
 }
 
-preview.onclick = previewActions;
+preview.addEventListener('click', previewActions);
 
 /* === DELAY PRESET HELPER === */
 function setManualDelayUI(ms) {
@@ -2058,16 +2113,16 @@ document.getElementById("childConditionToggle")?.addEventListener("click", () =>
 });
 
 // Update badge when any child condition input changes
+const _debouncedUpdateChildCondBadge = debounce(_updateChildCondBadge, 120);
 ["condChildValueEquals","condChildTextContains","condChildIdContains","condChildClassContains","condChildType"].forEach(id => {
-  document.getElementById(id)?.addEventListener("input", _updateChildCondBadge);
+  document.getElementById(id)?.addEventListener("input", _debouncedUpdateChildCondBadge);
   document.getElementById(id)?.addEventListener("change", _updateChildCondBadge);
 });
 
-pickElement.onclick = () => {
+pickElement.addEventListener('click', () => {
   pickerMode = !pickerMode;
   pickElement.textContent = pickerMode ? "✓ Pick Mode" : "🎯";
-  pickElement.style.background = pickerMode ? "#22c55e" : "#e5e7eb";
-  pickElement.style.color = pickerMode ? "white" : "#111827";
+  pickElement.classList.toggle('picker-active', pickerMode);
 
   // Save form state before picking so it can be restored when popup reopens
   if (pickerMode) {
@@ -2109,7 +2164,7 @@ pickElement.onclick = () => {
       document.getElementById('pickerInstructionBar')?.classList.remove('show');
     }
   });
-};
+});
 
 // Selector listener is registered at top already
 
@@ -2148,120 +2203,66 @@ function autoCreateMissingVariables(action) {
   });
 }
 
-addManualAction.onclick = () => {
-  const selector = manualSelector.value?.trim() || "";
-  const type = manualActionType.value?.trim() || "";
-  const value = manualValue.value?.trim() || "";
-  const manualDelayPreset = document.getElementById("manualDelayPreset");
-  const delayVal = (manualDelayPreset?.value === "custom")
-    ? (manualDelay.value?.trim() || "")
-    : (manualDelayPreset?.value || "");
+// Types that don't require a selector field
+const TYPES_NO_SELECTOR_REQUIRED = new Set([
+  "script", "navigate", "screenshot", "screenshot_full",
+  "readdom", "screenshot_tovar", "wait", "switch"
+]);
 
-  console.log(
-    "Add action - Selector:",
-    selector,
-    "Type:",
-    type,
-    "Value:",
-    value
-  );
-
-  if (!selector) {
-    // For script, navigate and screenshot actions, selector is optional
-    if (type !== "script" && type !== "navigate" && type !== "screenshot" && type !== "screenshot_full" && type !== "readdom" && type !== "screenshot_tovar" && type !== "wait" && type !== "switch") {
-      manualSelector.classList.add('required-error');
-      manualSelector.focus();
-      setTimeout(() => {
-        manualSelector.classList.remove('required-error');
-      }, 2000);
-      return;
-    }
-  }
-
-  manualSelector.classList.remove('required-error');
-
+function validateActionForm(type, selector, delayVal) {
   if (!type) {
-    manualActionType.classList.add('required-error');
-    manualActionType.focus();
-    setTimeout(() => {
-      manualActionType.classList.remove('required-error');
-    }, 2000);
-    return;
+    return { valid: false, el: manualActionType, msg: "Action type is required" };
   }
-
-  manualActionType.classList.remove('required-error');
-
-  // Validate wait duration
+  if (!selector && !TYPES_NO_SELECTOR_REQUIRED.has(type)) {
+    return { valid: false, el: manualSelector, msg: "Selector is required for this action type" };
+  }
   if (type === "wait") {
     const d = parseInt(delayVal, 10);
     if (!delayVal || isNaN(d) || d <= 0) {
-      const preset = document.getElementById("manualDelayPreset");
-      if (preset) { preset.classList.add('required-error'); setTimeout(() => preset.classList.remove('required-error'), 2000); }
-      showToast("Wait action requires a duration greater than 0ms", "error");
-      return;
+      return {
+        valid: false,
+        el: document.getElementById("manualDelayPreset"),
+        msg: "Wait action requires a duration greater than 0ms",
+        toastOnly: true,
+      };
     }
   }
+  return { valid: true };
+}
 
+function buildActionFromForm(type, selector, value, delayVal) {
   const action = { type };
 
   if (selector) {
     action.selector = selector;
-
-    // Always save all selectors if available from pick, otherwise save manual entry
-    if (currentPickedSelectors) {
-      action.selectors = currentPickedSelectors;
-    } else {
-      // Manual entry - create selectors object with the selected type
-      const selectedType = selectorType?.value || 'css';
-      action.selectors = { [selectedType]: selector };
-    }
+    action.selectors = currentPickedSelectors || { [selectorType?.value || 'css']: selector };
   }
 
-  if (type === "input" && value) {
-    action.value = value;
-  }
+  if (type === "input" && value)                              action.value = value;
+  if (type === "navigate" && value)                           action.url   = value;
+  if (type === "script" && value)                             action.code  = value;
+  if ((type === "screenshot" || type === "screenshot_full") && value) action.value = value;
 
-  // For navigate actions store as `url` so background playback can use it
-  if (type === "navigate" && value) {
-    action.url = value;
-  }
-
-  if (type === "script" && value) {
-    action.code = value;
-  }
-
-  // For screenshot actions store filename as `value`
-  if ((type === "screenshot" || type === "screenshot_full") && value) {
-    action.value = value;
-  }
-
-  // For readdom actions store variable name, readFrom, and optional attrName
   if (type === "readdom") {
     const varName = document.getElementById("readdomVarName")?.value?.trim();
-    if (!varName) {
-      showToast("Variable name is required for Read DOM action", "error");
-      return;
-    }
-    action.varName = varName;
+    if (!varName) { showToast("Variable name is required for Read DOM action", "error"); return null; }
+    action.varName  = varName;
     action.readFrom = document.getElementById("readdomReadFrom")?.value || "text";
-    const attrName = document.getElementById("readdomAttrName")?.value?.trim();
+    const attrName  = document.getElementById("readdomAttrName")?.value?.trim();
     if (action.readFrom === "attr" && attrName) action.attrName = attrName;
-    if (selector) action.selector = selector;
   }
 
-  // For screenshot_tovar actions
   if (type === "screenshot_tovar") {
     const varName = document.getElementById("screenshotTovarVarName")?.value?.trim();
-    if (!varName) { showToast("Variable name is required for Screenshot → Variable", "error"); return; }
-    action.varName  = varName;
-    action.target   = document.getElementById("screenshotTovarTarget")?.value || "page";
+    if (!varName) { showToast("Variable name is required for Screenshot → Variable", "error"); return null; }
+    action.varName = varName;
+    action.target  = document.getElementById("screenshotTovarTarget")?.value || "page";
     if (action.target === "element") {
-      if (!selector) { showToast("Selector (①) is required for Element target", "error"); return; }
+      if (!selector) { showToast("Selector (①) is required for Element target", "error"); return null; }
       action.selector = selector;
     }
   }
 
-  // For click/input/hover: attach child conditions if filled
   if (["click", "input", "hover"].includes(type)) {
     const ve  = document.getElementById("condChildValueEquals")?.value?.trim();
     const tc  = document.getElementById("condChildTextContains")?.value?.trim();
@@ -2279,75 +2280,87 @@ addManualAction.onclick = () => {
     }
   }
 
-  // For dragdrop actions store target selector
   if (type === "dragdrop") {
     const target = document.getElementById("dragdropTarget")?.value?.trim();
-    if (!target) { showToast("Drop target selector is required for Drag & Drop action", "error"); return; }
-    action.targetSelector = target;
-    const dtSelectorType = document.getElementById("dragdropTargetSelectorType")?.value || "css";
+    if (!target) { showToast("Drop target selector is required for Drag & Drop action", "error"); return null; }
+    action.targetSelector  = target;
+    const dtSelectorType   = document.getElementById("dragdropTargetSelectorType")?.value || "css";
     action.targetSelectors = currentPickedDragdropTargetSelectors || { [dtSelectorType]: target };
   }
 
-  // For condition actions store condition parameters
   if (type === "condition") {
     action.conditionType = conditionType?.value || "elementExists";
     action.expectedValue = conditionExpectedValue?.value?.trim() || "";
-    action.skipCount = parseInt(conditionSkipCount?.value, 10) || 1;
+    action.skipCount     = parseInt(conditionSkipCount?.value, 10) || 1;
   }
 
-  // For switch actions store variable name + cases array
   if (type === "switch") {
     const switchVar = document.getElementById("switchVar")?.value?.trim();
-    if (!switchVar) { showToast("Variable name is required for Switch action", "error"); return; }
-    if (!_switchCases.length) { showToast("Add at least one case to the Switch", "error"); return; }
+    if (!switchVar)       { showToast("Variable name is required for Switch action", "error"); return null; }
+    if (!_switchCases.length) { showToast("Add at least one case to the Switch", "error"); return null; }
     action.switchVar = switchVar;
-    action.cases = _switchCases.map(c => ({ ...c }));
+    action.cases     = _switchCases.map(c => ({ ...c }));
   }
 
-  // Include delay if specified and valid
   if (delayVal) {
     const d = parseInt(delayVal, 10);
     if (!isNaN(d) && d > 0) action.delay = d;
   }
 
-  // Include label if provided
   const labelVal = document.getElementById("manualLabel")?.value?.trim();
   if (labelVal) action.label = labelVal;
 
+  return action;
+}
+
+addManualAction.addEventListener('click', () => {
+  const selector  = manualSelector.value?.trim() || "";
+  const type      = manualActionType.value?.trim() || "";
+  const value     = manualValue.value?.trim() || "";
+  const preset    = document.getElementById("manualDelayPreset");
+  const delayVal  = (preset?.value === "custom")
+    ? (manualDelay.value?.trim() || "")
+    : (preset?.value || "");
+
+  const check = validateActionForm(type, selector, delayVal);
+  if (!check.valid) {
+    if (check.toastOnly) {
+      if (check.el) _showFieldError(check.el, check.msg);
+      showToast(check.msg, "error");
+    } else {
+      _showFieldError(check.el, check.msg);
+      check.el?.focus();
+    }
+    return;
+  }
+
+  const action = buildActionFromForm(type, selector, value, delayVal);
+  if (!action) return; // buildActionFromForm already showed a toast
+
   autoCreateMissingVariables(action);
 
-  // If editing an existing action, send UPDATE_ACTION
+  const onDone = () => {
+    clearEditState();
+    chrome.storage.local.remove("manualFormDraft");
+    previewActions();
+    updateUndoRedoState();
+  };
+
   if (editing) {
-    chrome.runtime.sendMessage(
-      {
-        type: "UPDATE_ACTION",
-        scenarioId: editing.scenarioId,
-        index: editing.index,
-        action,
-      },
-      () => {
-        clearEditState();
-        chrome.storage.local.remove("manualFormDraft");
-        previewActions();
-        updateUndoRedoState();
-      }
-    );
+    chrome.runtime.sendMessage({
+      type: "UPDATE_ACTION",
+      scenarioId: editing.scenarioId,
+      index: editing.index,
+      action,
+    }, onDone);
   } else {
-    chrome.runtime.sendMessage(
-      {
-        type: "ADD_MANUAL_ACTION",
-        action,
-        scenarioId: scenarioList.value || null,
-      },
-      () => {
-        clearEditState();
-        chrome.storage.local.remove("manualFormDraft");
-        previewActions();
-        updateUndoRedoState();
-      }
-    );
+    chrome.runtime.sendMessage({
+      type: "ADD_MANUAL_ACTION",
+      action,
+      scenarioId: scenarioList.value || null,
+    }, onDone);
   }
-};
+});
 
 function startEdit(index, action) {
   manualSelector.value = action.selector || "";
@@ -2621,10 +2634,10 @@ function clearEditState() {
   _updateChildCondBadge();
 }
 
-cancelEdit.onclick = () => {
+cancelEdit.addEventListener('click', () => {
   clearEditState();
   chrome.storage.local.remove("manualFormDraft");
-};
+});
 
 /* === DRAFT: persist Add Manual Action card across popup close/reopen === */
 
@@ -2842,16 +2855,12 @@ document.getElementById("condChildMatchAll")?.addEventListener("change", debounc
 
 /* === SAVE === */
 
-saveFlow.onclick = () => {
+saveFlow.addEventListener('click', () => {
   const name = scenarioName.value.trim();
 
-  // Validation
   if (!name) {
-    scenarioName.classList.add('required-error');
+    _showFieldError(scenarioName, "Scenario name is required");
     scenarioName.focus();
-    setTimeout(() => {
-      scenarioName.classList.remove('required-error');
-    }, 2000);
     return;
   }
 
@@ -2859,7 +2868,6 @@ saveFlow.onclick = () => {
 
   const folderId = scenarioFolder.value || null;
 
-  // Fix #9: preserve createdAt when overwriting a same-name scenario
   const existing = Object.entries(scenariosCache).find(
     ([, s]) => s.name === name && (s.folderId || null) === folderId
   );
@@ -2870,18 +2878,16 @@ saveFlow.onclick = () => {
     scenarioFolder.value = "";
     loadScenarios();
   });
-};
+});
 
 // New scenario: clear current recording/actions buffer so manual adds start a fresh scenario
-newFlow.onclick = () => {
+newFlow.addEventListener('click', () => {
   showConfirm("Create new empty scenario buffer? This will clear current unsaved actions.", () => {
     chrome.runtime.sendMessage({ type: "START_NEW_SCENARIO" }, () => {
-    // Clear UI preview and manual inputs
     manualSelector.value = "";
     manualActionType.value = "";
     manualValue.value = "";
     manualValue.style.display = "none";
-    // Reset Manage Scenarios selection to placeholder and clear persisted selection
     try {
       scenarioList.value = "";
       toggleScenarioActions(false);
@@ -2889,11 +2895,10 @@ newFlow.onclick = () => {
     } catch (e) {
       // ignore
     }
-
     actionsEl.innerHTML = `<li class="empty">New scenario (no actions)</li>`;
     });
   }, { title: 'New Scenario', okLabel: 'Continue' });
-};
+});
 
 /* === LOAD SCENARIOS === */
 
@@ -3277,8 +3282,7 @@ function renderFoldersManagementUI() {
         const input = contentDiv.querySelector("input");
         const newName = input.value.trim();
         if (!newName) {
-          input.classList.add("required-error");
-          setTimeout(() => input.classList.remove("required-error"), 2000);
+          _showFieldError(input, "Folder name is required");
           return;
         }
         chrome.runtime.sendMessage({ type: "RENAME_FOLDER", folderId: currentFolderId, name: newName }, () => {
@@ -3324,8 +3328,7 @@ if (createFolderAction) {
   createFolderAction.onclick = () => {
     const name = newFolderInput.value.trim();
     if (!name) {
-      newFolderInput.classList.add("required-error");
-      setTimeout(() => newFolderInput.classList.remove("required-error"), 2000);
+      _showFieldError(newFolderInput, "Folder name is required");
       return;
     }
 
@@ -3403,10 +3406,7 @@ document.getElementById("confirmRename")?.addEventListener("click", () => {
   const newName = renameInput?.value.trim();
   const scenarioId = scenarioList?.value;
   if (!newName || !scenarioId) {
-    if (renameInput) {
-      renameInput.classList.add("required-error");
-      setTimeout(() => renameInput.classList.remove("required-error"), 2000);
-    }
+    if (renameInput) _showFieldError(renameInput, "Scenario name is required");
     return;
   }
   chrome.runtime.sendMessage({ type: "RENAME_SCENARIO", scenarioId, newName }, () => {
@@ -3770,18 +3770,15 @@ function updateRunListDisplay() {
   // Task 2 — Paste item nếu clipboard có dữ liệu
   if (sequenceClipboard) {
     const pasteLi = document.createElement("li");
-    pasteLi.className = "action-navigate";
-    pasteLi.style.justifyContent = "center";
-    pasteLi.style.cursor = "default";
+    pasteLi.className = "action-navigate action-paste-li";
     const pasteBtn = document.createElement("button");
     pasteBtn.textContent = `Paste: ${sequenceClipboard.name} (${sequenceClipboard.delay}ms)`;
-    pasteBtn.className = "secondary";
-    pasteBtn.style.cssText = "width:auto;font-size:11px;margin:0;";
-    pasteBtn.onclick = () => {
+    pasteBtn.className = "secondary action-paste-btn";
+    pasteBtn.addEventListener("click", () => {
       runList.push({ ...sequenceClipboard });
       showToast("Item pasted", "success");
       updateRunListDisplay();
-    };
+    });
     pasteLi.appendChild(pasteBtn);
     runListDisplay.appendChild(pasteLi);
   }
@@ -3805,8 +3802,7 @@ saveSequenceAsScenario.onclick = () => {
 
   const name = sequenceName.value?.trim();
   if (!name) {
-    sequenceName.classList.add("required-error");
-    setTimeout(() => sequenceName.classList.remove("required-error"), 2000);
+    _showFieldError(sequenceName, "Sequence name is required");
     return;
   }
 
