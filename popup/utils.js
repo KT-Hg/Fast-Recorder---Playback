@@ -30,6 +30,9 @@ let _toastTimer = null;
 export function showToast(msg, type = 'success') {
   const toast = document.getElementById('toast');
   if (!toast) return;
+  // Errors should interrupt AT; success/info should not.
+  toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
   toast.textContent = msg;
   toast.className = `toast toast-${type} show`;
   clearTimeout(_toastTimer);
@@ -55,6 +58,42 @@ export function unlockScroll() {
   window.scrollTo(0, _savedScrollY);
 }
 
+/* === Focus Trap (for modal dialogs) === */
+
+const FOCUSABLE_SEL = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+export function trapFocus(modalEl) {
+  const prevActive = document.activeElement;
+  const getFocusable = () => Array.from(modalEl.querySelectorAll(FOCUSABLE_SEL))
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+
+  const focusable = getFocusable();
+  if (focusable.length) focusable[0].focus();
+
+  const handler = (e) => {
+    if (e.key !== 'Tab') return;
+    const items = getFocusable();
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+  modalEl.addEventListener('keydown', handler);
+
+  return () => {
+    modalEl.removeEventListener('keydown', handler);
+    if (prevActive && typeof prevActive.focus === 'function') {
+      try { prevActive.focus(); } catch (_) {}
+    }
+  };
+}
+
 /* === Confirm / Alert Modals === */
 
 export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel = '' } = {}) {
@@ -67,8 +106,15 @@ export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false,
   okBtn.className = danger ? 'danger' : '';
   cancelBtn.style.display = '';
   modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
   lockScroll();
-  const close = () => { modal.classList.remove('show'); unlockScroll(); };
+  const releaseFocus = trapFocus(modal);
+  const close = () => {
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+    releaseFocus();
+    unlockScroll();
+  };
   cancelBtn.onclick = close;
   okBtn.onclick = () => { close(); onConfirm(); };
 }
@@ -83,8 +129,16 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
   okBtn.className = '';
   cancelBtn.style.display = 'none';
   modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
   lockScroll();
-  const close = () => { modal.classList.remove('show'); cancelBtn.style.display = ''; unlockScroll(); };
+  const releaseFocus = trapFocus(modal);
+  const close = () => {
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+    cancelBtn.style.display = '';
+    releaseFocus();
+    unlockScroll();
+  };
   cancelBtn.onclick = close;
   okBtn.onclick = close;
 }

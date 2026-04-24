@@ -826,54 +826,15 @@ button:disabled {
   animation: fadeSlideIn 0.15s ease forwards;
 }
 
-/* === Picked Selectors Panel === */
-#pickedSelectorsWrap {
-  margin-top: 4px;
-  flex-direction: column;
-  gap: 4px;
-}
-
-#pickedSelectorsInfo {
-  padding: 6px;
-  background: var(--list-bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10px;
-  max-height: 100px;
-  overflow-y: auto;
-}
-
-#pickedSelectorsInfo .selector-option {
-  cursor: pointer;
-  padding: 2px 4px;
-  margin: 2px 0;
-  border-radius: 3px;
-  transition: background 0.15s;
-}
-
-#clearPickedSelectorsBtn {
-  align-self: flex-end;
-  font-size: 11px;
-  padding: 2px 10px;
-  height: 24px;
-  border-radius: 4px;
-  opacity: 0.75;
-}
-
-#clearPickedSelectorsBtn:hover:not(:disabled) {
-  opacity: 1;
-  border-color: var(--danger);
-  color: var(--danger);
-  background: var(--bg);
-}
-
-/* === Picked Dragdrop Target Panel === */
+/* === Picked Selectors / Dragdrop Target Panel (shared) === */
+#pickedSelectorsWrap,
 #pickedDragdropTargetWrap {
   margin-top: 4px;
   flex-direction: column;
   gap: 4px;
 }
 
+#pickedSelectorsInfo,
 #pickedDragdropTargetInfo {
   padding: 6px;
   background: var(--list-bg);
@@ -884,6 +845,7 @@ button:disabled {
   overflow-y: auto;
 }
 
+#pickedSelectorsInfo .selector-option,
 #pickedDragdropTargetInfo .selector-option {
   cursor: pointer;
   padding: 2px 4px;
@@ -893,9 +855,10 @@ button:disabled {
 }
 
 #pickedDragdropTargetInfo .selector-option:hover {
-  background: var(--hover-bg);
+  background: var(--secondary-bg);
 }
 
+#clearPickedSelectorsBtn,
 #clearDragdropTargetBtn {
   align-self: flex-end;
   font-size: 11px;
@@ -905,6 +868,7 @@ button:disabled {
   opacity: 0.75;
 }
 
+#clearPickedSelectorsBtn:hover:not(:disabled),
 #clearDragdropTargetBtn:hover:not(:disabled) {
   opacity: 1;
   border-color: var(--danger);
@@ -1186,7 +1150,7 @@ body.modal-open {
 .playback-progress-fill {
   height: 100%; border-radius: 2px;
   background: var(--primary);
-  transition: width 0.3s ease;
+  transition: width 0.25s ease-out;
 }
 
 /* === Card Help Button === */
@@ -1272,11 +1236,11 @@ body.modal-open {
   pointer-events: auto;
 }
 .condition-help-modal .condition-help-content {
-  transform: translateY(-6px);
-  transition: transform 0.18s ease;
+  transform: translateY(-8px) scale(0.98);
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
 .condition-help-modal.show .condition-help-content {
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 
 .condition-help-content {
@@ -1880,3 +1844,62 @@ textarea:focus-visible,
   transform: none;
 }
 
+/* === Resume Banner === */
+.resume-banner {
+  display: none;
+  position: fixed;
+  bottom: 48px;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #1e40af;
+  color: #fff;
+  padding: 10px 14px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
+}
+.resume-banner-msg { flex: 1; }
+.resume-banner-btn {
+  background: #22c55e;
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+}
+.resume-banner-dismiss {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: none;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+}
+
+/* === Tab panel entrance animation === */
+@keyframes tabPanelIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.tab-panel.active {
+  animation: tabPanelIn 0.18s ease-out;
+}
+
+/* === Reduced Motion === */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
