@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- popup.html — Tab-based Popup UI layout and styles (Redesign v2) -->
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>Scenario Recorder</title>
@@ -9,8 +9,8 @@
 </head>
 
 <body>
-  <div id="recordingTopBar">● RECORDING — Actions are being captured</div>
-  <div id="pickerInstructionBar"></div>
+  <div id="recordingTopBar" role="status" aria-live="polite">● RECORDING — Actions are being captured</div>
+  <div id="pickerInstructionBar" role="status" aria-live="polite"></div>
 
   <!-- ===== STICKY HEADER: Status Bar + Tab Nav ===== -->
   <div class="sticky-header" id="activationCard">
@@ -23,7 +23,7 @@
       <span class="status-progress" id="statusText"></span>
       <button id="activateTab" class="success" style="display:none;">Activate</button>
       <button id="deactivateTab" class="danger" style="display:none;">Remove</button>
-      <button class="icon-btn" id="toggleTheme" title="Toggle theme">🌙</button>
+      <button class="icon-btn" id="toggleTheme" title="Toggle theme" aria-label="Toggle dark or light theme"><span aria-hidden="true">🌙</span></button>
     </div>
     <!-- Now Playing bar (click to toggle mini panel) -->
     <div class="now-playing-bar" id="nowPlayingBar" style="display:none;">
@@ -142,7 +142,7 @@
             <option value="fullXpath">Full XPath</option>
           </select>
           <input id="manualSelector" class="flex-1" placeholder="Selector (e.g., #btn, .class, //div)" />
-          <button id="pickElement" class="secondary w-auto">🎯</button>
+          <button id="pickElement" class="secondary w-auto" aria-label="Pick element on page" title="Pick element"><span aria-hidden="true">🎯</span></button>
         </div>
         <div id="pickedSelectorsWrap" class="hidden-by-default">
           <div id="pickedSelectorsInfo"></div>
@@ -199,7 +199,7 @@
             <option value="fullXpath">Full XPath</option>
           </select>
           <input id="dragdropTarget" class="flex-1" placeholder="CSS selector of drop target" />
-          <button id="dragdropTargetPick" class="secondary w-auto" title="Pick drop target element on page">🎯</button>
+          <button id="dragdropTargetPick" class="secondary w-auto" title="Pick drop target element on page" aria-label="Pick drop target element on page"><span aria-hidden="true">🎯</span></button>
         </div>
         <div id="pickedDragdropTargetWrap" class="hidden-by-default">
           <div id="pickedDragdropTargetInfo"></div>
@@ -785,9 +785,9 @@
   <!-- ===== MODALS ===== -->
 
   <!-- Random Variable Modal -->
-  <div id="randomModal" class="random-modal">
+  <div id="randomModal" class="random-modal" role="dialog" aria-modal="true" aria-labelledby="randomModalTitle" aria-hidden="true">
     <div class="random-modal-content">
-      <h4>Generate Random Variable</h4>
+      <h4 id="randomModalTitle">Generate Random Variable</h4>
       <label>Variable Name:</label>
       <input id="randomVarName" placeholder="e.g., randomEmail" />
       <label>Type:</label>
@@ -806,7 +806,7 @@
   </div>
 
   <!-- Card Help Modal -->
-  <div id="cardHelpModal" class="condition-help-modal">
+  <div id="cardHelpModal" class="condition-help-modal" role="dialog" aria-modal="true" aria-labelledby="cardHelpTitle" aria-hidden="true">
     <div class="condition-help-content">
       <div class="condition-help-header">
         <h4 id="cardHelpTitle">Hướng dẫn</h4>
@@ -820,7 +820,7 @@
   </div>
 
   <!-- Condition Help Modal -->
-  <div id="conditionHelpModal" class="condition-help-modal">
+  <div id="conditionHelpModal" class="condition-help-modal" role="dialog" aria-modal="true" aria-labelledby="condHelpTitle" aria-hidden="true">
     <div class="condition-help-content">
       <div class="condition-help-header">
         <h4 id="condHelpTitle">Hướng dẫn Condition (If)</h4>
@@ -834,7 +834,7 @@
   </div>
 
   <!-- Confirm / Alert Modal -->
-  <div id="confirmModal" class="confirm-modal">
+  <div id="confirmModal" class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMsg" aria-hidden="true">
     <div class="confirm-modal-content">
       <h4 id="confirmModalTitle">Confirm</h4>
       <p id="confirmModalMsg"></p>
@@ -848,16 +848,16 @@
   <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
 
   <!-- RESUME BANNER -->
-  <div id="resumeBanner" style="display:none;position:fixed;bottom:48px;left:0;right:0;z-index:9999;background:#1e40af;color:#fff;padding:10px 14px;display:none;align-items:center;gap:10px;font-size:13px;box-shadow:0 -2px 8px rgba(0,0,0,0.3);">
-    <span id="resumeBannerMsg" style="flex:1"></span>
-    <button id="resumeBtn" style="background:#22c55e;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;">▶ Resume</button>
-    <button id="resumeDismissBtn" style="background:rgba(255,255,255,0.2);color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;">✕</button>
+  <div id="resumeBanner" class="resume-banner" role="alert" aria-live="polite">
+    <span id="resumeBannerMsg" class="resume-banner-msg"></span>
+    <button id="resumeBtn" class="resume-banner-btn">▶ Resume</button>
+    <button id="resumeDismissBtn" class="resume-banner-dismiss" aria-label="Dismiss resume banner">✕</button>
   </div>
 
   <!-- DIFF MODAL -->
-  <div id="diffModal" class="random-modal" style="align-items:flex-start; padding-top:30px;">
+  <div id="diffModal" class="random-modal" role="dialog" aria-modal="true" aria-labelledby="diffModalTitle" aria-hidden="true" style="align-items:flex-start; padding-top:30px;">
     <div class="random-modal-content" style="width:380px; max-height:85vh; overflow-y:auto;">
-      <h4 style="margin:0 0 10px;">🔍 Image Diff</h4>
+      <h4 id="diffModalTitle" style="margin:0 0 10px;"><span aria-hidden="true">🔍</span> Image Diff</h4>
       <label style="font-size:12px; color:var(--muted);">Image A (source)</label>
       <input type="file" id="diffFileA" accept="image/*" style="margin-top:4px;" />
       <label style="font-size:12px; color:var(--muted); margin-top:8px; display:block;">Image B (compare)</label>

@@ -255,6 +255,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- Manual action editing --- */
   if (type === "ADD_MANUAL_ACTION") {
+    if (!request.action || typeof request.action !== 'object') {
+      sendResponse({ success: false });
+      return;
+    }
     if (request.scenarioId) {
       mutateScenarioActions(request.scenarioId, (a) => [...a, request.action])
         .then(() => sendResponse({ success: true }))

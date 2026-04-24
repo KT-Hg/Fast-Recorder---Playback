@@ -288,20 +288,21 @@ button:disabled {
   max-height: 200px;
   overflow-y: auto;
   overflow-x: hidden;
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .actions li {
-  padding: 10px 8px 10px 12px;
-  margin-bottom: 6px;
-  border-radius: 6px;
+  padding: 5px 6px 5px 10px;
+  margin-bottom: 3px;
+  border-radius: 5px;
   background: var(--list-bg);
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
   cursor: grab;
   transition: all 0.15s ease;
   position: relative;
+  border-left-width: 3px;
 }
 
 .actions li:hover {
@@ -324,19 +325,19 @@ button:disabled {
 
 .actions .index {
   color: var(--muted);
-  width: 24px;
-  min-width: 24px;
-  flex: 0 0 24px;
+  width: 18px;
+  min-width: 18px;
+  flex: 0 0 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .actions .type {
   font-weight: 600;
   text-transform: uppercase;
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .actions .value {
@@ -347,6 +348,7 @@ button:disabled {
   max-width: none;
   flex: 1 1 auto;
   min-width: 0;
+  font-size: 10px;
 }
 
 /* fix type column to equal size */
@@ -356,10 +358,35 @@ button:disabled {
   max-width: 70px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Action list chính: 110px để hiện đủ "screenshot_element" (dài nhất 18 ký tự) */
+/* Sequence/Schedule list dùng 70px mặc định vì .type chứa tên scenario ngắn hơn */
+#actions .type {
+  flex: 0 0 110px;
+  min-width: 110px;
+  max-width: 110px;
+}
+
+/* Buttons trong list */
+.actions .btn-row {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.actions li button {
+  width: auto !important;
+  font-size: 9px !important;
+  height: 20px !important;
+  padding: 1px 6px !important;
+  margin-top: 0 !important;
+  border-radius: 3px !important;
 }
 
 .action-click {
@@ -712,6 +739,15 @@ button:disabled {
   display: none !important;
 }
 
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.card.collapsible:not(.collapsed) > *:not(h3) {
+  animation: fadeSlideIn 0.18s ease forwards;
+}
+
 /* === Nested Collapsible Sub-cards === */
 .sub-card {
   border: 1px solid var(--border);
@@ -767,54 +803,38 @@ button:disabled {
   display: none;
 }
 
-/* === Picked Selectors Panel === */
-#pickedSelectorsWrap {
-  margin-top: 4px;
-  flex-direction: column;
-  gap: 4px;
+/* === Action List Loading State === */
+.action-loading {
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px;
+  opacity: 0.7;
+  animation: pulse 1s ease-in-out infinite alternate;
 }
 
-#pickedSelectorsInfo {
-  padding: 6px;
-  background: var(--list-bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10px;
-  max-height: 100px;
-  overflow-y: auto;
+@keyframes pulse {
+  from { opacity: 0.4; }
+  to   { opacity: 0.9; }
 }
 
-#pickedSelectorsInfo .selector-option {
-  cursor: pointer;
-  padding: 2px 4px;
-  margin: 2px 0;
-  border-radius: 3px;
-  transition: background 0.15s;
-}
-
-#clearPickedSelectorsBtn {
-  align-self: flex-end;
-  font-size: 11px;
-  padding: 2px 10px;
-  height: 24px;
-  border-radius: 4px;
-  opacity: 0.75;
-}
-
-#clearPickedSelectorsBtn:hover:not(:disabled) {
-  opacity: 1;
-  border-color: var(--danger);
+/* === Field Validation Error Message === */
+.field-error {
   color: var(--danger);
-  background: var(--bg);
+  font-size: 11px;
+  margin-top: 3px;
+  animation: fadeSlideIn 0.15s ease forwards;
 }
 
-/* === Picked Dragdrop Target Panel === */
+/* === Picked Selectors / Dragdrop Target Panel (shared) === */
+#pickedSelectorsWrap,
 #pickedDragdropTargetWrap {
   margin-top: 4px;
   flex-direction: column;
   gap: 4px;
 }
 
+#pickedSelectorsInfo,
 #pickedDragdropTargetInfo {
   padding: 6px;
   background: var(--list-bg);
@@ -825,6 +845,7 @@ button:disabled {
   overflow-y: auto;
 }
 
+#pickedSelectorsInfo .selector-option,
 #pickedDragdropTargetInfo .selector-option {
   cursor: pointer;
   padding: 2px 4px;
@@ -834,9 +855,10 @@ button:disabled {
 }
 
 #pickedDragdropTargetInfo .selector-option:hover {
-  background: var(--hover-bg);
+  background: var(--secondary-bg);
 }
 
+#clearPickedSelectorsBtn,
 #clearDragdropTargetBtn {
   align-self: flex-end;
   font-size: 11px;
@@ -846,6 +868,7 @@ button:disabled {
   opacity: 0.75;
 }
 
+#clearPickedSelectorsBtn:hover:not(:disabled),
 #clearDragdropTargetBtn:hover:not(:disabled) {
   opacity: 1;
   border-color: var(--danger);
@@ -1127,7 +1150,7 @@ body.modal-open {
 .playback-progress-fill {
   height: 100%; border-radius: 2px;
   background: var(--primary);
-  transition: width 0.3s ease;
+  transition: width 0.25s ease-out;
 }
 
 /* === Card Help Button === */
@@ -1195,7 +1218,7 @@ body.modal-open {
 
 /* === Condition Help Modal === */
 .condition-help-modal {
-  display: none;
+  display: flex;
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
@@ -1204,8 +1227,21 @@ body.modal-open {
   align-items: flex-start;
   justify-content: center;
   padding-top: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
 }
-.condition-help-modal.show { display: flex; }
+.condition-help-modal.show {
+  opacity: 1;
+  pointer-events: auto;
+}
+.condition-help-modal .condition-help-content {
+  transform: translateY(-8px) scale(0.98);
+  transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.condition-help-modal.show .condition-help-content {
+  transform: translateY(0) scale(1);
+}
 
 .condition-help-content {
   background: var(--card);
@@ -1443,6 +1479,94 @@ textarea:focus-visible,
   padding: 6px 12px;
 }
 #pickerInstructionBar.show { display: block; }
+
+/* === Picker Active State === */
+#pickElement.picker-active {
+  background: var(--success) !important;
+  color: #fff !important;
+  border-color: var(--success-dark) !important;
+}
+
+/* === Switch-case row layout === */
+.sw-case-row-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--secondary-bg);
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  padding: 6px;
+}
+.sw-case-row-view {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  background: var(--secondary-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.sw-case-label {
+  font-size: 12px;
+  color: #e879f9;
+  font-weight: 600;
+  min-width: 70px;
+  white-space: nowrap;
+}
+.sw-case-target {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sw-case-btn {
+  width: auto !important;
+  flex: 0 0 auto;
+  margin: 0 !important;
+  padding: 2px 7px !important;
+  font-size: 11px !important;
+}
+.sw-inline-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.sw-inline-row-end {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+.sw-edit-input {
+  flex: 1;
+  margin: 0 !important;
+  font-size: 12px !important;
+}
+.sw-edit-btn {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 2px 10px !important;
+  font-size: 11px !important;
+}
+.sw-edit-btn-cancel {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 2px 8px !important;
+  font-size: 11px !important;
+}
+
+/* === Paste row in action/sequence list === */
+.action-paste-li {
+  justify-content: center;
+  cursor: default;
+  gap: 6px;
+}
+.action-paste-btn {
+  width: auto !important;
+  font-size: 11px !important;
+  margin: 0 !important;
+}
 
 /* === Screenshot Grid === */
 .screenshot-grid {
@@ -1720,3 +1844,62 @@ textarea:focus-visible,
   transform: none;
 }
 
+/* === Resume Banner === */
+.resume-banner {
+  display: none;
+  position: fixed;
+  bottom: 48px;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  background: #1e40af;
+  color: #fff;
+  padding: 10px 14px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
+}
+.resume-banner-msg { flex: 1; }
+.resume-banner-btn {
+  background: #22c55e;
+  color: #fff;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+}
+.resume-banner-dismiss {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border: none;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  width: auto;
+  margin: 0;
+}
+
+/* === Tab panel entrance animation === */
+@keyframes tabPanelIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.tab-panel.active {
+  animation: tabPanelIn 0.18s ease-out;
+}
+
+/* === Reduced Motion === */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
