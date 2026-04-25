@@ -1568,6 +1568,86 @@ textarea:focus-visible,
   margin: 0 !important;
 }
 
+/* === Loop Controls Row === */
+.loop-controls-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.loop-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  border-radius: 8px;
+  padding: 3px 8px;
+  flex: 0 0 auto;
+}
+
+.loop-chip-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.loop-chip #loopCount {
+  width: 42px;
+  margin: 0;
+  font-size: 12px;
+  padding: 2px 5px;
+  border-color: transparent;
+  background: var(--card);
+  border-radius: 5px;
+}
+
+.loop-chip-x {
+  font-size: 11px;
+  color: var(--primary);
+  opacity: 0.7;
+  font-weight: 600;
+}
+
+.loop-delay-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.loop-delay-select {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.loop-delay-custom {
+  flex: 1;
+  margin: 0;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.loop-actions {
+  display: flex;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.loop-action-btn {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 5px 9px !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+}
+
 /* === Screenshot Grid === */
 .screenshot-grid {
   display: grid;

@@ -394,11 +394,14 @@
         <button id="playScenario" class="primary-gradient" style="flex: 1; font-size: 12px; padding: 6px 8px;">▶ Play</button>
         <button id="stopPlay" class="secondary" style="flex: 0 0 auto; width: auto; padding: 6px 12px; font-size: 13px;" title="Stop playback">■</button>
       </div>
-      <div class="row" style="gap:4px; margin-top:4px; align-items:center;">
-        <label style="font-size:11px; color:var(--muted); white-space:nowrap;">Loop</label>
-        <input id="loopCount" type="number" min="1" max="999" value="1" style="width:52px; margin:0; font-size:12px; padding:3px 6px;" title="Number of times to repeat" />
-        <label style="font-size:11px; color:var(--muted); white-space:nowrap;">× delay</label>
-        <select id="loopDelayPreset" style="width:80px; margin:0; font-size:12px; padding:3px 4px; flex:0 0 auto;" title="Delay between loops">
+      <div class="loop-controls-row">
+        <div class="loop-chip">
+          <span class="loop-chip-label">Loop</span>
+          <input id="loopCount" type="number" min="1" max="999" value="1" title="Number of times to repeat" />
+          <span class="loop-chip-x">×</span>
+        </div>
+        <span class="loop-delay-lbl">delay</span>
+        <select id="loopDelayPreset" class="loop-delay-select" title="Delay between loops">
           <option value="500" selected>0.5s</option>
           <option value="1000">1s</option>
           <option value="2000">2s</option>
@@ -407,10 +410,12 @@
           <option value="10000">10s</option>
           <option value="custom">Custom…</option>
         </select>
-        <input id="loopDelay" type="number" min="500" placeholder="ms" style="display:none; width:60px; margin:0; font-size:12px; padding:3px 6px; flex:0 0 auto;" title="Delay between loops (ms)" />
-        <button id="renameScenario" class="secondary" style="flex: 0 0 auto; width: auto; padding: 6px 11px; font-size: 14px; line-height: 1;" title="Rename scenario">✎</button>
-        <button id="duplicateScenario" class="secondary" style="flex: 0 0 auto; width: auto; padding: 6px 10px; font-size: 13px;" title="Duplicate scenario">⧉</button>
-        <button id="showMoveSection" class="secondary" style="flex: 0 0 auto; width: auto; padding: 6px 10px; font-size: 13px;" title="Move to folder">⇄</button>
+        <input id="loopDelay" type="number" min="500" placeholder="ms" class="loop-delay-custom" style="display:none;" title="Delay between loops (ms)" />
+        <div class="loop-actions">
+          <button id="renameScenario" class="secondary loop-action-btn" title="Rename scenario">✎</button>
+          <button id="duplicateScenario" class="secondary loop-action-btn" title="Duplicate scenario">⧉</button>
+          <button id="showMoveSection" class="secondary loop-action-btn" title="Move to folder">⇄</button>
+        </div>
       </div>
 
       <div id="renameSection" style="display: none; margin-top: 6px;">
