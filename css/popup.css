@@ -589,6 +589,29 @@ button:disabled {
   filter: brightness(1.05);
 }
 
+.var-actions-cell {
+  white-space: nowrap;
+  width: 1%;
+}
+
+.variables-table .var-random-btn {
+  width: 28px;
+  padding: 4px;
+  margin: 0 4px 0 0;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+.variables-table .var-random-btn:hover { opacity: 1; }
+
+/* Readonly variable name in "edit row" modal mode */
+.random-modal input[readonly] {
+  opacity: 0.65;
+  cursor: default;
+  background: var(--secondary-bg, #f3f4f6);
+}
+
 /* === Random Modal === */
 .random-modal {
   display: none;
