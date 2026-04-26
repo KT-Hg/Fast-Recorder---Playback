@@ -1648,6 +1648,169 @@ textarea:focus-visible,
   line-height: 1 !important;
 }
 
+/* === CSV Data-Driven Run — Group 2 UI === */
+
+/* Format label */
+.csv-format-label {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* Feature 3: locked format warning row */
+.csv-format-locked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1.5px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.csv-format-lock-icon { font-size: 13px; flex: 0 0 auto; }
+.csv-format-lock-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--danger);
+}
+.csv-format-clear-btn {
+  background: transparent;
+  border: 1.5px solid var(--danger);
+  border-radius: 6px;
+  color: var(--danger);
+  font-size: 11px;
+  padding: 3px 9px !important;
+  width: auto !important;
+  margin: 0 !important;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.csv-format-clear-btn:hover {
+  background: var(--danger);
+  color: #fff;
+  transform: none;
+}
+
+/* Feature 1: Progress wrap */
+.csv-progress-wrap { margin-top: 8px; }
+
+.csv-badges-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.csv-prog-text {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.csv-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1.5px solid;
+  flex: 0 0 auto;
+}
+.csv-badge-ok {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+}
+.csv-badge-fail {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  opacity: 0.35;
+  transition: opacity 0.2s;
+}
+.csv-badge-fail.has-fail { opacity: 1; }
+
+.csv-dual-bar {
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+}
+.csv-bar-ok {
+  height: 100%;
+  background: var(--success);
+  transition: width 0.4s ease;
+}
+.csv-bar-fail {
+  height: 100%;
+  background: var(--danger);
+  transition: width 0.4s ease;
+}
+
+/* Feature 4: Countdown */
+.csv-countdown-wrap { margin-top: 5px; }
+.csv-cd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 3px;
+}
+.csv-countdown-text {
+  font-size: 11px;
+  color: var(--secondary);
+  font-style: italic;
+}
+.csv-cd-next-label {
+  font-size: 10px;
+  color: var(--muted);
+}
+.csv-cd-bar-track {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.csv-cd-bar {
+  height: 100%;
+  width: 100%;
+  background: var(--secondary);
+  border-radius: 2px;
+}
+
+/* Feature 2: Split stop button — height matches Start button */
+.csv-action-row { align-items: stretch; }
+.csv-action-row > button { margin-top: 0; }
+
+.csv-stop-split {
+  display: flex;
+  align-self: stretch;
+  border: 2px solid var(--danger);
+  border-radius: 8px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.csv-stop-split button {
+  background: var(--card);
+  color: var(--danger);
+  border: none;
+  border-radius: 0;
+  width: auto !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  font-size: 12px !important;
+  font-weight: 600;
+  white-space: nowrap;
+  height: 100%;
+}
+.csv-stop-split button:first-child {
+  border-right: 1.5px solid var(--danger);
+}
+.csv-stop-split button:hover {
+  background: var(--danger);
+  color: #fff;
+  transform: none;
+}
+
 /* === Screenshot Grid === */
 .screenshot-grid {
   display: grid;
@@ -1720,6 +1883,17 @@ textarea:focus-visible,
 
 .now-playing-bar.switched:hover {
   background: color-mix(in srgb, var(--secondary) 20%, var(--card));
+}
+
+.now-playing-bar.csv-done {
+  background: color-mix(in srgb, var(--success) 8%, var(--card));
+  border-bottom-color: color-mix(in srgb, var(--success) 25%, var(--border));
+  opacity: 0.85;
+}
+
+.now-playing-bar.csv-done:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--success) 14%, var(--card));
 }
 
 .now-playing-icon {
@@ -1822,6 +1996,42 @@ textarea:focus-visible,
 
 .pb-panel-fill-csv {
   background: var(--primary);
+}
+
+.pb-panel-csv-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pb-panel-csv-stop {
+  display: flex;
+  border: 2px solid var(--danger);
+  border-radius: 8px;
+  overflow: hidden;
+  width: 100%;
+}
+.pb-panel-csv-stop button {
+  flex: 1;
+  background: var(--card);
+  color: var(--danger);
+  border: none;
+  border-radius: 0;
+  margin: 0 !important;
+  padding: 5px 0 !important;
+  font-size: 12px !important;
+  font-weight: 600;
+  width: auto !important;
+  height: auto !important;
+  white-space: nowrap;
+}
+.pb-panel-csv-stop button:first-child {
+  border-right: 1.5px solid var(--danger);
+}
+.pb-panel-csv-stop button:hover {
+  background: var(--danger);
+  color: #fff;
+  transform: none;
 }
 
 .status-bar .status-dot {

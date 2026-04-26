@@ -71,6 +71,8 @@ export function startConnectionCheck() {
 /* === Now Playing bar + mini panel (private) === */
 
 let _panelOpen = false;
+let _csvDoneActive = false;
+let _csvDoneTimeout = null;
 
 function _setNowPlaying(show, { icon = '▶', name = '', step = '', switched = false } = {}) {
   const bar      = document.getElementById('nowPlayingBar');
@@ -265,12 +267,39 @@ export function updateStatusIndicator() {
       if (statusText) statusText.textContent = '';
       if (recordingBadge) recordingBadge.classList.remove('show');
       if (recordingTopBar) recordingTopBar.classList.remove('show');
-      _setNowPlaying(false);
+      if (!_csvDoneActive) _setNowPlaying(false);
       _setProgress(false, 0, 0);
       _scheduleNextPoll(false);
     }
   });
 }
+
+/* === CSV done bar hold (3 min) === */
+
+export function setCsvDoneBar(scenarioName, summary) {
+  _csvDoneActive = true;
+  clearTimeout(_csvDoneTimeout);
+  _setNowPlaying(true, { icon: '✓', name: scenarioName, step: summary });
+  const bar = document.getElementById('nowPlayingBar');
+  if (bar) bar.classList.add('csv-done');
+  _csvDoneTimeout = setTimeout(() => {
+    _csvDoneActive = false;
+    _csvDoneTimeout = null;
+    const b = document.getElementById('nowPlayingBar');
+    if (b) b.classList.remove('csv-done');
+    _setNowPlaying(false);
+  }, 3 * 60 * 1000);
+}
+
+export function clearCsvDoneBar() {
+  _csvDoneActive = false;
+  clearTimeout(_csvDoneTimeout);
+  _csvDoneTimeout = null;
+  const bar = document.getElementById('nowPlayingBar');
+  if (bar) bar.classList.remove('csv-done');
+}
+
+export function openPbPanel() { _setPanelOpen(true); }
 
 /* === Init === */
 
@@ -288,5 +317,6 @@ document.getElementById('pbPanelStop')?.addEventListener('click', (e) => {
   e.stopPropagation();
   chrome.runtime.sendMessage({ type: 'STOP_PLAYBACK' });
   chrome.runtime.sendMessage({ type: 'STOP_SEQUENCE' });
+  chrome.runtime.sendMessage({ type: 'STOP_CSV_PLAYBACK' });
   _setPanelOpen(false);
 });

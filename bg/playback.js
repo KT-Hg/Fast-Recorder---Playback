@@ -381,9 +381,11 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     }
 
     await new Promise(r => chrome.storage.local.set({ csvRunResults: runResults }, r));
-    chrome.runtime.sendMessage({ type: "CSV_ROW_DONE", rowIndex: i, total: rows.length }).catch(() => {});
+    const failRows = runResults.filter(r => r.failures?.length > 0).length;
+    const isLast = i === rows.length - 1;
+    chrome.runtime.sendMessage({ type: "CSV_ROW_DONE", rowIndex: i, total: rows.length, failRows, isLast, delayBetween }).catch(() => {});
 
-    if (i < rows.length - 1 && delayBetween > 0) {
+    if (!isLast && delayBetween > 0) {
       await new Promise((r) => setTimeout(r, delayBetween));
     }
   }
@@ -391,5 +393,6 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   state.csvPlayback.active = false;
   updateBadge();
   sendCompletionNotification("CSV Run complete", `${runResults.length} / ${rows.length} rows for "${scenario.name}"`);
-  chrome.runtime.sendMessage({ type: "CSV_RUN_DONE", total: runResults.length }).catch(() => {});
+  const totalFailRows = runResults.filter(r => r.failures?.length > 0).length;
+  chrome.runtime.sendMessage({ type: "CSV_RUN_DONE", total: runResults.length, failRows: totalFailRows, scenarioName: scenario.name || scenarioId }).catch(() => {});
 }

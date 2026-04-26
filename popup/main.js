@@ -10,7 +10,7 @@ import { escHtml, getActionIcon, showToast, showConfirm, showAlert,
          lockScroll, unlockScroll, validateNumberInput,
          safeSendTabMessage, isEligibleTab, debounce } from './utils.js';
 import { updateRangeFill } from './settings.js';
-import { startConnectionCheck } from './connection.js';
+import { startConnectionCheck, setCsvDoneBar, clearCsvDoneBar, openPbPanel } from './connection.js';
 import { addVariableRow } from './variables.js';
 
 /* === Init Main === */
@@ -1039,6 +1039,29 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.type === "STORAGE_ERROR") {
     showToast(`✗ Storage error: ${msg.msg}`, "error");
   }
+});
+
+/* === CSV realtime message listeners === */
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "CSV_ROW_DONE") return;
+  _stopCsvCountdown();
+  const csvRow = msg.rowIndex + 1, csvTotal = msg.total;
+  _updateCsvBadges(csvRow, csvTotal, msg.failRows ?? 0, false);
+  if (!msg.isLast) _startCsvCountdown(msg.delayBetween ?? _csvDelayBetween);
+  const stepEl = document.getElementById('nowPlayingStep');
+  if (stepEl) stepEl.textContent = `Row Done ${csvRow}/${csvTotal}`;
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "CSV_RUN_DONE") return;
+  const failRows = msg.failRows ?? 0;
+  _updateCsvBadges(msg.total, msg.total, failRows, true);
+  _setCsvState('done');
+  const name    = msg.scenarioName || _csvRunScenarioName || "CSV Run";
+  const summary = failRows > 0
+    ? `✓ ${msg.total - failRows} · ✗ ${failRows} of ${msg.total}`
+    : `✓ ${msg.total} rows done`;
+  setCsvDoneBar(name, summary);
 });
 
 /* === Resumable Playback Banner === */
@@ -4079,6 +4102,33 @@ loadSchedules();
 
 /* === CSV DATA-DRIVEN RUN === */
 
+// Extract ${variable} names used as inputs in a scenario's actions (mirrors collectRelevantKeys in bg/playback.js)
+function _getInputVarsFromScenario(scenarioId) {
+  const scenario = scenariosCache[scenarioId];
+  if (!scenario?.actions) return new Set();
+  const keys = new Set();
+  const VAR_RE = /\$\{([^}]+)\}/g;
+  const FIELDS = ["selector", "value", "url", "code", "expectedValue", "switchVar"];
+  const COND_FIELDS = ["valueEquals", "textContains"];
+  for (const a of scenario.actions) {
+    for (const f of FIELDS) {
+      if (typeof a[f] === "string") {
+        let m; VAR_RE.lastIndex = 0;
+        while ((m = VAR_RE.exec(a[f])) !== null) keys.add(m[1]);
+      }
+    }
+    if (a.conditions && typeof a.conditions === "object") {
+      for (const f of COND_FIELDS) {
+        if (typeof a.conditions[f] === "string") {
+          let m; VAR_RE.lastIndex = 0;
+          while ((m = VAR_RE.exec(a.conditions[f])) !== null) keys.add(m[1]);
+        }
+      }
+    }
+  }
+  return keys;
+}
+
 function renderCsvScenarioSelect() {
   const sel = document.getElementById("csvScenarioSelect");
   if (!sel) return;
@@ -4127,6 +4177,82 @@ function parseCSV(text) {
 }
 
 let csvParsed = null;
+let _csvDelayBetween = 500;
+let _csvCountdownInterval = null;
+let _csvRunScenarioName = "";
+
+function _updateCsvBadges(row, total, failRows, done) {
+  const progText  = document.getElementById("pbPanelCsvProgText");
+  const badgeOk   = document.getElementById("pbPanelCsvBadgeOk");
+  const badgeFail = document.getElementById("pbPanelCsvBadgeFail");
+  const barOk     = document.getElementById("pbPanelBarOk");
+  const barFail   = document.getElementById("pbPanelBarFail");
+  const statusEl  = document.getElementById("csvStatus");
+
+  const success = row - failRows;
+  const pct = total > 0 ? (v) => Math.round(v / total * 100) + "%" : () => "0%";
+
+  if (done) {
+    if (progText) progText.textContent = `${total - failRows} passed · ${failRows} failed`;
+    if (barOk)    barOk.style.width    = pct(total - failRows);
+    if (barFail)  barFail.style.width  = pct(failRows);
+    if (statusEl) statusEl.textContent = `✓ ${total - failRows} passed · ✗ ${failRows} failed`;
+  } else if (!row) {
+    if (progText) progText.textContent = total > 0 ? `Row Done 0 / ${total}` : "";
+    if (barOk)    barOk.style.width    = "0%";
+    if (barFail)  barFail.style.width  = "0%";
+  } else {
+    if (progText) progText.textContent = `Row Done ${row} / ${total}`;
+    if (barOk)    barOk.style.width    = pct(success);
+    if (barFail)  barFail.style.width  = pct(failRows);
+  }
+  if (badgeOk)   badgeOk.textContent   = `✓ ${done ? total - failRows : success}`;
+  if (badgeFail) {
+    badgeFail.textContent = `✗ ${failRows}`;
+    badgeFail.classList.toggle("has-fail", failRows > 0);
+  }
+}
+
+function _startCsvCountdown(delayMs) {
+  if (!delayMs || delayMs <= 0) return;
+  const cdWrap = document.getElementById("pbPanelCsvCountdown");
+  const cdText = document.getElementById("pbPanelCsvCdText");
+  const cdBar  = document.getElementById("pbPanelCsvCdBar");
+  if (!cdWrap) return;
+
+  if (_csvCountdownInterval) clearInterval(_csvCountdownInterval);
+  cdWrap.style.display = "block";
+
+  let rem = Math.round(delayMs / 1000);
+  if (cdText) cdText.textContent = `⏱ next row in ${rem}s`;
+  _csvCountdownInterval = setInterval(() => {
+    rem--;
+    if (rem <= 0) {
+      clearInterval(_csvCountdownInterval);
+      if (cdText) cdText.textContent = "";
+      if (cdWrap) cdWrap.style.display = "none";
+    } else {
+      if (cdText) cdText.textContent = `⏱ next row in ${rem}s`;
+    }
+  }, 1000);
+
+  if (cdBar) {
+    cdBar.style.transition = "none";
+    cdBar.style.width = "100%";
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      cdBar.style.transition = `width ${delayMs}ms linear`;
+      cdBar.style.width = "0%";
+    }));
+  }
+}
+
+function _stopCsvCountdown() {
+  if (_csvCountdownInterval) { clearInterval(_csvCountdownInterval); _csvCountdownInterval = null; }
+  const cdWrap = document.getElementById("pbPanelCsvCountdown");
+  const cdBar  = document.getElementById("pbPanelCsvCdBar");
+  if (cdWrap) cdWrap.style.display = "none";
+  if (cdBar)  { cdBar.style.transition = "none"; cdBar.style.width = "100%"; }
+}
 
 document.getElementById("csvFile")?.addEventListener("change", (e) => {
   const file = e.target.files?.[0];
@@ -4483,22 +4609,10 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
     const results = res?.results;
     if (!results?.length) { showToast("No results to download yet", "error"); return; }
 
-    const afterDownload = () => {
-      chrome.storage.local.remove(["csvRunResults", "csvScreenshots", "csvSessionData"]);
-      csvParsed = null;
-      const status = document.getElementById("csvStatus");
-      if (status) status.textContent = "";
-      const preview = document.getElementById("csvPreview");
-      if (preview) preview.textContent = "";
-      const fileInput = document.getElementById("csvFile");
-      if (fileInput) fileInput.value = "";
-      _setCsvState('idle');
-    };
-
     if (format === "csv") {
       const text = generateResultCsv(csvParsed.headers, csvParsed.rows, results);
       downloadCsvText(text, `csv_result_${ts}.csv`);
-      afterDownload();
+      showToast("Downloaded — results still available for re-download", "success");
     } else {
       fetchSS(ssRes => {
         const ss = ssRes?.screenshots || {};
@@ -4509,7 +4623,7 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
           const blob = generateResultXlsx(csvParsed.headers, csvParsed.rows, results, ss);
           _downloadBlob(blob, `csv_result_${ts}.xlsx`);
         }
-        afterDownload();
+        showToast("Downloaded — results still available for re-download", "success");
       });
     }
   });
@@ -4517,30 +4631,43 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
 
 /* === CSV state machine: 'idle' | 'running' | 'done' === */
 function _setCsvState(s) {
-  const formatSel   = document.getElementById("csvExportFormat");
-  const changeFmtBtn= document.getElementById("csvChangeFormat");
-  const startBtn    = document.getElementById("startCsvRun");
-  const stopBtn     = document.getElementById("stopCsvRun");
-  const dlBtn       = document.getElementById("csvDownloadResult");
+  const formatSel    = document.getElementById("csvExportFormat");
+  const formatLocked = document.getElementById("csvFormatLocked");
+  const startBtn     = document.getElementById("startCsvRun");
+  const dlBtn        = document.getElementById("csvDownloadResult");
+  const statusEl     = document.getElementById("csvStatus");
+  const pbCsvSection = document.getElementById("pbPanelCsvSection");
+  const pbStopSingle = document.getElementById("pbPanelStop");
+  const pbStopSplit  = document.getElementById("pbPanelCsvStopSplit");
 
   if (s === 'idle') {
-    if (formatSel)    { formatSel.disabled = false; }
-    if (changeFmtBtn) changeFmtBtn.style.display = "none";
-    if (startBtn)     startBtn.style.display = "";
-    if (stopBtn)      stopBtn.style.display = "none";
+    if (formatSel)    { formatSel.disabled = false; formatSel.style.pointerEvents = ""; formatSel.style.cursor = ""; }
+    if (formatLocked) formatLocked.style.display = "none";
+    if (startBtn)     { startBtn.style.display = ""; startBtn.disabled = false; }
     if (dlBtn)        dlBtn.style.display = "none";
+    if (statusEl)     statusEl.textContent = "";
+    if (pbCsvSection) pbCsvSection.style.display = "none";
+    if (pbStopSingle) pbStopSingle.style.display = "";
+    if (pbStopSplit)  pbStopSplit.style.display = "none";
+    _stopCsvCountdown();
   } else if (s === 'running') {
-    if (formatSel)    { formatSel.disabled = true; }
-    if (changeFmtBtn) changeFmtBtn.style.display = "none";
-    if (startBtn)     startBtn.style.display = "none";
-    if (stopBtn)      stopBtn.style.display = "";
+    if (formatSel)    { formatSel.disabled = true; formatSel.style.pointerEvents = ""; formatSel.style.cursor = ""; }
+    if (formatLocked) formatLocked.style.display = "none";
+    if (startBtn)     { startBtn.style.display = ""; startBtn.disabled = true; }
     if (dlBtn)        dlBtn.style.display = "none";
+    if (pbCsvSection) pbCsvSection.style.display = "";
+    if (pbStopSingle) pbStopSingle.style.display = "none";
+    if (pbStopSplit)  pbStopSplit.style.display = "";
+    openPbPanel();
   } else if (s === 'done') {
-    if (formatSel)    { formatSel.disabled = true; }
-    if (changeFmtBtn) changeFmtBtn.style.display = "";
-    if (startBtn)     startBtn.style.display = "";
-    if (stopBtn)      stopBtn.style.display = "none";
+    if (formatSel)    { formatSel.disabled = true; formatSel.style.pointerEvents = "none"; formatSel.style.cursor = "not-allowed"; }
+    if (formatLocked) formatLocked.style.display = "none";
+    if (startBtn)     { startBtn.style.display = ""; startBtn.disabled = false; }
     if (dlBtn)        dlBtn.style.display = "block";
+    if (pbCsvSection) pbCsvSection.style.display = "";
+    if (pbStopSingle) pbStopSingle.style.display = "none";
+    if (pbStopSplit)  pbStopSplit.style.display = "none";
+    _stopCsvCountdown();
   }
 }
 
@@ -4548,6 +4675,8 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
   const scenarioId = document.getElementById("csvScenarioSelect")?.value;
   if (!scenarioId) { showToast("Select a scenario first", "error"); return; }
   if (!csvParsed || !csvParsed.rows.length) { showToast("Load a CSV file first", "error"); return; }
+  clearCsvDoneBar();
+  _csvRunScenarioName = document.getElementById("csvScenarioSelect")?.selectedOptions[0]?.text || "CSV Run";
 
   const _csvPresetEl = document.getElementById("csvDelayBetweenPreset");
   const delayVal = _csvPresetEl?.value === "custom"
@@ -4555,9 +4684,19 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
     : (_csvPresetEl?.value || "500");
   const delayMs = parseInt(delayVal, 10);
   const delayBetween = !isNaN(delayMs) && delayMs >= 500 ? delayMs : 500;
+  _csvDelayBetween = delayBetween;
 
+  // Warn if scenario uses ${variables} not present in CSV headers
+  const inputVars = _getInputVarsFromScenario(scenarioId);
+  const csvHeaderSet = new Set(csvParsed.headers);
+  const missingCols = [...inputVars].filter(v => !csvHeaderSet.has(v));
+  if (missingCols.length > 0) {
+    showToast(`⚠ CSV missing columns used by scenario: ${missingCols.join(", ")}`, "error");
+  }
+
+  _updateCsvBadges(0, csvParsed.rows.length, 0, false);
   const status = document.getElementById("csvStatus");
-  if (status) status.textContent = `Starting CSV run: ${csvParsed.rows.length} rows...`;
+  if (status) status.textContent = "";
 
   _setCsvState('running');
 
@@ -4572,8 +4711,6 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
     rows: csvParsed.rows,
     delayBetween,
     exportFormat,
-  }, () => {
-    window.close();
   });
 });
 
@@ -4582,9 +4719,17 @@ function startCsvPoll(statusEl) {
     chrome.runtime.sendMessage({ type: "GET_CSV_STATUS" }, (res) => {
       if (!res) { clearInterval(poll); return; }
       if (res.active) {
-        if (statusEl) statusEl.textContent = `Running row ${res.currentRow + 1} / ${res.totalRows}...`;
+        chrome.storage.local.get(["csvRunResults"], (stored) => {
+          const results = stored.csvRunResults || [];
+          const failRows = results.filter(r => r.failures?.length > 0).length;
+          _updateCsvBadges(res.currentRow + 1, res.totalRows, failRows, false);
+        });
       } else {
-        if (statusEl) statusEl.textContent = `Completed: ${res.totalRows} rows.`;
+        chrome.storage.local.get(["csvRunResults"], (stored) => {
+          const results = stored.csvRunResults || [];
+          const failRows = results.filter(r => r.failures?.length > 0).length;
+          _updateCsvBadges(results.length, results.length, failRows, true);
+        });
         _setCsvState('done');
         clearInterval(poll);
       }
@@ -4592,23 +4737,34 @@ function startCsvPoll(statusEl) {
   }, 800);
 }
 
-document.getElementById("stopCsvRun")?.addEventListener("click", () => {
+function _handleCsvStop(label) {
   chrome.runtime.sendMessage({ type: "STOP_CSV_PLAYBACK" }, () => {
-    const status = document.getElementById("csvStatus");
-    if (status) status.textContent = "CSV run stopped.";
-    showToast("CSV run stopped", "info");
-    // Keep results if any were generated; poll once to check
-    chrome.runtime.sendMessage({ type: "GET_CSV_STATUS" }, () => {
-      chrome.storage.local.get(["csvRunResults"], (stored) => {
-        if ((stored.csvRunResults || []).length > 0) {
-          _setCsvState('done');
-        } else {
-          _setCsvState('idle');
-        }
-      });
+    _stopCsvCountdown();
+    showToast(`CSV run ${label}`, "info");
+    chrome.storage.local.get(["csvRunResults"], (stored) => {
+      const results = stored.csvRunResults || [];
+      if (results.length > 0) {
+        const failRows = results.filter(r => r.failures?.length > 0).length;
+        _updateCsvBadges(results.length, results.length, failRows, true);
+        _setCsvState('done');
+        const statusEl = document.getElementById("csvStatus");
+        const cardSummary = failRows > 0
+          ? `Stopped · ✓ ${results.length - failRows} passed · ✗ ${failRows} failed`
+          : `Stopped · ✓ ${results.length} passed`;
+        if (statusEl) statusEl.textContent = cardSummary;
+        const barSummary = failRows > 0
+          ? `Stopped · ✓ ${results.length - failRows} · ✗ ${failRows} of ${results.length}`
+          : `Stopped · ✓ ${results.length} rows`;
+        setCsvDoneBar(_csvRunScenarioName || "CSV Run", barSummary);
+      } else {
+        _setCsvState('idle');
+      }
     });
   });
-});
+}
+
+document.getElementById("pbStopCsvNow")?.addEventListener("click",      () => _handleCsvStop("aborted"));
+document.getElementById("pbStopCsvAfterRow")?.addEventListener("click",  () => _handleCsvStop("stopped after this row"));
 
 document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
   showConfirm(
@@ -4617,12 +4773,22 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
       chrome.storage.local.remove(["csvRunResults", "csvScreenshots"], () => {
         const status = document.getElementById("csvStatus");
         if (status) status.textContent = "";
+        _updateCsvBadges(0, 0, 0, false);
         _setCsvState('idle');
         showToast("Format unlocked — results cleared", "info");
       });
     },
-    { title: "Change Export Format?", danger: true, okLabel: "Clear & Change" }
+    { title: "Change Export Format?", danger: true, okLabel: "Clear & change" }
   );
+});
+
+// Show format-locked warning when user clicks the format area while in done state
+// pointer-events:none on the select lets clicks fall through to this parent div
+document.getElementById("csvFormatRow")?.addEventListener("click", () => {
+  const formatSel = document.getElementById("csvExportFormat");
+  const locked    = document.getElementById("csvFormatLocked");
+  if (!formatSel?.disabled || !locked) return;
+  locked.style.display = "";
 });
 
 /* === Restore CSV session when popup reopens during/after a run === */
@@ -4649,11 +4815,15 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
       }
 
       if (isActive) {
-        if (status) status.textContent = `Running row ${csvStatus.currentRow + 1} / ${csvStatus.totalRows}...`;
+        if (status) status.textContent = "";
+        _updateCsvBadges(csvStatus.currentRow + 1, csvStatus.totalRows, 0, false);
         _setCsvState('running');
         startCsvPoll(status);
       } else if (hasResults) {
-        if (status) status.textContent = `Completed: ${stored.csvRunResults.length} rows.`;
+        const results = stored.csvRunResults;
+        const failRows = results.filter(r => r.failures?.length > 0).length;
+        _updateCsvBadges(results.length, results.length, failRows, true);
+        if (status) status.textContent = "";
         _setCsvState('done');
       }
     });
