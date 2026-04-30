@@ -1555,6 +1555,34 @@ chrome.storage.local.get(["activatedTabs"], (res) => {
   checkTabActivation();
 });
 
+function showLockOverlay(which, type) {
+  const id = which === 'record' ? 'Record' : 'Data';
+  const overlay = document.getElementById('lockOverlay' + id);
+  const titleEl = document.getElementById('lockOverlay' + id + 'Title');
+  const subEl = document.getElementById('lockOverlay' + id + 'Sub');
+  const btn = document.getElementById('lockOverlay' + id + 'Btn');
+  if (!overlay) return;
+  if (type === 'not-eligible') {
+    if (titleEl) titleEl.textContent = 'Not Available';
+    if (subEl) subEl.textContent = 'Recording and playback are not supported on this page (e.g. Chrome settings, extension pages).';
+    if (btn) btn.hidden = true;
+  } else {
+    if (titleEl) titleEl.textContent = 'Activate on Tab';
+    if (subEl) subEl.textContent = 'Click Activate to enable recording and playback on the current tab.';
+    if (btn) btn.hidden = false;
+  }
+  overlay.classList.add('is-visible');
+  document.body.style.overflow = 'hidden';
+}
+
+function hideLockOverlay() {
+  const r = document.getElementById('lockOverlayRecord');
+  const d = document.getElementById('lockOverlayData');
+  if (r) r.classList.remove('is-visible');
+  if (d) d.classList.remove('is-visible');
+  document.body.style.overflow = '';
+}
+
 function checkTabActivation() {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     const tab = tabs[0];
@@ -1571,8 +1599,8 @@ function checkTabActivation() {
       if (statusDot) { statusDot.className = "status-dot"; }
       activateTab.style.display = "none";
       deactivateTab.style.display = "none";
-      mainContent.classList.add("hidden");
-      if (mainContentData) mainContentData.classList.add("hidden");
+      showLockOverlay('record', 'not-eligible');
+      showLockOverlay('data', 'not-eligible');
       if (compactView) compactView.classList.add("hidden");
       return;
     }
@@ -1585,8 +1613,7 @@ function checkTabActivation() {
       if (statusDot) { statusDot.className = "status-dot active"; }
       activateTab.style.display = "none";
       deactivateTab.style.display = "block";
-      mainContent.classList.remove("hidden");
-      if (mainContentData) mainContentData.classList.remove("hidden");
+      hideLockOverlay();
       if (compactView) compactView.classList.remove("hidden");
       // Start connection checking
       connectionRetryCount = 0;
@@ -1597,8 +1624,8 @@ function checkTabActivation() {
       if (statusDot) { statusDot.className = "status-dot inactive"; }
       activateTab.style.display = "block";
       deactivateTab.style.display = "none";
-      mainContent.classList.add("hidden");
-      if (mainContentData) mainContentData.classList.add("hidden");
+      showLockOverlay('record', 'inactive');
+      showLockOverlay('data', 'inactive');
       if (compactView) compactView.classList.add("hidden");
       // Stop connection checking
       if (connectionCheckInterval) {
@@ -1641,6 +1668,18 @@ if (activateTab) {
     });
   });
 }
+
+['lockOverlayRecordBtn', 'lockOverlayDataBtn'].forEach(id => {
+  const btn = document.getElementById(id);
+  if (btn) btn.addEventListener('click', () => activateTab && activateTab.click());
+});
+
+['lockOverlayRecord', 'lockOverlayData'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('wheel', e => e.preventDefault(), { passive: false });
+  el.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+});
 
 if (deactivateTab) {
   deactivateTab.addEventListener('click', () => {
@@ -3603,37 +3642,45 @@ if (backupAllBtn) {
   };
 }
 
+function _doRestore(file) {
+  if (!file || !file.name.endsWith('.json')) {
+    showToast("✗ Please select a .json backup file", "error");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      showConfirm(
+        "This will overwrite ALL current data (scenarios, folders, schedules, settings). Continue?",
+        () => {
+          chrome.runtime.sendMessage({ type: "RESTORE_ALL_DATA", data }, (res) => {
+            if (chrome.runtime.lastError) {
+              showToast("✗ Restore failed: " + chrome.runtime.lastError.message, "error");
+              return;
+            }
+            if (res?.success) {
+              showToast("✓ Data restored — reloading…", "success");
+              setTimeout(() => location.reload(), 1200);
+            } else {
+              showToast("✗ Restore failed: " + (res?.error || "unknown"), "error");
+            }
+          });
+        },
+        { title: "Restore All Data", okLabel: "Restore" }
+      );
+    } catch {
+      showToast("✗ Invalid backup file", "error");
+    }
+  };
+  reader.readAsText(file);
+}
+
 if (restoreAllBtn && restoreFileInput) {
-  restoreAllBtn.onclick = () => restoreFileInput.click();
-
-  restoreFileInput.onchange = () => {
+  restoreAllBtn.onclick = () => {
     const file = restoreFileInput.files[0];
-    if (!file) return;
-    restoreFileInput.value = "";
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        showConfirm(
-          "This will overwrite ALL current data (scenarios, folders, schedules, settings). Continue?",
-          () => {
-            chrome.runtime.sendMessage({ type: "RESTORE_ALL_DATA", data }, (res) => {
-              if (res?.success) {
-                showToast("✓ Data restored — reloading…", "success");
-                setTimeout(() => location.reload(), 1200);
-              } else {
-                showToast("✗ Restore failed: " + (res?.error || "unknown"), "error");
-              }
-            });
-          },
-          { title: "Restore All Data", okLabel: "Restore" }
-        );
-      } catch {
-        showToast("✗ Invalid backup file", "error");
-      }
-    };
-    reader.readAsText(file);
+    if (!file) { showToast("Please choose a backup file first", "error"); return; }
+    _doRestore(file);
   };
 }
 

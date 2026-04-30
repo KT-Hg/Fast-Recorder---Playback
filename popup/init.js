@@ -9,6 +9,7 @@ import { initScreenshots } from './screenshots.js';
 import { initVariables } from './variables.js';
 import { initSettings, reloadSettings } from './settings.js';
 import { initMain } from './main.js';
+import { initExportBookmarklet } from './export-bookmarklet.js';
 
 /* === Header Spacer Sync === */
 
@@ -33,6 +34,7 @@ function initTabs() {
   function switchTab(tabId) {
     tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === tabId));
     tabPanels.forEach(p => p.classList.toggle('active', p.id === tabId));
+    document.body.dataset.activeTab = tabId;
     chrome.storage.local.set({ lastTab: tabId });
     if (tabId === 'settings') reloadSettings();
   }
@@ -40,7 +42,8 @@ function initTabs() {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
   chrome.storage.local.get(['lastTab'], (res) => {
-    if (res?.lastTab && document.getElementById(res.lastTab)) switchTab(res.lastTab);
+    const target = res?.lastTab && document.getElementById(res.lastTab) ? res.lastTab : 'tabRecord';
+    switchTab(target);
   });
 }
 
@@ -53,4 +56,5 @@ initScreenshots();
 initVariables();
 initSettings();
 initMain();
+initExportBookmarklet();
 startConnectionCheck();

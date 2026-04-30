@@ -101,7 +101,7 @@
 
   <!-- ===== TAB: RECORD & PLAY ===== -->
   <div class="tab-panel" id="tabRecord">
-    <div class="main-content hidden" id="mainContent" role="main">
+    <div class="main-content" id="mainContent" role="main">
 
     <!-- Recording badge (floating) -->
     <span id="recordingBadge" class="recording-badge">● Recording</span>
@@ -434,6 +434,7 @@
           <button id="renameScenario" class="secondary loop-action-btn" title="Rename scenario">✎</button>
           <button id="duplicateScenario" class="secondary loop-action-btn" title="Duplicate scenario">⧉</button>
           <button id="showMoveSection" class="secondary loop-action-btn" title="Move to folder">⇄</button>
+          <button id="exportBookmarklet" class="secondary loop-action-btn" title="Export as JS Bookmarklet">&lt;/&gt;</button>
         </div>
       </div>
 
@@ -508,7 +509,7 @@
 
   <!-- ===== TAB: DATA ===== -->
   <div class="tab-panel" id="tabData">
-    <div class="main-content hidden" id="mainContentData" role="complementary">
+    <div class="main-content" id="mainContentData" role="complementary">
 
     <!-- VARIABLES -->
     <div class="card">
@@ -792,14 +793,14 @@
       <button id="importScenario" class="secondary">Import Scenario</button>
 
       <p class="settings-section-title">Backup / Restore</p>
+      <input type="file" id="restoreFile" accept=".json" />
       <div class="row" style="gap:6px;">
         <button id="backupAll" class="secondary flex-1">⬇ Backup All Data</button>
         <button id="restoreAll" class="secondary flex-1">⬆ Restore All Data</button>
       </div>
-      <input type="file" id="restoreFile" accept=".json" style="display:none;" />
-      <span class="helper-text">Backup / restore all scenarios, folders, schedules &amp; settings</span>
     </div>
-  </div>
+
+  </div><!-- end tabSettings -->
 
   <!-- ===== COMPACT VIEW (hidden, kept for JS compatibility) ===== -->
   <div style="display:none;" id="compactView">
@@ -914,6 +915,90 @@
         <img id="diffPreview" style="width:100%; border-radius:4px; border:1px solid var(--border);" />
         <button id="diffDownload" class="secondary" style="margin-top:6px; font-size:12px; width:100%;">⬇ Save result</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Export Bookmarklet Modal -->
+  <div id="exportBmModal" class="export-bm-modal" role="dialog" aria-modal="true" aria-labelledby="exportBmTitle" aria-hidden="true">
+    <div class="export-bm-content">
+
+      <div class="export-bm-header">
+        <h4 id="exportBmTitle">Export JS Bookmarklet</h4>
+        <button id="exportBmClose" class="secondary" aria-label="Close">✕</button>
+      </div>
+
+      <div class="export-bm-tabs" role="tablist">
+        <button class="export-bm-tab active" data-tab="preview" role="tab" aria-selected="true">Preview Code</button>
+        <button class="export-bm-tab" data-tab="variables" role="tab" aria-selected="false">Variables (<span id="exportBmVarCount">0</span>)</button>
+        <button class="export-bm-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+      </div>
+
+      <div id="exportBmWarning" class="export-bm-warning" style="display:none;">
+        ⚠ <span id="exportBmSkipMsg"></span>
+      </div>
+
+      <!-- Tab: Preview Code -->
+      <div id="exportBmTabPreview" class="export-bm-tab-panel">
+        <pre id="exportBmCode" class="export-bm-code"><code></code></pre>
+      </div>
+
+      <!-- Tab: Variables -->
+      <div id="exportBmTabVariables" class="export-bm-tab-panel" hidden>
+        <div id="exportBmNoVars" class="export-bm-no-vars">No variables defined</div>
+        <table class="export-bm-var-table" id="exportBmVarTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Type</th>
+              <th>Preview Value</th>
+            </tr>
+          </thead>
+          <tbody id="exportBmVarBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Tab: Settings -->
+      <div id="exportBmTabSettings" class="export-bm-tab-panel" hidden>
+        <div class="export-bm-setting-row">
+          <label for="exportBmStepDelay">Delay between steps (ms)</label>
+          <input type="number" id="exportBmStepDelay" value="300" min="0" max="10000" />
+        </div>
+        <div class="export-bm-setting-row">
+          <label for="exportBmElTimeout">Element wait timeout (ms)</label>
+          <input type="number" id="exportBmElTimeout" value="5000" min="500" max="30000" />
+        </div>
+        <div style="padding: 10px 14px;">
+          <button id="exportBmRegenerate" class="secondary" style="width:100%;">🔄 Regenerate Code</button>
+        </div>
+      </div>
+
+      <div class="export-bm-footer">
+        <span id="exportBmStats" class="export-bm-stats"></span>
+        <div class="export-bm-footer-btns">
+          <button id="exportBmCancel" class="secondary">Huỷ</button>
+          <button id="exportBmCopy" class="primary-gradient">📋 Copy</button>
+          <button id="exportBmDownload" class="secondary">⬇ .js</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Lock overlays (always in DOM for smooth transitions) -->
+  <div class="lock-overlay" id="lockOverlayRecord">
+    <div class="lock-overlay-card">
+      <div class="lock-overlay-icon">🔒</div>
+      <h3 class="lock-overlay-title" id="lockOverlayRecordTitle">Activate on Tab</h3>
+      <p class="lock-overlay-sub" id="lockOverlayRecordSub">Click Activate to enable recording and playback on the current tab.</p>
+      <button class="lock-overlay-activate-btn" id="lockOverlayRecordBtn">Activate</button>
+    </div>
+  </div>
+  <div class="lock-overlay" id="lockOverlayData">
+    <div class="lock-overlay-card">
+      <div class="lock-overlay-icon">🔒</div>
+      <h3 class="lock-overlay-title" id="lockOverlayDataTitle">Activate on Tab</h3>
+      <p class="lock-overlay-sub" id="lockOverlayDataSub">Click Activate to enable recording and playback on the current tab.</p>
+      <button class="lock-overlay-activate-btn" id="lockOverlayDataBtn">Activate</button>
     </div>
   </div>
 

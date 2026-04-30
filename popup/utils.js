@@ -96,6 +96,17 @@ export function trapFocus(modalEl) {
 
 /* === Confirm / Alert Modals === */
 
+function _closeModal(modal, releaseFocus, extra) {
+  if (modal.contains(document.activeElement)) {
+    document.activeElement.blur();
+  }
+  modal.classList.remove('show');
+  releaseFocus();
+  modal.setAttribute('aria-hidden', 'true');
+  if (extra) extra();
+  unlockScroll();
+}
+
 export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel = '' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
@@ -109,12 +120,7 @@ export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false,
   modal.setAttribute('aria-hidden', 'false');
   lockScroll();
   const releaseFocus = trapFocus(modal);
-  const close = () => {
-    modal.classList.remove('show');
-    modal.setAttribute('aria-hidden', 'true');
-    releaseFocus();
-    unlockScroll();
-  };
+  const close = () => _closeModal(modal, releaseFocus);
   cancelBtn.onclick = close;
   okBtn.onclick = () => { close(); onConfirm(); };
 }
@@ -132,13 +138,7 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
   modal.setAttribute('aria-hidden', 'false');
   lockScroll();
   const releaseFocus = trapFocus(modal);
-  const close = () => {
-    modal.classList.remove('show');
-    modal.setAttribute('aria-hidden', 'true');
-    cancelBtn.style.display = '';
-    releaseFocus();
-    unlockScroll();
-  };
+  const close = () => _closeModal(modal, releaseFocus, () => { cancelBtn.style.display = ''; });
   cancelBtn.onclick = close;
   okBtn.onclick = close;
 }

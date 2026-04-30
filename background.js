@@ -497,10 +497,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     const ALLOWED_KEYS = new Set([
       "scenarios", "folders", "variables", "schedules", "activatedTabs",
-      "collapsibleStates", "popupTheme", "advancedMode", "lastSelectedScenario",
+      "collapsibleStates", "popupTheme", "theme", "advancedMode",
+      "lastSelectedScenario", "lastTab",
       "pendingRecordScenarioId", "condHelpLang", "screenshotExpanded",
       "watermarkEnabled", "watermarkFormat", "watermarkFontSize",
       "csvRunResults", "csvScreenshots", "csvSessionData",
+      "playbackCheckpoint",
     ]);
     const sanitized = {};
     for (const [k, v] of Object.entries(data)) {
