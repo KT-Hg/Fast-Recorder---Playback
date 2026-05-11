@@ -1098,6 +1098,20 @@ button:disabled {
   transform: none;
 }
 
+.tab-btn.tab-dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.tab-btn.tab-drag-over {
+  background: var(--secondary-bg);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
+.tab-btn[draggable="true"] {
+  cursor: grab;
+}
+
 /* === TAB PANELS === */
 .tab-panel {
   display: none;
@@ -1148,6 +1162,18 @@ button:disabled {
   color: white !important;
   border-color: var(--primary) !important;
   animation: pulse-border 1s ease infinite;
+}
+
+/* Blur record-related hotkeys when extension is not activated */
+[data-requires-activation] {
+  transition: filter 0.25s ease, opacity 0.25s ease;
+}
+
+body:not([data-activation="active"]) [data-requires-activation] {
+  filter: blur(3px);
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
 }
 
 @keyframes pulse-border {
@@ -2584,4 +2610,195 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 
 [data-theme="dark"] .lock-overlay {
   background: rgba(0, 0, 0, 0.48);
+}
+
+/* === Export Code Card (Data tab) === */
+.export-code-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.export-code-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 10px 12px;
+  border-radius: 10px;
+  border: 1.5px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  width: 100%;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.export-code-btn:hover { transform: translateY(-1px); }
+.export-code-btn:active { transform: translateY(0); }
+
+.export-code-icon {
+  font-size: 24px;
+  line-height: 1;
+}
+
+.export-code-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.export-code-name {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.export-code-desc {
+  font-size: 10px;
+  opacity: 0.65;
+  line-height: 1.2;
+}
+
+/* JS = amber */
+.export-code-js {
+  border-color: rgba(217, 119, 6, 0.3);
+  background: rgba(245, 158, 11, 0.06);
+  color: #92400e !important;
+}
+.export-code-js:hover {
+  background: rgba(245, 158, 11, 0.13) !important;
+  border-color: rgba(217, 119, 6, 0.5);
+}
+[data-theme="dark"] .export-code-js {
+  color: #fbbf24 !important;
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.06);
+}
+[data-theme="dark"] .export-code-js:hover {
+  background: rgba(251, 191, 36, 0.12) !important;
+}
+
+/* PY = blue */
+.export-code-py {
+  border-color: rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.06);
+  color: #1d4ed8 !important;
+}
+.export-code-py:hover {
+  background: rgba(59, 130, 246, 0.13) !important;
+  border-color: rgba(59, 130, 246, 0.45);
+}
+[data-theme="dark"] .export-code-py {
+  color: #60a5fa !important;
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(96, 165, 250, 0.06);
+}
+[data-theme="dark"] .export-code-py:hover {
+  background: rgba(96, 165, 250, 0.12) !important;
+}
+
+/* === Export modal — top accent strip & lang chip === */
+#exportBmModal .export-bm-content {
+  border-top: 3px solid #d97706;
+}
+#exportSeleniumModal .export-bm-content {
+  border-top: 3px solid #3b82f6;
+}
+
+.export-modal-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  flex: 1;
+}
+
+.export-lang-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  flex-shrink: 0;
+  line-height: 1.5;
+}
+
+.export-lang-chip-js {
+  background: rgba(245, 158, 11, 0.15);
+  color: #92400e;
+  border: 1px solid rgba(217, 119, 6, 0.3);
+}
+[data-theme="dark"] .export-lang-chip-js {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.25);
+}
+
+.export-lang-chip-py {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+}
+[data-theme="dark"] .export-lang-chip-py {
+  background: rgba(96, 165, 250, 0.1);
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.25);
+}
+
+/* Better code preview area */
+.export-bm-code {
+  background: var(--secondary-bg) !important;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  max-height: 340px !important;
+}
+
+/* === Export Selenium Python modal — tab buttons === */
+/* Mirrors .export-bm-tab but scoped to the Python modal */
+.export-py-tab {
+  background: none !important;
+  border: none !important;
+  border-bottom: 2px solid transparent !important;
+  padding: 7px 10px !important;
+  font-size: 12px !important;
+  font-weight: 500;
+  color: var(--muted) !important;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+  width: auto !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  line-height: 1.4 !important;
+}
+
+.export-py-tab:hover {
+  color: var(--text) !important;
+  transform: none !important;
+}
+
+.export-py-tab.active {
+  color: var(--primary) !important;
+  border-bottom-color: var(--primary) !important;
+}
+
+/* Copy-success feedback for Selenium modal */
+#exportSeleniumCopy.copied {
+  background: var(--success) !important;
+  border-color: var(--success) !important;
+  color: #fff !important;
+}
+
+/* WebDriver select in Settings tab */
+#exportSeleniumDriver {
+  width: 110px;
+  flex: 0 0 110px;
+  margin: 0;
+  font-size: 12px;
 }

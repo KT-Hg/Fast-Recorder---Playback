@@ -86,9 +86,9 @@
     <span id="playbackProgressLabel" style="display:none;"></span>
     <!-- Tab Navigation -->
     <div class="tab-nav" id="tabNav">
-      <button class="tab-btn active" data-tab="tabCapture">Capture</button>
       <button class="tab-btn" data-tab="tabRecord">Record & Play</button>
       <button class="tab-btn" data-tab="tabData">Data</button>
+      <button class="tab-btn" data-tab="tabCapture">Capture</button>
       <button class="tab-btn" data-tab="tabSettings">Settings</button>
     </div>
   </div>
@@ -434,7 +434,6 @@
           <button id="renameScenario" class="secondary loop-action-btn" title="Rename scenario">✎</button>
           <button id="duplicateScenario" class="secondary loop-action-btn" title="Duplicate scenario">⧉</button>
           <button id="showMoveSection" class="secondary loop-action-btn" title="Move to folder">⇄</button>
-          <button id="exportBookmarklet" class="secondary loop-action-btn" title="Export as JS Bookmarklet">&lt;/&gt;</button>
         </div>
       </div>
 
@@ -533,6 +532,30 @@
         <button id="reloadVariables" class="secondary w-auto">Reload</button>
       </div>
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Use ${var} in selector/value/url/code. Saved per extension.</p>
+    </div>
+
+    <!-- EXPORT CODE -->
+    <div class="card">
+      <h3>Export Code</h3>
+      <select id="exportCodeSelect" style="margin-bottom:10px;">
+        <option value="">-- Select scenario --</option>
+      </select>
+      <div class="export-code-grid">
+        <button id="exportBookmarklet" class="export-code-btn export-code-js" title="Export as JS Bookmarklet">
+          <span class="export-code-icon">⚡</span>
+          <div class="export-code-info">
+            <span class="export-code-name">JS Bookmarklet</span>
+            <span class="export-code-desc">Runs in browser</span>
+          </div>
+        </button>
+        <button id="exportSelenium" class="export-code-btn export-code-py" title="Export as Selenium Python">
+          <span class="export-code-icon">🐍</span>
+          <div class="export-code-info">
+            <span class="export-code-name">Selenium Python</span>
+            <span class="export-code-desc">Standalone .py file</span>
+          </div>
+        </button>
+      </div>
     </div>
 
     <!-- SCHEDULED PLAYBACK -->
@@ -673,12 +696,12 @@
     <div class="card">
       <p class="settings-section-title" style="margin-top:0;">Hotkeys</p>
       <div style="display: flex; flex-direction: column; gap: 2px;">
-        <div class="hotkey-row">
+        <div class="hotkey-row" data-requires-activation>
           <span class="hotkey-label">Start Recording</span>
           <span class="hotkey-badge" id="hotkeyStartRecord">Alt+R</span>
           <button class="hotkey-set-btn secondary" data-hotkey="startRecord">Set</button>
         </div>
-        <div class="hotkey-row">
+        <div class="hotkey-row" data-requires-activation>
           <span class="hotkey-label">Stop Recording</span>
           <span class="hotkey-badge" id="hotkeyStopRecord">Alt+S</span>
           <button class="hotkey-set-btn secondary" data-hotkey="stopRecord">Set</button>
@@ -923,7 +946,10 @@
     <div class="export-bm-content">
 
       <div class="export-bm-header">
-        <h4 id="exportBmTitle">Export JS Bookmarklet</h4>
+        <div class="export-modal-title-row">
+          <span class="export-lang-chip export-lang-chip-js">JS</span>
+          <h4 id="exportBmTitle">Export JS Bookmarklet</h4>
+        </div>
         <button id="exportBmClose" class="secondary" aria-label="Close">✕</button>
       </div>
 
@@ -978,6 +1004,91 @@
           <button id="exportBmCancel" class="secondary">Huỷ</button>
           <button id="exportBmCopy" class="primary-gradient">📋 Copy</button>
           <button id="exportBmDownload" class="secondary">⬇ .js</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Export Selenium Python Modal -->
+  <div id="exportSeleniumModal" class="export-bm-modal" role="dialog" aria-modal="true" aria-labelledby="exportSeleniumTitle" aria-hidden="true">
+    <div class="export-bm-content">
+
+      <div class="export-bm-header">
+        <div class="export-modal-title-row">
+          <span class="export-lang-chip export-lang-chip-py">PY</span>
+          <h4 id="exportSeleniumTitle">Export Selenium Python</h4>
+        </div>
+        <button id="exportSeleniumClose" class="secondary" aria-label="Close">✕</button>
+      </div>
+
+      <div class="export-bm-tabs" role="tablist">
+        <button class="export-py-tab active" data-tab="preview" role="tab" aria-selected="true">Preview Code</button>
+        <button class="export-py-tab" data-tab="variables" role="tab" aria-selected="false">Variables (<span id="exportSeleniumVarCount">0</span>)</button>
+        <button class="export-py-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+      </div>
+
+      <div id="exportSeleniumWarning" class="export-bm-warning" style="display:none;">
+        ⚠ <span id="exportSeleniumSkipMsg"></span>
+      </div>
+
+      <!-- Tab: Preview Code -->
+      <div id="exportSeleniumTabPreview" class="export-bm-tab-panel">
+        <pre id="exportSeleniumCode" class="export-bm-code"><code></code></pre>
+      </div>
+
+      <!-- Tab: Variables -->
+      <div id="exportSeleniumTabVariables" class="export-bm-tab-panel" hidden>
+        <div id="exportSeleniumNoVars" class="export-bm-no-vars">No variables defined</div>
+        <table class="export-bm-var-table" id="exportSeleniumVarTable" style="display:none;">
+          <thead>
+            <tr>
+              <th>Variable</th>
+              <th>Type</th>
+              <th>Preview Value</th>
+            </tr>
+          </thead>
+          <tbody id="exportSeleniumVarBody"></tbody>
+        </table>
+      </div>
+
+      <!-- Tab: Settings -->
+      <div id="exportSeleniumTabSettings" class="export-bm-tab-panel" hidden>
+        <div class="export-bm-setting-row">
+          <label for="exportSeleniumStartUrl">Starting URL</label>
+          <div style="display:flex;gap:4px;align-items:center;flex:0 0 auto;">
+            <input type="url" id="exportSeleniumStartUrl" placeholder="https://example.com" style="width:148px;margin:0;font-size:12px;" />
+            <button id="exportSeleniumGetUrl" class="secondary" title="Lấy URL tab hiện tại" style="width:auto;padding:4px 7px;font-size:12px;flex-shrink:0;">⊕</button>
+          </div>
+        </div>
+        <div class="export-bm-setting-row">
+          <label for="exportSeleniumDriver">WebDriver</label>
+          <select id="exportSeleniumDriver" style="width:110px;flex:0 0 110px;margin:0;font-size:12px;">
+            <option value="Chrome" selected>Chrome</option>
+            <option value="Firefox">Firefox</option>
+            <option value="Edge">Edge</option>
+            <option value="Safari">Safari</option>
+          </select>
+        </div>
+        <div class="export-bm-setting-row">
+          <label for="exportSeleniumStepDelay">Delay between steps (ms)</label>
+          <input type="number" id="exportSeleniumStepDelay" value="500" min="0" max="10000" />
+        </div>
+        <div class="export-bm-setting-row">
+          <label for="exportSeleniumElTimeout">Element wait timeout (ms)</label>
+          <input type="number" id="exportSeleniumElTimeout" value="10000" min="500" max="60000" />
+        </div>
+        <div style="padding: 10px 14px;">
+          <button id="exportSeleniumRegenerate" class="secondary" style="width:100%;">🔄 Regenerate Code</button>
+        </div>
+      </div>
+
+      <div class="export-bm-footer">
+        <span id="exportSeleniumStats" class="export-bm-stats"></span>
+        <div class="export-bm-footer-btns">
+          <button id="exportSeleniumCancel" class="secondary">Huỷ</button>
+          <button id="exportSeleniumCopy" class="primary-gradient">📋 Copy</button>
+          <button id="exportSeleniumDownload" class="secondary">⬇ .py</button>
         </div>
       </div>
 

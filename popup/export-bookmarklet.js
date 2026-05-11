@@ -354,11 +354,11 @@ export function initExportBookmarklet() {
 }
 
 function _onTrigger() {
-  const scenarioList = document.getElementById('scenarioList');
-  const scenarioId = scenarioList?.value;
+  const sel = document.getElementById('exportCodeSelect');
+  const scenarioId = sel?.value;
   if (!scenarioId) { showToast('Chọn một scenario trước', 'error'); return; }
 
-  const scenarioName = scenarioList.options[scenarioList.selectedIndex]?.text || 'Scenario';
+  const scenarioName = sel.options[sel.selectedIndex]?.text || 'Scenario';
   _currentScenarioName = scenarioName;
 
   chrome.runtime.sendMessage({ type: 'GET_SCENARIOS' }, res => {
@@ -519,8 +519,8 @@ function _download() {
 }
 
 function _regenerate() {
-  const scenarioList = document.getElementById('scenarioList');
-  const scenarioId   = scenarioList?.value;
+  const sel        = document.getElementById('exportCodeSelect');
+  const scenarioId = sel?.value;
   if (!scenarioId) return;
 
   const delay   = parseInt(document.getElementById('exportBmStepDelay')?.value) || 300;

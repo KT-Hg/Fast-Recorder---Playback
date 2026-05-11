@@ -1602,6 +1602,7 @@ function checkTabActivation() {
       showLockOverlay('record', 'not-eligible');
       showLockOverlay('data', 'not-eligible');
       if (compactView) compactView.classList.add("hidden");
+      document.body.dataset.activation = 'not-eligible';
       return;
     }
 
@@ -1615,6 +1616,7 @@ function checkTabActivation() {
       deactivateTab.style.display = "block";
       hideLockOverlay();
       if (compactView) compactView.classList.remove("hidden");
+      document.body.dataset.activation = 'active';
       // Start connection checking
       connectionRetryCount = 0;
       startConnectionCheck();
@@ -1627,6 +1629,7 @@ function checkTabActivation() {
       showLockOverlay('record', 'inactive');
       showLockOverlay('data', 'inactive');
       if (compactView) compactView.classList.add("hidden");
+      document.body.dataset.activation = 'inactive';
       // Stop connection checking
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval);
@@ -3142,6 +3145,7 @@ function loadScenarios() {
     renderCompactScenarioList();
     renderScheduleScenarioSelect();
     renderCsvScenarioSelect();
+    renderExportCodeSelect();
 
     // Restore scenario selection if stopped recording via hotkey while popup was closed
     chrome.storage.local.get(["pendingRecordScenarioId"], (stored) => {
@@ -4186,6 +4190,22 @@ function renderCsvScenarioSelect() {
     o.textContent = s.name;
     sel.appendChild(o);
   });
+}
+
+function renderExportCodeSelect() {
+  const sel = document.getElementById("exportCodeSelect");
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- Select scenario --</option>';
+  Object.entries(scenariosCache)
+    .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+    .forEach(([id, s]) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = s.name;
+      sel.appendChild(o);
+    });
+  if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
 }
 
 function parseCSV(text) {
