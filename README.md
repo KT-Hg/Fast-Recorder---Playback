@@ -14,7 +14,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Variables** | Global `${varName}` substitution across selectors, values, URLs, and scripts |
 | **Screenshot** | Visible, full page, scroll (V/H), segment, element — with crop editor and watermark |
 | **CSV Run** | Run a scenario once per row; export results to XLSX/CSV/HTML with screenshots |
-| **Export** | Scenario JSON, folder JSON, full backup/restore, JS bookmarklet |
+| **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
 | **UI** | Dark/light theme, drag-to-reorder tabs, collapsible cards, hotkeys |
 
 ---
@@ -55,6 +55,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 
 ### Data
 - Global variables table (`${varName}` → value)
+- **Export Code** — generate a standalone JS Bookmarklet or Selenium Python script from any saved scenario
 - Scheduled playback (daily at a set time)
 - CSV data-driven runs (one scenario execution per CSV row)
 
@@ -109,6 +110,99 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 | `screenshot_full` | Full page via CDP |
 | `screenshot_element` | Specific element via CDP clip |
 | `screenshot_tovar` | Any mode → store filename/base64 in variable for CSV export |
+
+---
+
+## Export Code
+
+From the **Data** tab → **Export Code** card, select any saved scenario and generate a standalone script in two formats:
+
+### ⚡ JS Bookmarklet
+
+- Runs directly in the browser console or as a saved bookmark URL
+- No Selenium or Python required
+- Supported actions: `click`, `input`, `hover`, `dragdrop`, `navigate`, `wait`, `script`, `readdom`
+- Skipped actions: `screenshot*` (require Extension API), `switch`
+- Copy as a single-line bookmark URL or download as a `.js` file
+
+**Output example:**
+```js
+javascript:(async () => {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const getEl = (sel, timeout = 5000) => new Promise(...);
+  const setInput = (el, value) => { ... };
+
+  // --- VARIABLES ---
+  const username = "alice";
+
+  // --- MAIN FLOW ---
+  try {
+    // Step 1: navigate
+    window.location.href = "https://example.com/login";
+    ...
+  } catch (err) { alert('Lỗi: ' + err.message); }
+})();
+```
+
+### 🐍 Selenium Python
+
+- Generates a ready-to-run `.py` script using `selenium` 4.x
+- Supported actions: all types including **screenshot** (which is skipped in bookmarklet)
+- `input` actions auto-detect `<select>` elements at runtime — uses `Select.select_by_value()` with fallback to `select_by_visible_text()`
+- `condition` actions use `find_elements()` (returns list, never raises)
+- `switch` action is skipped (extension-specific routing)
+
+**Settings available in the modal:**
+
+| Setting | Default | Description |
+|---|---|---|
+| Starting URL | *(empty)* | `driver.get()` call injected before step 1 if no `navigate` action exists. Use **⊕** to fill from the current browser tab. |
+| WebDriver | Chrome | `Chrome`, `Firefox`, `Edge`, `Safari` |
+| Delay between steps (ms) | 500 | `time.sleep()` added after each action |
+| Element wait timeout (ms) | 10 000 | `WebDriverWait(driver, N)` timeout |
+
+**Output example:**
+```python
+import time
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+
+# ============================
+# SCENARIO: Login Form
+# ============================
+driver = webdriver.Chrome()
+driver.implicitly_wait(10)
+
+driver.get("https://example.com/login")
+
+# --- VARIABLES ---
+username = "alice"
+
+# --- MAIN FLOW ---
+try:
+    # Step 1: input
+    el1 = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#email")))
+    if el1.tag_name == 'select':
+        try:
+            Select(el1).select_by_value(f"{username}")
+        except Exception:
+            Select(el1).select_by_visible_text(f"{username}")
+    else:
+        el1.clear()
+        el1.send_keys(f"{username}")
+    time.sleep(0.5)
+
+    print("✅ Scenario 'Login Form' completed successfully.")
+
+except Exception as e:
+    print(f"❌ Error: {e}")
+    raise
+
+finally:
+    driver.quit()
+```
 
 ---
 
