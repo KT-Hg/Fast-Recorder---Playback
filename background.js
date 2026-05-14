@@ -678,7 +678,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (type === "SAVE_CROPPED") {
     downloadDataUrl(request.dataUrl, request.downloadPath, request.saveAs).then((id) => {
-      sendResponse(id != null ? { success: true } : { error: "Download failed" });
+      if (id == null) { sendResponse({ error: "Download failed" }); return; }
+      let responded = false;
+      const respond = (r) => { if (!responded) { responded = true; sendResponse(r); } };
+      const onChanged = (delta) => {
+        if (delta.id !== id) return;
+        const st = delta.state?.current;
+        if (st === 'complete')         { chrome.downloads.onChanged.removeListener(onChanged); respond({ success: true }); }
+        else if (st === 'interrupted') { chrome.downloads.onChanged.removeListener(onChanged); respond({ error: 'Cancelled' }); }
+      };
+      chrome.downloads.onChanged.addListener(onChanged);
+      // Race-condition guard: download may have already completed before listener was added
+      chrome.downloads.search({ id }, (items) => {
+        if (!items?.length) return;
+        const st = items[0].state;
+        if (st === 'complete')         { chrome.downloads.onChanged.removeListener(onChanged); respond({ success: true }); }
+        else if (st === 'interrupted') { chrome.downloads.onChanged.removeListener(onChanged); respond({ error: 'Cancelled' }); }
+      });
     });
     return true;
   }

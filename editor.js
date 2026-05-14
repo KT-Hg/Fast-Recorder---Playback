@@ -945,14 +945,14 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     const {x,y,w,h}=cropSel;
     const off=document.createElement("canvas"); off.width=w; off.height=h;
     off.getContext("2d").drawImage(workCanvas,x,y,w,h,0,0,w,h);
-    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:off.toDataURL("image/png"),downloadPath,saveAs});
-    showSaveToast(`Saved crop: ${w}×${h} px`);
-    setTimeout(()=>window.close(), 1200);
+    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:off.toDataURL("image/png"),downloadPath,saveAs}, (res) => {
+      if (res?.success) { showSaveToast(`Saved crop: ${w}×${h} px`); setTimeout(()=>window.close(), 1200); }
+    });
   });
   document.getElementById("btnSaveFull").addEventListener("click", () => {
-    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:workCanvas.toDataURL("image/png"),downloadPath,saveAs});
-    showSaveToast(`Saved full: ${workCanvas.width}×${workCanvas.height} px`);
-    setTimeout(()=>window.close(), 1200);
+    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:workCanvas.toDataURL("image/png"),downloadPath,saveAs}, (res) => {
+      if (res?.success) { showSaveToast(`Saved full: ${workCanvas.width}×${workCanvas.height} px`); setTimeout(()=>window.close(), 1200); }
+    });
   });
   function confirmCloseIfDirty() {
     if (undoStack.length > 0) {
