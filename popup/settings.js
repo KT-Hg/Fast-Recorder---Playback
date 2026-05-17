@@ -36,6 +36,14 @@ export function updateRangeFill(slider) {
 /* === Screenshot Settings === */
 
 export function loadScreenshotSettings() {
+  chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
+    const cb  = document.getElementById('screenshotCountdownEnabled');
+    const sel = document.getElementById('screenshotCountdownSeconds');
+    const row = document.getElementById('screenshotCountdownRow');
+    if (cb)  cb.checked = !!res.screenshotCountdownEnabled;
+    if (sel) sel.value  = String(res.screenshotCountdownSeconds || 3);
+    if (row) row.style.display = res.screenshotCountdownEnabled ? 'flex' : 'none';
+  });
   chrome.storage.local.get(['watermarkEnabled', 'watermarkFormat', 'watermarkFontSize'], (wm) => {
     const cb = document.getElementById('watermarkEnabled');
     const fmt = document.getElementById('watermarkFormat');
@@ -138,6 +146,12 @@ export function initSettings() {
   sliderFS?.addEventListener('input', () => { if (numFS) numFS.value = sliderFS.value; updateRangeFill(sliderFS); });
   numFS   ?.addEventListener('input', () => { if (sliderFS) { sliderFS.value = numFS.value; updateRangeFill(sliderFS); } });
 
+  /* --- Countdown checkbox toggles delay row visibility --- */
+  document.getElementById('screenshotCountdownEnabled')?.addEventListener('change', (e) => {
+    const row = document.getElementById('screenshotCountdownRow');
+    if (row) row.style.display = e.target.checked ? 'flex' : 'none';
+  });
+
   /* --- Save screenshot settings --- */
   document.getElementById('saveScreenshotSettings')?.addEventListener('click', () => {
     const mode   = document.querySelector('input[name="screenshotSaveMode"]:checked')?.value || 'auto';
@@ -147,7 +161,9 @@ export function initSettings() {
     const watermarkEnabled  = !!document.getElementById('watermarkEnabled')?.checked;
     const watermarkFormat   = document.getElementById('watermarkFormat')?.value?.trim() || '';
     const watermarkFontSize = Math.min(48, Math.max(8, parseInt(document.getElementById('watermarkFontSizeNum')?.value, 10) || 13));
-    chrome.storage.local.set({ watermarkEnabled, watermarkFormat, watermarkFontSize });
+    const countdownEnabled  = !!document.getElementById('screenshotCountdownEnabled')?.checked;
+    const countdownSeconds  = parseInt(document.getElementById('screenshotCountdownSeconds')?.value, 10) || 3;
+    chrome.storage.local.set({ watermarkEnabled, watermarkFormat, watermarkFontSize, screenshotCountdownEnabled: countdownEnabled, screenshotCountdownSeconds: countdownSeconds });
     chrome.storage.sync.set({ screenshotSaveMode: mode, screenshotPrefix: prefix, segScrollSpeedV: speedV, segScrollSpeedH: speedH }, () => {
       const btn = document.getElementById('saveScreenshotSettings');
       if (btn) {

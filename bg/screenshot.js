@@ -470,7 +470,7 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
   }
 }
 
-/* === ELEMENT SCREENSHOT (CDP + transform tile-and-stitch + warm-up) === */
+/* === ELEMENT SCREENSHOT (CDP + captureBeyondViewport + direct-coordinate strip capture) === */
 
 export async function takeElementScreenshot(tabId, selector, saveMode, prefix, crop = false, returnBase64 = false, skipDownload = false, selectors = null) {
   const filename = buildScreenshotFilename(prefix + "_elem", null);
@@ -480,7 +480,14 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
 
   const dims = await tabMsg(tabId, { type: "GET_PAGE_DIMENSIONS" });
   if (!dims) return { error: "Could not get page dimensions" };
-  const { viewportHeight, devicePixelRatio: dpr, scrollX: origScrollX = 0, scrollY: origScrollY = 0 } = dims;
+  const { viewportHeight, scrollX: origScrollX = 0, scrollY: origScrollY = 0 } = dims;
+
+  // Normalize browser zoom to 100% before capture so CDP clip coordinates are stable
+  const origZoom = await new Promise(r => chrome.tabs.getZoom(tabId, r));
+  if (Math.abs(origZoom - 1) > 0.01) {
+    await new Promise(r => chrome.tabs.setZoom(tabId, 1, r));
+    await new Promise(r => setTimeout(r, 300));
+  }
 
   const cdpRaf = () => new Promise((resolve) => {
     chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
@@ -489,7 +496,8 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
     }, () => resolve());
   });
 
-  // Get element rect via CDP (scroll-safe: reads scrollX/Y separately from getBoundingClientRect)
+  // Query element rect inside CDP session (after attach + zoom normalization).
+  // Returns page-absolute CSS coordinates: x = r.left + scrollLeft, y = r.top + scrollTop.
   const cdpGetRect = (sel, sels) => new Promise((resolve) => {
     const expr = `(function(){
       let el = null;
@@ -501,23 +509,29 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
       const r   = el.getBoundingClientRect();
       const sx  = document.documentElement.scrollLeft || document.body.scrollLeft || 0;
       const sy  = document.documentElement.scrollTop  || document.body.scrollTop  || 0;
-      return { x: r.left + sx, y: r.top + sy, width: r.width, height: r.height };
+      return { x: r.left + sx, y: r.top + sy, width: r.width, height: r.height,
+               dpr: window.devicePixelRatio || 1, vpH: window.innerHeight };
     })()`;
     chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
       expression: expr, returnByValue: true,
     }, (res) => resolve(res?.result?.value || null));
   });
 
-  // Stitch vertical strips into one canvas
-  const stitchStrips = async (strips, totalWidth, totalHeight, dprVal) => {
-    const canvas = new OffscreenCanvas(Math.round(totalWidth * dprVal), Math.round(totalHeight * dprVal));
+  // Stitch vertical strips. physDpr is measured from the actual bitmap so it works
+  // at any zoom / OS DPI without hardcoding window.devicePixelRatio.
+  const stitchStrips = async (strips, totalWidth, totalHeight) => {
+    if (!strips.length) return null;
+    const bitmaps = await Promise.all(
+      strips.map(({ dataUrl }) => fetch(dataUrl).then(r => r.blob()).then(b => createImageBitmap(b)))
+    );
+    const physDpr = bitmaps[0].width / totalWidth;
+    const canvas = new OffscreenCanvas(Math.round(totalWidth * physDpr), Math.round(totalHeight * physDpr));
     const ctx = canvas.getContext("2d");
-    for (const { dataUrl, dy, clipH } of strips) {
-      const blob = await fetch(dataUrl).then(r => r.blob());
-      const bmp  = await createImageBitmap(blob);
-      ctx.drawImage(bmp,
-        0, 0, bmp.width, Math.round(clipH * dprVal),
-        0, Math.round(dy * dprVal), bmp.width, Math.round(clipH * dprVal));
+    for (let i = 0; i < strips.length; i++) {
+      const { dy } = strips[i];
+      const bmp = bitmaps[i];
+      ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height, 0, Math.round(dy * physDpr), bmp.width, bmp.height);
+      bmp.close();
     }
     const blob = await canvas.convertToBlob({ type: "image/png" });
     return new Promise((resolve) => {
@@ -535,33 +549,17 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
       });
     });
 
-    // Do NOT call setDeviceMetricsOverride — it resets window.scrollX/Y to 0
     await cdpRaf();
-
     await cdpEval(tabId, CDP_HIDE_SCROLLBAR);
     await cdpRaf();
-
-    // Remove picker UI so it doesn't appear in capture
     await cdpEval(tabId, `document.getElementById('__picker_bar')?.remove(); document.getElementById('__picker_overlay')?.remove();`);
     await cdpRaf();
 
-    // Re-query rect after scrollbar hide (scroll-safe method)
+    // Re-query rect inside CDP session (post zoom-normalization, post-attach)
     const rect = await cdpGetRect(selector, selectors) || rect0;
+    const effectiveVpH = rect.vpH || viewportHeight;
 
-    // Warm-up pass: scroll through element to force GPU rasterization
-    {
-      let warmY = rect.y;
-      while (warmY < rect.y + rect.height) {
-        await cdpEval(tabId, `window.scrollTo(${rect.x}, ${warmY})`);
-        await cdpRaf();
-        warmY += viewportHeight;
-      }
-      await cdpEval(tabId, `window.scrollTo(0, 0)`);
-      await cdpRaf();
-      await new Promise(r => setTimeout(r, 200));
-    }
-
-    // Hide fixed/sticky elements OUTSIDE the capture rect
+    // Hide fixed/sticky elements outside the capture rect
     const hideFixedOutside = `(function(rx,ry,rw,rh){
       [...document.querySelectorAll('*')].forEach(el=>{
         const p=getComputedStyle(el).position;
@@ -581,23 +579,25 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
     await cdpEval(tabId, hideFixedOutside);
     await cdpRaf();
 
-    // Tile-and-stitch using CSS transform (works for both short and tall elements)
+    // Strip capture using direct page coordinates — no transform, no scroll dependency.
+    // captureBeyondViewport:true clips by absolute page coordinates regardless of scroll.
+    // Scroll to each strip first to guarantee GPU rasterization of off-screen content.
     const strips = [];
     let remaining = rect.height;
     let offsetY   = 0;
 
     while (remaining > 0) {
-      const chunkH = Math.min(remaining, viewportHeight);
-      const tx = -rect.x;
-      const ty = -(rect.y + offsetY);
-      await cdpEval(tabId, `document.documentElement.style.transform='translate(${tx}px,${ty}px)'`);
+      const chunkH = Math.min(remaining, effectiveVpH);
+      const clipX = rect.x, clipY = rect.y + offsetY;
+
+      await cdpEval(tabId, `window.scrollTo(${clipX}, ${clipY})`);
       await cdpRaf();
       await new Promise(r => setTimeout(r, 100));
 
       const cap = await new Promise((resolve) => {
         chrome.debugger.sendCommand({ tabId }, "Page.captureScreenshot", {
-          format: "png", captureBeyondViewport: false,
-          clip: { x: 0, y: 0, width: rect.width, height: chunkH, scale: 1 },
+          format: "png", captureBeyondViewport: true,
+          clip: { x: clipX, y: clipY, width: rect.width, height: chunkH, scale: 1 },
         }, (res) => resolve(res));
       });
 
@@ -609,14 +609,17 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
       remaining -= chunkH;
     }
 
-    await cdpEval(tabId, `document.documentElement.style.transform=''`);
     await cdpEval(tabId, `window.scrollTo(${origScrollX}, ${origScrollY})`);
     await cdpEval(tabId, CDP_SHOW_FIXED);
 
-    let dataUrl = await stitchStrips(strips, rect.width, rect.height, dpr);
+    let dataUrl = await stitchStrips(strips, rect.width, rect.height);
 
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR);
     await new Promise((r) => chrome.debugger.detach({ tabId }, r));
+
+    if (Math.abs(origZoom - 1) > 0.01) {
+      await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r));
+    }
 
     dataUrl = await applyWatermark(dataUrl, tabId);
     const downloadPath = saveMode === "auto" ? `screenshots/${filename}` : filename;
@@ -630,10 +633,12 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
     return r;
 
   } catch (e) {
-    await cdpEval(tabId, `document.documentElement.style.transform=''`).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_FIXED).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR).catch(() => {});
     await new Promise((r) => chrome.debugger.detach({ tabId }, r)).catch(() => {});
+    if (Math.abs(origZoom - 1) > 0.01) {
+      await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r)).catch(() => {});
+    }
     return { error: e.message || "Screenshot failed" };
   }
 }

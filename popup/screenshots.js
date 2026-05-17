@@ -12,19 +12,41 @@ function takeScreenshotWithCrop(msgType, crop = false) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tabId = tabs[0]?.id;
     if (!tabId) { showToast('No active tab', 'error'); return; }
-    const toastMap = {
-      TAKE_SCREENSHOT:          'Capturing…',
-      TAKE_SCREENSHOT_FULL:     'Capturing full page…',
-      TAKE_SCREENSHOT_SCROLL_V: 'Capturing vertical scroll…',
-      TAKE_SCREENSHOT_SCROLL_H: 'Capturing horizontal scroll…',
-    };
-    showToast(toastMap[msgType] || 'Capturing…', 'info');
-    chrome.runtime.sendMessage({ type: msgType, tabId, crop }, (res) => {
-      void chrome.runtime.lastError;
-      if (res?.error) showToast('✗ ' + res.error, 'error');
-      else if (res?.cropping) showToast('Opening editor…', 'info');
-      else showToast('✓ Saved: ' + (res?.filename || 'screenshot'), 'success');
-    });
+
+    // Countdown mode: only for visible screenshot
+    if (msgType === 'TAKE_SCREENSHOT') {
+      chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
+        if (res.screenshotCountdownEnabled) {
+          chrome.tabs.sendMessage(tabId, {
+            type: 'START_VISIBLE_COUNTDOWN',
+            seconds: res.screenshotCountdownSeconds || 3,
+            crop: !!crop,
+          });
+          window.close();
+          return;
+        }
+        _doCapture(msgType, tabId, crop);
+      });
+      return;
+    }
+
+    _doCapture(msgType, tabId, crop);
+  });
+}
+
+function _doCapture(msgType, tabId, crop) {
+  const toastMap = {
+    TAKE_SCREENSHOT:          'Capturing…',
+    TAKE_SCREENSHOT_FULL:     'Capturing full page…',
+    TAKE_SCREENSHOT_SCROLL_V: 'Capturing vertical scroll…',
+    TAKE_SCREENSHOT_SCROLL_H: 'Capturing horizontal scroll…',
+  };
+  showToast(toastMap[msgType] || 'Capturing…', 'info');
+  chrome.runtime.sendMessage({ type: msgType, tabId, crop }, (res) => {
+    void chrome.runtime.lastError;
+    if (res?.error) showToast('✗ ' + res.error, 'error');
+    else if (res?.cropping) showToast('Opening editor…', 'info');
+    else showToast('✓ Saved: ' + (res?.filename || 'screenshot'), 'success');
   });
 }
 

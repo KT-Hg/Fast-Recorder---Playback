@@ -762,6 +762,21 @@
       <input id="screenshotPrefix" placeholder="Filename prefix (e.g. screenshot)" style="margin-top: 8px;" />
       <span class="helper-text">Format: {prefix}_{YYYY-MM-DD_HH-MM-SS}.png</span>
 
+      <p class="settings-section-title" style="margin-top:12px;">Visible Screenshot — Countdown</p>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
+        <input type="checkbox" id="screenshotCountdownEnabled" style="width:auto; margin:0; cursor:pointer;" />
+        Countdown before capture (để chụp được dropdown đang mở)
+      </label>
+      <div id="screenshotCountdownRow" style="display:none; align-items:center; gap:8px; margin-top:6px;">
+        <span style="font-size:12px; color:var(--muted); white-space:nowrap;">Đếm ngược</span>
+        <select id="screenshotCountdownSeconds" style="width:auto; margin:0; font-size:13px;">
+          <option value="3">3 giây</option>
+          <option value="5">5 giây</option>
+          <option value="10">10 giây</option>
+        </select>
+      </div>
+      <span class="helper-text">Bật: nhấn hotkey/nút → đếm ngược → mở dropdown → tự chụp. Tắt: chụp ngay (mặc định).</span>
+
       <p class="settings-section-title" style="margin-top:12px;">Watermark</p>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
         <input type="checkbox" id="watermarkEnabled" style="width:auto; margin:0; cursor:pointer;" />

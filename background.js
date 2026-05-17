@@ -13,7 +13,7 @@ import {
 import { updateBadge } from './bg/utils.js';
 import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback } from './bg/playback.js';
 import {
-  takeFullPageScreenshot, compareScreenshots, downloadDataUrl,
+  takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
 } from './bg/screenshot.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
@@ -44,6 +44,16 @@ function registerScheduleAlarm(schedule) {
 function unregisterScheduleAlarm(id) {
   chrome.alarms.clear(ALARM_PREFIX + id);
 }
+
+/** Set default settings on first install (do not overwrite existing values on update) */
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
+    const defaults = {};
+    if (res.screenshotCountdownEnabled === undefined) defaults.screenshotCountdownEnabled = true;
+    if (res.screenshotCountdownSeconds === undefined) defaults.screenshotCountdownSeconds = 3;
+    if (Object.keys(defaults).length) chrome.storage.local.set(defaults);
+  });
+});
 
 /** On service worker startup — sync alarms with stored schedules */
 chrome.storage.local.get(["schedules"], (res) => {
@@ -720,15 +730,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const crop = !!flags.elemShotPickCrop;
         const tabId = request.tabId || sender.tab?.id;
         if (tabId) {
-          const rect = request.rect;
-          if (!rect || !rect.width || !rect.height) {
-            chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: "Không thể lấy vị trí element" }, () => { void chrome.runtime.lastError; });
+          if (!request.selector && !request.selectors) {
+            chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: "Không thể lấy selector element" }, () => { void chrome.runtime.lastError; });
             return;
           }
           chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
             const saveMode = settings.screenshotSaveMode || "auto";
             const prefix   = settings.screenshotPrefix   || "screenshot";
-            takeFullPageScreenshot(tabId, saveMode, prefix, null, crop, 'full', false, false, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, 'elem')
+            // Use takeElementScreenshot so zoom normalization and coordinate re-query run inside CDP session
+            takeElementScreenshot(tabId, request.selector, saveMode, prefix, crop, false, false, request.selectors)
               .then((result) => {
                 chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result }).catch(() => {});
                 const _notif = (msg) => chrome.notifications.create("elemshot_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: msg }, () => { void chrome.runtime.lastError; });

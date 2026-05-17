@@ -957,8 +957,92 @@ function getKeyCombo(e) {
   return parts.join('+');
 }
 
+/* === Visible Screenshot Countdown === */
+
+let _countdownActive = false;
+let _countdownTimer  = null;
+
+function _startVisibleCountdown(seconds, crop) {
+  if (_countdownActive) return;
+  _countdownActive = true;
+
+  let remaining = seconds;
+
+  const overlay = document.createElement('div');
+  overlay.id = '__screenshot_countdown';
+  overlay.style.cssText = [
+    'position:fixed', 'top:12px', 'right:12px', 'z-index:2147483647',
+    'display:flex', 'align-items:center', 'gap:8px',
+    'background:rgba(30,30,30,0.82)', 'color:#fff',
+    'padding:6px 12px 6px 10px', 'border-radius:10px',
+    'font:13px system-ui,sans-serif', 'pointer-events:all',
+    'box-shadow:0 2px 10px rgba(0,0,0,0.4)',
+  ].join(';');
+
+  const numEl = document.createElement('span');
+  numEl.style.cssText = 'font:bold 20px system-ui,sans-serif;min-width:18px;text-align:center;';
+  numEl.textContent = remaining;
+
+  const hint = document.createElement('span');
+  hint.style.cssText = 'font:12px system-ui,sans-serif;color:rgba(255,255,255,0.75);';
+  hint.textContent = 'Mở dropdown…';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '✕';
+  cancelBtn.title = 'Hủy (ESC)';
+  cancelBtn.style.cssText = [
+    'margin-left:4px', 'padding:1px 5px', 'border:none',
+    'background:rgba(255,255,255,0.15)', 'color:#fff', 'border-radius:4px',
+    'cursor:pointer', 'font:12px system-ui,sans-serif', 'line-height:1.4',
+  ].join(';');
+  cancelBtn.addEventListener('click', _cancelCountdown);
+
+  overlay.appendChild(numEl);
+  overlay.appendChild(hint);
+  overlay.appendChild(cancelBtn);
+  document.documentElement.appendChild(overlay);
+
+  const tick = () => {
+    remaining--;
+    if (remaining <= 0) { _fireVisibleCapture(crop); return; }
+    numEl.textContent = remaining;
+    _countdownTimer = setTimeout(tick, 1000);
+  };
+  _countdownTimer = setTimeout(tick, 1000);
+}
+
+function _fireVisibleCapture(crop) {
+  document.getElementById('__screenshot_countdown')?.remove();
+  _countdownActive = false;
+  _countdownTimer  = null;
+  // Two rAF frames ensure overlay is fully removed from the rendered frame before capture
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    safeSend({ type: 'TAKE_SCREENSHOT', crop: !!crop });
+  }));
+}
+
+function _cancelCountdown() {
+  clearTimeout(_countdownTimer);
+  document.getElementById('__screenshot_countdown')?.remove();
+  _countdownActive = false;
+  _countdownTimer  = null;
+}
+
+// Handle countdown request from popup (button click)
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'START_VISIBLE_COUNTDOWN') {
+    _startVisibleCountdown(msg.seconds || 3, !!msg.crop);
+  }
+});
+
 document.addEventListener('keydown', (e) => {
-  // ESC cancels picker mode
+  // ESC cancels countdown overlay first, then picker mode
+  if (e.key === 'Escape' && _countdownActive) {
+    e.preventDefault();
+    _cancelCountdown();
+    return;
+  }
+
   if (pickerMode && e.key === 'Escape') {
     e.preventDefault();
     pickerMode = false;
@@ -988,7 +1072,13 @@ document.addEventListener('keydown', (e) => {
     });
   } else if (combo === activeHotkeys.screenshot) {
     e.preventDefault();
-    safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
+    chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
+      if (res.screenshotCountdownEnabled) {
+        _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
+      } else {
+        safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
+      }
+    });
     log('Hotkey: TAKE_SCREENSHOT');
   } else if (combo === activeHotkeys.screenshotFull) {
     e.preventDefault();
