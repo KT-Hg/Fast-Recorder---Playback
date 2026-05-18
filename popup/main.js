@@ -4209,6 +4209,7 @@ function renderExportCodeSelect() {
 }
 
 function parseCSV(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return null;
 

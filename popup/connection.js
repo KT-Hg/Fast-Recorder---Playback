@@ -280,6 +280,7 @@ export function setCsvDoneBar(scenarioName, summary) {
   _csvDoneActive = true;
   clearTimeout(_csvDoneTimeout);
   _setNowPlaying(true, { icon: '✓', name: scenarioName, step: summary });
+  _updatePanel({ name: scenarioName, progress: summary, pct: 100 });
   const bar = document.getElementById('nowPlayingBar');
   if (bar) bar.classList.add('csv-done');
   _csvDoneTimeout = setTimeout(() => {
