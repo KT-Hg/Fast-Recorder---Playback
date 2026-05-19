@@ -552,6 +552,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return;
     }
 
+    // OPEN DROPDOWN — handled via CDP in background; this is a fallback only
+    if (action.type === "dropdown") {
+      target.click();
+      sendResponse();
+      return;
+    }
+
     // INPUT / SELECT
     if (action.type === "input") {
       // Handle SELECT correctly

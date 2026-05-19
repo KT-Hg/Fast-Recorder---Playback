@@ -51,6 +51,27 @@ export async function sendCompletionNotification(title, message) {
 
 /* === VARIABLE INTERPOLATION === */
 
+const _RANDOM_CHARSETS = {
+  alpha:        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
+  numeric:      '0123456789',
+  alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+};
+
+export function resolveRandomVars(vars) {
+  const result = {};
+  for (const [k, v] of Object.entries(vars)) {
+    const m = typeof v === 'string' && v.match(/^\{random:(\w+):(\d+)\}$/);
+    if (m) {
+      const charset = _RANDOM_CHARSETS[m[1]] || _RANDOM_CHARSETS.alphanumeric;
+      const len = Math.min(parseInt(m[2], 10), 512);
+      result[k] = Array.from({ length: len }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
+    } else {
+      result[k] = v;
+    }
+  }
+  return result;
+}
+
 export function applyVars(str, vars) {
   if (typeof str !== "string" || !vars) return str;
   return str.replace(/\$\{([^}]+)\}/g, (_, k) => (k in vars ? vars[k] : `\${${k}}`));
@@ -76,6 +97,71 @@ export function interpolateAction(action, vars) {
 }
 
 /* === CDP SCRIPT EXECUTION (bypasses page CSP) === */
+
+// Detach debugger if attached (silently ignores if not attached)
+export function tryDetachDebugger(tabId) {
+  chrome.debugger.detach({ tabId }, () => { chrome.runtime.lastError; /* suppress */ });
+}
+
+// Open a dropdown via CDP.
+// For native <select>: focuses the tab window first (extension popup closing drops window focus
+// which causes the native dropdown to close), then sends mousePressed only (no mouseReleased,
+// no detach — detach synthesizes mouseReleased and closes the dropdown).
+// For custom dropdowns: full click then detach normally.
+export function openDropdownViaCdp(tabId, selector) {
+  return new Promise((resolve) => {
+    // Focus the tab's window so the native select popup doesn't close due to lost window focus
+    chrome.tabs.get(tabId, (tab) => {
+      const focusAndOpen = () => {
+        chrome.debugger.attach({ tabId }, "1.3", () => {
+          const alreadyAttached = !!chrome.runtime.lastError;
+          const done = () => { if (!alreadyAttached) chrome.debugger.detach({ tabId }, () => {}); resolve(); };
+
+          // If freshly attached, the "started debugging" banner appears after a short delay
+          // and steals window focus, closing any native dropdown we already opened.
+          // Wait for the banner to settle before sending the mouse event.
+          const delay = alreadyAttached ? 0 : 700;
+
+          setTimeout(() => chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+            expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width/2, y: r.top + r.height/2, isSelect: el.tagName === 'SELECT' }); })()`,
+            returnByValue: true,
+          }, (rectRes) => {
+            let info = null;
+            try { info = JSON.parse(rectRes?.result?.value); } catch (_) {}
+            if (!info) { done(); return; }
+
+            const x = Math.round(info.x);
+            const y = Math.round(info.y);
+
+            if (info.isSelect) {
+              // Native <select>: mousePressed only, no mouseReleased, no detach.
+              // mouseReleased or detach both cause Chrome to close the popup.
+              chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent",
+                { type: "mousePressed", x, y, button: "left", clickCount: 1, modifiers: 0 },
+                resolve
+              );
+            } else {
+              // Custom dropdown: full click then detach
+              chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent",
+                { type: "mousePressed", x, y, button: "left", clickCount: 1, modifiers: 0 },
+                () => chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent",
+                  { type: "mouseReleased", x, y, button: "left", clickCount: 1, modifiers: 0 },
+                  done
+                )
+              );
+            }
+          }), delay);
+        });
+      };
+
+      if (tab?.windowId) {
+        chrome.windows.update(tab.windowId, { focused: true }, focusAndOpen);
+      } else {
+        focusAndOpen();
+      }
+    });
+  });
+}
 
 export async function runScriptViaCdp(tabId, code) {
   const expression = code.replace(/^javascript:/i, '').trim();

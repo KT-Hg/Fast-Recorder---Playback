@@ -318,7 +318,7 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
     }
 
     // GPU texture limit — use tiling for oversized captures
-    const MAX_CAPTURE_DIM = 10000;
+    const MAX_CAPTURE_DIM = 4000;
     const needsStitch = (clipWidth * dpr > MAX_CAPTURE_DIM) || (clipHeight * dpr > MAX_CAPTURE_DIM);
 
     let result;

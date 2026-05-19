@@ -16,7 +16,8 @@ export function escHtml(s) {
 export const ACTION_ICONS = {
   click: '🖱', input: '⌨', navigate: '🔗', script: '⚡', hover: '👆',
   wait: '⏱', condition: '❓', switch: '🔀', dragdrop: '↕', readdom: '📖',
-  screenshot: '📷', screenshot_full: '📄', screenshot_element: '📌', screenshot_tovar: '📸'
+  screenshot: '📷', screenshot_full: '📄', screenshot_element: '📌', screenshot_tovar: '📸',
+  dropdown: '▼'
 };
 
 export function getActionIcon(type) {

@@ -120,6 +120,13 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       if (delay > 0) out.push(`await sleep(${delay});`);
       break;
 
+    case 'dropdown':
+      out.push(`// Step ${stepNum}: open dropdown (freeze)${lbl}`);
+      out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      out.push(`${v}.click();`);
+      if (delay > 0) out.push(`await sleep(${delay});`);
+      break;
+
     case 'dragdrop': {
       const tgt = action.targetSelectors?.css || action.targetSelector || '';
       out.push(`// Step ${stepNum}: dragdrop${lbl}`);

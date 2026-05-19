@@ -7,7 +7,7 @@ import { state } from './state.js';
 import { getScenarios, getVariables } from './storage.js';
 import {
   updateBadge, sendCompletionNotification,
-  interpolateAction, runScriptViaCdp, getActiveTabId, tabMsg,
+  resolveRandomVars, interpolateAction, runScriptViaCdp, openDropdownViaCdp, tryDetachDebugger, getActiveTabId, tabMsg,
 } from './utils.js';
 import {
   takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
@@ -16,7 +16,7 @@ import {
 /* === PLAYBACK CORE === */
 
 export async function playActionsOnTab(tabId, actions, vars = null, screenshotsResult = null, forceAutoSave = false, skipDownload = false, startFromIndex = 0, failedActions = null) {
-  const resolvedVars = vars !== null ? vars : await getVariables();
+  const resolvedVars = resolveRandomVars(vars !== null ? vars : await getVariables());
 
   for (let i = startFromIndex; i < actions.length; i++) {
     if (!state.playback.active) break;
@@ -61,6 +61,16 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
         continue;
       }
 
+      // Dropdown — use CDP trusted click so native <select> opens its OS popup
+      if (action.type === "dropdown") {
+        const cssSel = action.selectors?.css
+          || (action.selectors?.id ? `#${CSS.escape(action.selectors.id)}` : null)
+          || action.selector || "";
+        if (cssSel) await openDropdownViaCdp(tabId, cssSel);
+        if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
+        continue;
+      }
+
       // Script (run via CDP to bypass page CSP)
       if (action.type === "script") {
         await runScriptViaCdp(tabId, action.code || "");
@@ -74,7 +84,7 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
           chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
             const saveMode = forceAutoSave ? "auto" : (settings.screenshotSaveMode || "auto");
             const prefix = settings.screenshotPrefix || "screenshot";
-            takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload)
+            takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload, action.selectors)
               .then(resolve).catch(resolve);
           });
         });
@@ -339,7 +349,7 @@ function collectRelevantKeys(actions) {
 }
 
 export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFormat = "csv") {
-  const skipDownload = exportFormat === "xlsx" || exportFormat === "html";
+  const skipDownload = exportFormat === "xlsx" || exportFormat === "html" || exportFormat === "zip";
   state.csvPlayback = { active: true, rows, currentRow: 0, scenarioId, delayBetween };
   updateBadge();
 

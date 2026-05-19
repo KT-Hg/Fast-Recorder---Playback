@@ -167,6 +167,13 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       if (delay > 0) out.push(`time.sleep(${delay})`);
       break;
 
+    case 'dropdown':
+      out.push(`# Step ${stepNum}: open dropdown (freeze)${lbl}`);
+      out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.element_to_be_clickable((${selPy})))`);
+      out.push(`${elVar}.click()`);
+      if (delay > 0) out.push(`time.sleep(${delay})`);
+      break;
+
     case 'dragdrop': {
       const tgt   = getBestTargetSelInfo(action);
       const tgtPy = selToPy(tgt);

@@ -1809,6 +1809,9 @@ function _getActionDisplayValue(a) {
   if (a.type === "dragdrop") {
     return `${a.selector || "(no source)"} → ${a.targetSelector || "(no target)"}`;
   }
+  if (a.type === "dropdown") {
+    return a.selector || "(no selector)";
+  }
   if (a.type === "screenshot_element") {
     return a.selector || "(no selector)";
   }
@@ -2511,6 +2514,9 @@ function startEdit(index, action) {
       if (pickedDdWrap) pickedDdWrap.style.display = "none";
     }
   } else if (action.type === "hover") {
+    if (manualValueWrapper) manualValueWrapper.style.display = "none";
+    if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
+  } else if (action.type === "dropdown") {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
   } else if (action.type === "readdom") {
@@ -4690,6 +4696,20 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
         } else if (format === "xlsx") {
           const blob = generateResultXlsx(csvParsed.headers, csvParsed.rows, results, ss);
           _downloadBlob(blob, `csv_result_${ts}.xlsx`);
+        } else if (format === "zip") {
+          const zip = new ZipWriter();
+          const csvText = generateResultCsv(csvParsed.headers, csvParsed.rows, results);
+          zip.add("results.csv", "﻿" + csvText);
+          for (const [key, b64] of Object.entries(ss)) {
+            const colonIdx = key.indexOf(":");
+            const rowNum = String(Number(key.slice(0, colonIdx)) + 1).padStart(2, "0");
+            const varName = key.slice(colonIdx + 1);
+            const binary = atob(b64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            zip.add(`row_${rowNum}/${varName}.png`, bytes);
+          }
+          _downloadBlob(zip.build("application/zip"), `csv_screenshots_${ts}.zip`);
         }
         showToast("Downloaded — results still available for re-download", "success");
       });
