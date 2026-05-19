@@ -4870,6 +4870,11 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
   );
 });
 
+// Persist export format selection across popup reopens
+document.getElementById("csvExportFormat")?.addEventListener("change", (e) => {
+  chrome.storage.local.set({ csvExportFormat: e.target.value });
+});
+
 // Show format-locked warning when user clicks the format area while in done state
 // pointer-events:none on the select lets clicks fall through to this parent div
 document.getElementById("csvFormatRow")?.addEventListener("click", () => {
@@ -4879,11 +4884,19 @@ document.getElementById("csvFormatRow")?.addEventListener("click", () => {
   locked.style.display = "";
 });
 
+/* === Restore export format selection on every popup open === */
+chrome.storage.local.get(["csvExportFormat"], (stored) => {
+  if (stored.csvExportFormat) {
+    const sel = document.getElementById("csvExportFormat");
+    if (sel) sel.value = stored.csvExportFormat;
+  }
+});
+
 /* === Restore CSV session when popup reopens during/after a run === */
 (function restoreCsvSession() {
   chrome.runtime.sendMessage({ type: "GET_CSV_STATUS" }, (csvStatus) => {
     const isActive = !!csvStatus?.active;
-    chrome.storage.local.get(["csvSessionData", "csvRunResults"], (stored) => {
+    chrome.storage.local.get(["csvSessionData", "csvRunResults", "csvExportFormat"], (stored) => {
       const session    = stored.csvSessionData;
       const hasResults = (stored.csvRunResults || []).length > 0;
       if (!session) return;
@@ -4891,6 +4904,11 @@ document.getElementById("csvFormatRow")?.addEventListener("click", () => {
 
       // Restore in-memory CSV data so download works without reloading file
       csvParsed = session;
+
+      if (stored.csvExportFormat) {
+        const sel = document.getElementById("csvExportFormat");
+        if (sel) sel.value = stored.csvExportFormat;
+      }
 
       const preview  = document.getElementById("csvPreview");
       const status   = document.getElementById("csvStatus");

@@ -475,6 +475,12 @@ button:disabled {
 }
 .action-switch .type { color: #e879f9; }
 
+.action-dropdown {
+  border-left: 4px solid #f472b6;
+  background: linear-gradient(90deg, rgba(244, 114, 182, 0.08) 0%, transparent 100%);
+}
+.action-dropdown .type { color: #f472b6; }
+
 /* Disabled action styling */
 .action-disabled {
   opacity: 0.5;

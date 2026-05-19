@@ -559,6 +559,12 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
     const rect = await cdpGetRect(selector, selectors) || rect0;
     const effectiveVpH = rect.vpH || viewportHeight;
 
+    // Scroll element into viewport so lazy-rendered content is visible before capture
+    const scrollToY = Math.max(0, rect.y - Math.max(0, (effectiveVpH - rect.height) / 2));
+    await cdpEval(tabId, `window.scrollTo(${rect.x}, ${scrollToY})`);
+    await cdpRaf();
+    await new Promise(r => setTimeout(r, 150));
+
     // Hide fixed/sticky elements outside the capture rect
     const hideFixedOutside = `(function(rx,ry,rw,rh){
       [...document.querySelectorAll('*')].forEach(el=>{
