@@ -276,12 +276,19 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
 }
 
 // Recursively processes an action array, grouping condition blocks
+// Disabled actions are skipped inline so skipCount stays aligned with the original array.
 function processActions(actions, baseIdx, stepDelay, elTimeout) {
   const out = [];
   let i = 0;
 
   while (i < actions.length) {
     const action  = actions[i];
+
+    if (action.disabled) {
+      i++;
+      continue;
+    }
+
     const stepNum = baseIdx + i + 1;
 
     if (action.type === 'condition') {
@@ -410,7 +417,7 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   out.push('try:');
   out.push('');
 
-  const bodyLines = processActions(enabled, 0, stepDelay, elTimeout);
+  const bodyLines = processActions(actions || [], 0, stepDelay, elTimeout);
   for (const line of bodyLines) {
     out.push(line === '' ? '' : '    ' + line);
   }

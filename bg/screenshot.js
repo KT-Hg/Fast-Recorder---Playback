@@ -257,6 +257,15 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
   const { fullWidth, fullHeight, viewportWidth, viewportHeight, scrollX, scrollY, devicePixelRatio: dpr } = dims;
 
   try {
+    // [FIX 4] Force-release stale debugger session (e.g., left by a dropdown action on native <select>)
+    let staleCleaned = false;
+    await new Promise(r => chrome.debugger.detach({ tabId }, () => {
+      staleCleaned = !chrome.runtime.lastError;
+      void chrome.runtime.lastError;
+      r();
+    }));
+    if (staleCleaned) await new Promise(r => setTimeout(r, 300));
+
     await new Promise((resolve, reject) => {
       chrome.debugger.attach({ tabId }, "1.3", () => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -443,6 +452,8 @@ export async function takeFullPageScreenshot(tabId, saveMode, prefix, requestedF
       chrome.debugger.sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride", {}, resolve);
     });
     await new Promise((resolve) => chrome.debugger.detach({ tabId }, resolve));
+    // [FIX 3] Chờ Chrome giải phóng hoàn toàn debugger session trước khi action tiếp theo có thể attach lại
+    await new Promise(r => setTimeout(r, 300));
 
     if (!result?.data) return { error: "CDP capture returned no data" };
 
@@ -542,6 +553,15 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
   };
 
   try {
+    // [FIX 4] Force-release stale debugger session (e.g., left by a dropdown action on native <select>)
+    let staleCleaned = false;
+    await new Promise(r => chrome.debugger.detach({ tabId }, () => {
+      staleCleaned = !chrome.runtime.lastError;
+      void chrome.runtime.lastError;
+      r();
+    }));
+    if (staleCleaned) await new Promise(r => setTimeout(r, 300));
+
     await new Promise((resolve, reject) => {
       chrome.debugger.attach({ tabId }, "1.3", () => {
         if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -622,6 +642,8 @@ export async function takeElementScreenshot(tabId, selector, saveMode, prefix, c
 
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR);
     await new Promise((r) => chrome.debugger.detach({ tabId }, r));
+    // [FIX 3] Chờ Chrome giải phóng hoàn toàn debugger session trước khi action tiếp theo có thể attach lại
+    await new Promise(r => setTimeout(r, 300));
 
     if (Math.abs(origZoom - 1) > 0.01) {
       await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r));

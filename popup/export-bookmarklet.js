@@ -37,9 +37,12 @@ export function previewRandom(type, length) {
 }
 
 function getBestSel(action) {
-  return action.selectors?.css
+  const s = action.selectors || {};
+  return s.css
     || action.selector
-    || (action.selectors?.id ? '#' + action.selectors.id : '')
+    || (s.id ? '#' + s.id : '')
+    || s.xpath
+    || s.fullXpath
     || '';
 }
 
@@ -64,18 +67,18 @@ function condHeader(action, stepNum) {
   const lbl = action.label ? ` — ${action.label}` : '';
 
   const exprMap = {
-    elementExists:    `document.querySelector(${s}) !== null`,
-    elementNotExists: `document.querySelector(${s}) === null`,
-    elementVisible:   `(() => { const _e=document.querySelector(${s}); return !!_e && _e.offsetParent!==null; })()`,
-    elementHidden:    `(() => { const _e=document.querySelector(${s}); return !_e || _e.offsetParent===null; })()`,
-    textContains:     `(document.querySelector(${s})?.textContent||'').includes(${exp})`,
-    textEquals:       `(document.querySelector(${s})?.textContent||'').trim()===${exp}`,
-    valueEquals:      `(document.querySelector(${s})?.value||'')===${exp}`,
-    valueContains:    `(document.querySelector(${s})?.value||'').includes(${exp})`,
+    elementExists:    `_qsel(${s}) !== null`,
+    elementNotExists: `_qsel(${s}) === null`,
+    elementVisible:   `(() => { const _e=_qsel(${s}); return !!_e && _e.offsetParent!==null; })()`,
+    elementHidden:    `(() => { const _e=_qsel(${s}); return !_e || _e.offsetParent===null; })()`,
+    textContains:     `(_qsel(${s})?.textContent||'').includes(${exp})`,
+    textEquals:       `(_qsel(${s})?.textContent||'').trim()===${exp}`,
+    valueEquals:      `(_qsel(${s})?.value||'')===${exp}`,
+    valueContains:    `(_qsel(${s})?.value||'').includes(${exp})`,
     urlContains:      `window.location.href.includes(${exp})`,
     urlEquals:        `window.location.href===${exp}`,
-    hasClass:         `(document.querySelector(${s})?.classList.contains(${exp})??false)`,
-    hasAttribute:     `(document.querySelector(${s})?.hasAttribute(${exp})??false)`,
+    hasClass:         `(_qsel(${s})?.classList.contains(${exp})??false)`,
+    hasAttribute:     `(_qsel(${s})?.hasAttribute(${exp})??false)`,
   };
 
   const expr = exprMap[action.conditionType] || `true /* unknown: ${action.conditionType} */`;
@@ -182,12 +185,19 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
 }
 
 // Recursively processes an action array, grouping condition blocks
+// Disabled actions are skipped inline so skipCount stays aligned with the original array.
 function processActions(actions, baseIdx, stepDelay, elTimeout) {
   const out = [];
   let i = 0;
 
   while (i < actions.length) {
     const action = actions[i];
+
+    if (action.disabled) {
+      i++;
+      continue;
+    }
+
     const stepNum = baseIdx + i + 1;
 
     if (action.type === 'condition') {
@@ -249,11 +259,15 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('  // --- HELPER FUNCTIONS ---');
   out.push('  const sleep = ms => new Promise(r => setTimeout(r, ms));');
   out.push('');
+  out.push('  const _qsel = sel => (sel.startsWith(\'/\') || sel.startsWith(\'(\'))');
+  out.push('    ? document.evaluate(sel, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue');
+  out.push('    : document.querySelector(sel);');
+  out.push('');
   out.push(`  const getEl = (sel, timeout = ${elTimeout}) => new Promise((res, rej) => {`);
-  out.push('    const el = document.querySelector(sel);');
+  out.push('    const el = _qsel(sel);');
   out.push('    if (el) return res(el);');
   out.push('    const obs = new MutationObserver(() => {');
-  out.push('      const found = document.querySelector(sel);');
+  out.push('      const found = _qsel(sel);');
   out.push('      if (found) { obs.disconnect(); res(found); }');
   out.push('    });');
   out.push('    obs.observe(document.body, { childList: true, subtree: true });');
@@ -305,7 +319,7 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('  try {');
   out.push('');
 
-  for (const line of processActions(enabled, 0, stepDelay, elTimeout)) {
+  for (const line of processActions(actions || [], 0, stepDelay, elTimeout)) {
     out.push(line === '' ? '' : '    ' + line);
   }
 

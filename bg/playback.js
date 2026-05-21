@@ -12,6 +12,7 @@ import {
 import {
   takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
 } from './screenshot.js';
+import { ssWrite, ssClear } from './idb-screenshots.js';
 
 /* === PLAYBACK CORE === */
 
@@ -78,16 +79,17 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
         continue;
       }
 
-      // Element screenshot
+      // [FIX 2] Element screenshot — báo lỗi thay vì nuốt im lặng
       if (action.type === "screenshot_element") {
-        await new Promise((resolve) => {
-          chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
-            const saveMode = forceAutoSave ? "auto" : (settings.screenshotSaveMode || "auto");
-            const prefix = settings.screenshotPrefix || "screenshot";
-            takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload, action.selectors)
-              .then(resolve).catch(resolve);
-          });
-        });
+        const settings = await new Promise(r => chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], r));
+        const saveMode = forceAutoSave ? "auto" : (settings.screenshotSaveMode || "auto");
+        const prefix = settings.screenshotPrefix || "screenshot";
+        const result = await takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload, action.selectors)
+          .catch(e => ({ error: e.message }));
+        if (result?.error) {
+          chrome.runtime.sendMessage({ type: "ACTION_FAILED", index: i, action }).catch(() => {});
+          if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || "" });
+        }
         continue;
       }
 
@@ -119,18 +121,19 @@ export async function playActionsOnTab(tabId, actions, vars = null, screenshotsR
         continue;
       }
 
-      // Screenshot (visible or full page)
+      // [FIX 2] Screenshot (visible or full page) — báo lỗi thay vì nuốt im lặng
       if (action.type === "screenshot" || action.type === "screenshot_full") {
-        await new Promise((resolve) => {
-          chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
-            const saveMode = forceAutoSave ? "auto" : (settings.screenshotSaveMode || "auto");
-            const prefix = settings.screenshotPrefix || "screenshot";
-            const task = action.type === "screenshot_full"
-              ? takeFullPageScreenshot(tabId, saveMode, prefix, action.value || null, false, 'full', false, skipDownload)
-              : takeVisibleScreenshot(tabId, saveMode, prefix, action.value || null, false, false, skipDownload);
-            task.then(resolve).catch(resolve);
-          });
-        });
+        const settings = await new Promise(r => chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], r));
+        const saveMode = forceAutoSave ? "auto" : (settings.screenshotSaveMode || "auto");
+        const prefix = settings.screenshotPrefix || "screenshot";
+        const task = action.type === "screenshot_full"
+          ? takeFullPageScreenshot(tabId, saveMode, prefix, action.value || null, false, 'full', false, skipDownload)
+          : takeVisibleScreenshot(tabId, saveMode, prefix, action.value || null, false, false, skipDownload);
+        const result = await task.catch(e => ({ error: e.message }));
+        if (result?.error) {
+          chrome.runtime.sendMessage({ type: "ACTION_FAILED", index: i, action }).catch(() => {});
+          if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || "" });
+        }
         continue;
       }
 
@@ -364,8 +367,10 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   const relevantKeys = collectRelevantKeys(actions);
   const runResults = [];
 
-  await new Promise(r => chrome.storage.local.remove(["csvRunResults", "csvScreenshots"], r));
-  let allScreenshots = {};
+  await Promise.all([
+    new Promise(r => chrome.storage.local.remove("csvRunResults", r)),
+    ssClear(),
+  ]);
 
   for (let i = 0; i < rows.length; i++) {
     if (!state.csvPlayback.active) break;
@@ -383,11 +388,8 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     );
     runResults.push({ rowIndex: i, vars: filteredVars, failures: failedActions });
 
-    if (Object.keys(screenshotsResult).length > 0) {
-      Object.entries(screenshotsResult).forEach(([vn, b64]) => {
-        allScreenshots[`${i}:${vn}`] = b64;
-      });
-      await new Promise(r => chrome.storage.local.set({ csvScreenshots: allScreenshots }, r));
+    for (const [vn, b64] of Object.entries(screenshotsResult)) {
+      await ssWrite(i, vn, b64);
     }
 
     await new Promise(r => chrome.storage.local.set({ csvRunResults: runResults }, r));

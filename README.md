@@ -121,8 +121,9 @@ From the **Data** tab → **Export Code** card, select any saved scenario and ge
 
 - Runs directly in the browser console or as a saved bookmark URL
 - No Selenium or Python required
-- Supported actions: `click`, `input`, `hover`, `dragdrop`, `navigate`, `wait`, `script`, `readdom`
+- Supported actions: `click`, `input`, `hover`, `dragdrop`, `navigate`, `wait`, `script`, `readdom`, `condition`, `dropdown`
 - Skipped actions: `screenshot*` (require Extension API), `switch`
+- Selectors: CSS preferred; automatically falls back to XPath (`xpath` / `fullXpath`) via a `_qsel()` helper injected into the generated script
 - Copy as a single-line bookmark URL or download as a `.js` file
 
 **Output example:**
@@ -300,7 +301,7 @@ Orthogonal states (can overlay IDLE): **PICK_MODE**, **SEGMENT_CAPTURING**
 chrome.storage.local (5 MB — device-local)
   scenarios, folders, variables, schedules
   settings (hotkeys, watermark, screenshot config, theme, tab order)
-  csvRunResults, csvScreenshots
+  csvRunResults (text results only)
   Pending context flags (pick, drag-drop, form draft)
   activatedTabs whitelist
 
@@ -309,6 +310,10 @@ chrome.storage.sync (100 KB — synced across devices)
 
 chrome.storage.session (1 MB — survives SW restart, lost on browser close)
   undoStacks per scenario (max 50 snapshots each)
+
+IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
+  CSV screenshot results: key = "rowIndex:varName", value = base64 PNG
+  No extra permissions needed — safe for Web Store publication
 ```
 
 ### Key Settings Stored in `chrome.storage.local`

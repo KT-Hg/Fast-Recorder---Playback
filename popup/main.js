@@ -4674,7 +4674,7 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
   if (!csvParsed) { showToast("Reload the original CSV file first", "error"); return; }
 
   const now = new Date();
-  const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+  const ts = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}_${String(now.getHours()).padStart(2,"0")}-${String(now.getMinutes()).padStart(2,"0")}-${String(now.getSeconds()).padStart(2,"0")}`;
 
   const fetchResults = cb => chrome.runtime.sendMessage({ type: "GET_CSV_RUN_RESULTS" }, cb);
   const fetchSS      = cb => chrome.runtime.sendMessage({ type: "GET_CSV_SCREENSHOTS" }, cb);
@@ -4858,12 +4858,14 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
   showConfirm(
     "Changing the export format will clear the current run results. You will need to run again.",
     () => {
-      chrome.storage.local.remove(["csvRunResults", "csvScreenshots"], () => {
-        const status = document.getElementById("csvStatus");
-        if (status) status.textContent = "";
-        _updateCsvBadges(0, 0, 0, false);
-        _setCsvState('idle');
-        showToast("Format unlocked — results cleared", "info");
+      chrome.runtime.sendMessage({ type: "CLEAR_CSV_SCREENSHOTS" }, () => {
+        chrome.storage.local.remove("csvRunResults", () => {
+          const status = document.getElementById("csvStatus");
+          if (status) status.textContent = "";
+          _updateCsvBadges(0, 0, 0, false);
+          _setCsvState('idle');
+          showToast("Format unlocked — results cleared", "info");
+        });
       });
     },
     { title: "Change Export Format?", danger: true, okLabel: "Clear & change" }

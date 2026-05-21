@@ -15,6 +15,7 @@ import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlay
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
 } from './bg/screenshot.js';
+import { ssReadAll, ssClear } from './bg/idb-screenshots.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -511,7 +512,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       "lastSelectedScenario", "lastTab",
       "pendingRecordScenarioId", "condHelpLang", "screenshotExpanded",
       "watermarkEnabled", "watermarkFormat", "watermarkFontSize",
-      "csvRunResults", "csvScreenshots", "csvSessionData",
+      "csvRunResults", "csvSessionData",
       "playbackCheckpoint",
     ]);
     const sanitized = {};
@@ -609,9 +610,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (type === "GET_CSV_SCREENSHOTS") {
-    chrome.storage.local.get(["csvScreenshots"], (res) => {
-      sendResponse({ screenshots: res.csvScreenshots || {} });
-    });
+    ssReadAll()
+      .then(screenshots => sendResponse({ screenshots }))
+      .catch(e => { console.error('[CSV] IDB read failed:', e); sendResponse({ screenshots: {} }); });
+    return true;
+  }
+
+  if (type === "CLEAR_CSV_SCREENSHOTS") {
+    ssClear().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
     return true;
   }
 
