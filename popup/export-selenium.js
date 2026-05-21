@@ -455,9 +455,26 @@ export function initExportSelenium() {
   document.getElementById('exportSeleniumClose')?.addEventListener('click', _close);
   document.getElementById('exportSeleniumCancel')?.addEventListener('click', _close);
   document.getElementById('exportSeleniumCopy')?.addEventListener('click', _copy);
+  document.getElementById('exportSeleniumCopyHeader')?.addEventListener('click', _copy);
   document.getElementById('exportSeleniumDownload')?.addEventListener('click', _download);
+  document.getElementById('exportSeleniumDownloadHeader')?.addEventListener('click', _download);
   document.getElementById('exportSeleniumRegenerate')?.addEventListener('click', _regenerate);
   document.getElementById('exportSeleniumGetUrl')?.addEventListener('click', _fillCurrentUrl);
+
+  document.getElementById('exportSeleniumWrapBtn')?.addEventListener('click', () => {
+    const code = document.getElementById('exportSeleniumCode');
+    if (code) code.style.whiteSpace = code.style.whiteSpace === 'pre-wrap' ? 'pre' : 'pre-wrap';
+  });
+
+  document.getElementById('exportSeleniumSelectAllBtn')?.addEventListener('click', () => {
+    const code = document.querySelector('#exportSeleniumCode code');
+    if (!code) return;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
 
   document.querySelectorAll('.export-py-tab').forEach(btn => {
     btn.addEventListener('click', () => _switchTab(btn.dataset.tab));
@@ -510,8 +527,15 @@ function _openModal(scenarioName, actions, variables) {
 }
 
 function _renderModal(scenarioName, result, variables) {
-  document.getElementById('exportSeleniumTitle').textContent = `Export Python — ${scenarioName}`;
+  const safe = scenarioName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const filename = `${safe}_selenium.py`;
 
+  // Header
+  document.getElementById('exportSeleniumTitle').textContent = `Export Python — ${scenarioName}`;
+  document.getElementById('exportSeleniumSub').textContent = `${filename} · ${result.stats.supported} steps`;
+  document.getElementById('exportSeleniumCodeLabel').textContent = filename;
+
+  // Code preview
   const codeEl = document.querySelector('#exportSeleniumCode code');
   if (codeEl) codeEl.textContent = result.code;
 
@@ -528,43 +552,46 @@ function _renderModal(scenarioName, result, variables) {
     warning.style.display = 'none';
   }
 
-  // Variables tab
-  const vars    = Object.entries(variables || {});
+  // Variables — row layout
+  const vars = Object.entries(variables || {});
   document.getElementById('exportSeleniumVarCount').textContent = vars.length;
 
   const noVarsEl = document.getElementById('exportSeleniumNoVars');
-  const tableEl  = document.getElementById('exportSeleniumVarTable');
-  const tbody    = document.getElementById('exportSeleniumVarBody');
+  const listEl   = document.getElementById('exportSeleniumVarList');
 
   if (vars.length === 0) {
     noVarsEl.style.display = '';
-    tableEl.style.display  = 'none';
+    listEl.innerHTML = '';
   } else {
     noVarsEl.style.display = 'none';
-    tableEl.style.display  = '';
-    tbody.innerHTML = '';
+    listEl.innerHTML = '';
     for (const [key, val] of vars) {
       const spec    = parseRandomSpec(val);
       const isRand  = !!spec;
       const preview = isRand
         ? previewRandom(spec.type, spec.length)
-        : (val.length > 32 ? val.slice(0, 32) + '…' : val);
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${escHtml(key)}</td>
-        <td><span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span></td>
-        <td class="export-bm-preview">${escHtml(preview)}</td>`;
-      tbody.appendChild(tr);
+        : (val.length > 40 ? val.slice(0, 40) + '…' : val);
+      const row = document.createElement('div');
+      row.className = 'export-bm-var-row';
+      row.innerHTML = `
+        <div class="export-bm-var-icon ${isRand ? 'rand' : 'static'}">${isRand ? '🎲' : '🔤'}</div>
+        <span class="export-bm-var-name">\${${escHtml(key)}}</span>
+        <span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span>
+        <span class="export-bm-preview">${escHtml(preview)}</span>`;
+      listEl.appendChild(row);
     }
   }
 
-  // Stats footer
-  const { total, supported, skipped } = result.stats;
-  const statsEl = document.getElementById('exportSeleniumStats');
-  if (statsEl) {
-    let txt = `${supported}/${total} steps`;
-    if (skipped > 0) txt += ` · ${skipped} skipped`;
-    statsEl.textContent = txt;
+  // Stats pills
+  const { supported, skipped } = result.stats;
+  document.getElementById('exportSeleniumStatSteps').textContent = `${supported} steps`;
+  document.getElementById('exportSeleniumStatVars').textContent  = `${vars.length} variables`;
+  const skippedPill = document.getElementById('exportSeleniumStatSkippedPill');
+  if (skipped > 0) {
+    document.getElementById('exportSeleniumStatSkipped').textContent = `${skipped} skipped`;
+    skippedPill.style.display = '';
+  } else {
+    skippedPill.style.display = 'none';
   }
 }
 
@@ -591,14 +618,13 @@ async function _copy() {
   if (!_currentCode) return;
   try {
     await navigator.clipboard.writeText(_currentCode);
-    const btn = document.getElementById('exportSeleniumCopy');
-    if (btn) {
+    for (const id of ['exportSeleniumCopy', 'exportSeleniumCopyHeader']) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      const orig = btn.textContent;
       btn.textContent = '✓ Copied!';
       btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = '📋 Copy';
-        btn.classList.remove('copied');
-      }, 1500);
+      setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
     }
   } catch {
     showToast('Clipboard không khả dụng', 'error');

@@ -963,64 +963,84 @@
     <div class="export-bm-content">
 
       <div class="export-bm-header">
-        <div class="export-modal-title-row">
-          <span class="export-lang-chip export-lang-chip-js">JS</span>
-          <h4 id="exportBmTitle">Export JS Bookmarklet</h4>
+        <div class="export-bm-accent-bar export-bm-accent-js"></div>
+        <div class="export-bm-header-inner">
+          <div class="export-bm-lang-badge export-bm-lang-badge-js">JS</div>
+          <div class="export-bm-header-text">
+            <div class="export-bm-header-title" id="exportBmTitle">Export JS Bookmarklet</div>
+            <div class="export-bm-header-sub" id="exportBmSub">scenario.js · 0 steps</div>
+          </div>
+          <div class="export-bm-header-actions">
+            <button class="export-bm-icon-btn" id="exportBmCopyHeader" title="Copy code">📋</button>
+            <button class="export-bm-icon-btn" id="exportBmDownloadHeader" title="Download">⬇</button>
+            <button class="export-bm-icon-btn export-bm-icon-btn-danger" id="exportBmClose" aria-label="Close">✕</button>
+          </div>
         </div>
-        <button id="exportBmClose" class="secondary" aria-label="Close">✕</button>
       </div>
 
       <div class="export-bm-tabs" role="tablist">
-        <button class="export-bm-tab active" data-tab="preview" role="tab" aria-selected="true">Preview Code</button>
-        <button class="export-bm-tab" data-tab="variables" role="tab" aria-selected="false">Variables (<span id="exportBmVarCount">0</span>)</button>
+        <button class="export-bm-tab active" data-tab="preview" role="tab" aria-selected="true">Code</button>
+        <button class="export-bm-tab" data-tab="variables" role="tab" aria-selected="false">Variables <span class="export-bm-tab-count" id="exportBmVarCount">0</span></button>
         <button class="export-bm-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
       </div>
 
       <div id="exportBmWarning" class="export-bm-warning" style="display:none;">
-        ⚠ <span id="exportBmSkipMsg"></span>
+        <span class="export-bm-warning-icon">⚠</span>
+        <span id="exportBmSkipMsg"></span>
       </div>
 
       <!-- Tab: Preview Code -->
       <div id="exportBmTabPreview" class="export-bm-tab-panel">
+        <div class="export-bm-code-toolbar">
+          <span class="export-bm-code-label" id="exportBmCodeLabel">scenario.js</span>
+          <div class="export-bm-code-toolbar-btns">
+            <button class="export-bm-code-toolbar-btn" id="exportBmWrapBtn">wrap</button>
+            <button class="export-bm-code-toolbar-btn" id="exportBmSelectAllBtn">select all</button>
+          </div>
+        </div>
         <pre id="exportBmCode" class="export-bm-code"><code></code></pre>
       </div>
 
       <!-- Tab: Variables -->
       <div id="exportBmTabVariables" class="export-bm-tab-panel" hidden>
         <div id="exportBmNoVars" class="export-bm-no-vars">No variables defined</div>
-        <table class="export-bm-var-table" id="exportBmVarTable" style="display:none;">
-          <thead>
-            <tr>
-              <th>Variable</th>
-              <th>Type</th>
-              <th>Preview Value</th>
-            </tr>
-          </thead>
-          <tbody id="exportBmVarBody"></tbody>
-        </table>
+        <div id="exportBmVarList"></div>
       </div>
 
       <!-- Tab: Settings -->
       <div id="exportBmTabSettings" class="export-bm-tab-panel" hidden>
         <div class="export-bm-setting-row">
-          <label for="exportBmStepDelay">Delay between steps (ms)</label>
-          <input type="number" id="exportBmStepDelay" value="300" min="0" max="10000" />
+          <div class="export-bm-setting-label">
+            Delay between steps
+            <small>Time to wait after each action</small>
+          </div>
+          <input type="number" id="exportBmStepDelay" class="export-bm-setting-input" value="300" min="0" max="10000" />
+          <span class="export-bm-setting-unit">ms</span>
         </div>
         <div class="export-bm-setting-row">
-          <label for="exportBmElTimeout">Element wait timeout (ms)</label>
-          <input type="number" id="exportBmElTimeout" value="5000" min="500" max="30000" />
+          <div class="export-bm-setting-label">
+            Element timeout
+            <small>Max wait time for elements</small>
+          </div>
+          <input type="number" id="exportBmElTimeout" class="export-bm-setting-input" value="5000" min="500" max="30000" />
+          <span class="export-bm-setting-unit">ms</span>
         </div>
-        <div style="padding: 10px 14px;">
-          <button id="exportBmRegenerate" class="secondary" style="width:100%;">🔄 Regenerate Code</button>
-        </div>
+        <button id="exportBmRegenerate" class="export-bm-regen-btn">↺ Regenerate Code</button>
+      </div>
+
+      <!-- Stats pills -->
+      <div class="export-bm-stats-row">
+        <div class="export-bm-stat-pill"><span class="export-bm-dot dot-blue"></span><span id="exportBmStatSteps">0 steps</span></div>
+        <div class="export-bm-stat-pill"><span class="export-bm-dot dot-green"></span><span id="exportBmStatVars">0 variables</span></div>
+        <div class="export-bm-stat-pill" id="exportBmStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportBmStatSkipped">0 skipped</span></div>
       </div>
 
       <div class="export-bm-footer">
-        <span id="exportBmStats" class="export-bm-stats"></span>
+        <div class="export-bm-footer-spacer"></div>
         <div class="export-bm-footer-btns">
-          <button id="exportBmCancel" class="secondary">Huỷ</button>
-          <button id="exportBmCopy" class="primary-gradient">📋 Copy</button>
-          <button id="exportBmDownload" class="secondary">⬇ .js</button>
+          <button id="exportBmCancel" class="export-bm-nf-btn">Cancel</button>
+          <button id="exportBmDownload" class="export-bm-nf-btn">⬇ .js</button>
+          <button id="exportBmCopy" class="export-bm-nf-btn export-bm-nf-btn-primary">📋 Copy Code</button>
         </div>
       </div>
 
@@ -1032,55 +1052,65 @@
     <div class="export-bm-content">
 
       <div class="export-bm-header">
-        <div class="export-modal-title-row">
-          <span class="export-lang-chip export-lang-chip-py">PY</span>
-          <h4 id="exportSeleniumTitle">Export Selenium Python</h4>
+        <div class="export-bm-accent-bar export-bm-accent-py"></div>
+        <div class="export-bm-header-inner">
+          <div class="export-bm-lang-badge export-bm-lang-badge-py">PY</div>
+          <div class="export-bm-header-text">
+            <div class="export-bm-header-title" id="exportSeleniumTitle">Export Selenium Python</div>
+            <div class="export-bm-header-sub" id="exportSeleniumSub">scenario.py · 0 steps</div>
+          </div>
+          <div class="export-bm-header-actions">
+            <button class="export-bm-icon-btn" id="exportSeleniumCopyHeader" title="Copy code">📋</button>
+            <button class="export-bm-icon-btn" id="exportSeleniumDownloadHeader" title="Download">⬇</button>
+            <button class="export-bm-icon-btn export-bm-icon-btn-danger" id="exportSeleniumClose" aria-label="Close">✕</button>
+          </div>
         </div>
-        <button id="exportSeleniumClose" class="secondary" aria-label="Close">✕</button>
       </div>
 
       <div class="export-bm-tabs" role="tablist">
-        <button class="export-py-tab active" data-tab="preview" role="tab" aria-selected="true">Preview Code</button>
-        <button class="export-py-tab" data-tab="variables" role="tab" aria-selected="false">Variables (<span id="exportSeleniumVarCount">0</span>)</button>
+        <button class="export-py-tab active" data-tab="preview" role="tab" aria-selected="true">Code</button>
+        <button class="export-py-tab" data-tab="variables" role="tab" aria-selected="false">Variables <span class="export-bm-tab-count" id="exportSeleniumVarCount">0</span></button>
         <button class="export-py-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
       </div>
 
       <div id="exportSeleniumWarning" class="export-bm-warning" style="display:none;">
-        ⚠ <span id="exportSeleniumSkipMsg"></span>
+        <span class="export-bm-warning-icon">⚠</span>
+        <span id="exportSeleniumSkipMsg"></span>
       </div>
 
       <!-- Tab: Preview Code -->
       <div id="exportSeleniumTabPreview" class="export-bm-tab-panel">
+        <div class="export-bm-code-toolbar">
+          <span class="export-bm-code-label" id="exportSeleniumCodeLabel">scenario.py</span>
+          <div class="export-bm-code-toolbar-btns">
+            <button class="export-bm-code-toolbar-btn" id="exportSeleniumWrapBtn">wrap</button>
+            <button class="export-bm-code-toolbar-btn" id="exportSeleniumSelectAllBtn">select all</button>
+          </div>
+        </div>
         <pre id="exportSeleniumCode" class="export-bm-code"><code></code></pre>
       </div>
 
       <!-- Tab: Variables -->
       <div id="exportSeleniumTabVariables" class="export-bm-tab-panel" hidden>
         <div id="exportSeleniumNoVars" class="export-bm-no-vars">No variables defined</div>
-        <table class="export-bm-var-table" id="exportSeleniumVarTable" style="display:none;">
-          <thead>
-            <tr>
-              <th>Variable</th>
-              <th>Type</th>
-              <th>Preview Value</th>
-            </tr>
-          </thead>
-          <tbody id="exportSeleniumVarBody"></tbody>
-        </table>
+        <div id="exportSeleniumVarList"></div>
       </div>
 
       <!-- Tab: Settings -->
       <div id="exportSeleniumTabSettings" class="export-bm-tab-panel" hidden>
         <div class="export-bm-setting-row">
-          <label for="exportSeleniumStartUrl">Starting URL</label>
-          <div style="display:flex;gap:4px;align-items:center;flex:0 0 auto;">
-            <input type="url" id="exportSeleniumStartUrl" placeholder="https://example.com" style="width:148px;margin:0;font-size:12px;" />
-            <button id="exportSeleniumGetUrl" class="secondary" title="Lấy URL tab hiện tại" style="width:auto;padding:4px 7px;font-size:12px;flex-shrink:0;">⊕</button>
+          <div class="export-bm-setting-label">
+            Starting URL
+            <small>Initial page to navigate to</small>
+          </div>
+          <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">
+            <input type="url" id="exportSeleniumStartUrl" class="export-bm-setting-input" placeholder="https://…" style="width:130px;" />
+            <button id="exportSeleniumGetUrl" class="export-bm-icon-btn" title="Lấy URL tab hiện tại" style="font-size:11px;">⊕</button>
           </div>
         </div>
         <div class="export-bm-setting-row">
-          <label for="exportSeleniumDriver">WebDriver</label>
-          <select id="exportSeleniumDriver" style="width:110px;flex:0 0 110px;margin:0;font-size:12px;">
+          <div class="export-bm-setting-label">WebDriver</div>
+          <select id="exportSeleniumDriver" class="export-bm-setting-select">
             <option value="Chrome" selected>Chrome</option>
             <option value="Firefox">Firefox</option>
             <option value="Edge">Edge</option>
@@ -1088,24 +1118,37 @@
           </select>
         </div>
         <div class="export-bm-setting-row">
-          <label for="exportSeleniumStepDelay">Delay between steps (ms)</label>
-          <input type="number" id="exportSeleniumStepDelay" value="500" min="0" max="10000" />
+          <div class="export-bm-setting-label">
+            Delay between steps
+            <small>Time to wait after each action</small>
+          </div>
+          <input type="number" id="exportSeleniumStepDelay" class="export-bm-setting-input" value="500" min="0" max="10000" />
+          <span class="export-bm-setting-unit">ms</span>
         </div>
         <div class="export-bm-setting-row">
-          <label for="exportSeleniumElTimeout">Element wait timeout (ms)</label>
-          <input type="number" id="exportSeleniumElTimeout" value="10000" min="500" max="60000" />
+          <div class="export-bm-setting-label">
+            Element timeout
+            <small>Max wait time for elements</small>
+          </div>
+          <input type="number" id="exportSeleniumElTimeout" class="export-bm-setting-input" value="10000" min="500" max="60000" />
+          <span class="export-bm-setting-unit">ms</span>
         </div>
-        <div style="padding: 10px 14px;">
-          <button id="exportSeleniumRegenerate" class="secondary" style="width:100%;">🔄 Regenerate Code</button>
-        </div>
+        <button id="exportSeleniumRegenerate" class="export-bm-regen-btn">↺ Regenerate Code</button>
+      </div>
+
+      <!-- Stats pills -->
+      <div class="export-bm-stats-row">
+        <div class="export-bm-stat-pill"><span class="export-bm-dot dot-blue"></span><span id="exportSeleniumStatSteps">0 steps</span></div>
+        <div class="export-bm-stat-pill"><span class="export-bm-dot dot-green"></span><span id="exportSeleniumStatVars">0 variables</span></div>
+        <div class="export-bm-stat-pill" id="exportSeleniumStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportSeleniumStatSkipped">0 skipped</span></div>
       </div>
 
       <div class="export-bm-footer">
-        <span id="exportSeleniumStats" class="export-bm-stats"></span>
+        <div class="export-bm-footer-spacer"></div>
         <div class="export-bm-footer-btns">
-          <button id="exportSeleniumCancel" class="secondary">Huỷ</button>
-          <button id="exportSeleniumCopy" class="primary-gradient">📋 Copy</button>
-          <button id="exportSeleniumDownload" class="secondary">⬇ .py</button>
+          <button id="exportSeleniumCancel" class="export-bm-nf-btn">Cancel</button>
+          <button id="exportSeleniumDownload" class="export-bm-nf-btn">⬇ .py</button>
+          <button id="exportSeleniumCopy" class="export-bm-nf-btn export-bm-nf-btn-primary">📋 Copy Code</button>
         </div>
       </div>
 

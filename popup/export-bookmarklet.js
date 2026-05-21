@@ -358,8 +358,25 @@ export function initExportBookmarklet() {
   document.getElementById('exportBmClose')?.addEventListener('click', _close);
   document.getElementById('exportBmCancel')?.addEventListener('click', _close);
   document.getElementById('exportBmCopy')?.addEventListener('click', _copy);
+  document.getElementById('exportBmCopyHeader')?.addEventListener('click', _copy);
   document.getElementById('exportBmDownload')?.addEventListener('click', _download);
+  document.getElementById('exportBmDownloadHeader')?.addEventListener('click', _download);
   document.getElementById('exportBmRegenerate')?.addEventListener('click', _regenerate);
+
+  document.getElementById('exportBmWrapBtn')?.addEventListener('click', () => {
+    const code = document.getElementById('exportBmCode');
+    if (code) code.style.whiteSpace = code.style.whiteSpace === 'pre-wrap' ? 'pre' : 'pre-wrap';
+  });
+
+  document.getElementById('exportBmSelectAllBtn')?.addEventListener('click', () => {
+    const code = document.querySelector('#exportBmCode code');
+    if (!code) return;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
 
   document.querySelectorAll('.export-bm-tab').forEach(btn => {
     btn.addEventListener('click', () => _switchTab(btn.dataset.tab));
@@ -411,7 +428,13 @@ function _openModal(scenarioName, actions, variables) {
 }
 
 function _renderModal(scenarioName, result, variables) {
+  const safe = scenarioName.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  const filename = `${safe}_bookmarklet.js`;
+
+  // Header
   document.getElementById('exportBmTitle').textContent = `Export JS — ${scenarioName}`;
+  document.getElementById('exportBmSub').textContent = `${filename} · ${result.stats.supported} steps`;
+  document.getElementById('exportBmCodeLabel').textContent = filename;
 
   // Code preview
   const codeEl = document.querySelector('#exportBmCode code');
@@ -427,44 +450,46 @@ function _renderModal(scenarioName, result, variables) {
     warning.style.display = 'none';
   }
 
-  // Variables tab
+  // Variables — row layout
   const vars = Object.entries(variables || {});
   document.getElementById('exportBmVarCount').textContent = vars.length;
 
   const noVarsEl = document.getElementById('exportBmNoVars');
-  const tableEl  = document.getElementById('exportBmVarTable');
-  const tbody    = document.getElementById('exportBmVarBody');
+  const listEl   = document.getElementById('exportBmVarList');
 
   if (vars.length === 0) {
     noVarsEl.style.display = '';
-    tableEl.style.display  = 'none';
+    listEl.innerHTML = '';
   } else {
     noVarsEl.style.display = 'none';
-    tableEl.style.display  = '';
-    tbody.innerHTML = '';
+    listEl.innerHTML = '';
     for (const [key, val] of vars) {
       const spec    = parseRandomSpec(val);
       const isRand  = !!spec;
       const preview = isRand
         ? previewRandom(spec.type, spec.length)
-        : (val.length > 32 ? val.slice(0, 32) + '…' : val);
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td>${escHtml(key)}</td>
-        <td><span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span></td>
-        <td class="export-bm-preview">${escHtml(preview)}</td>`;
-      tbody.appendChild(tr);
+        : (val.length > 40 ? val.slice(0, 40) + '…' : val);
+      const row = document.createElement('div');
+      row.className = 'export-bm-var-row';
+      row.innerHTML = `
+        <div class="export-bm-var-icon ${isRand ? 'rand' : 'static'}">${isRand ? '🎲' : '🔤'}</div>
+        <span class="export-bm-var-name">\${${escHtml(key)}}</span>
+        <span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span>
+        <span class="export-bm-preview">${escHtml(preview)}</span>`;
+      listEl.appendChild(row);
     }
   }
 
-  // Stats footer
-  const { total, supported, skipped, hasNavigate } = result.stats;
-  const statsEl = document.getElementById('exportBmStats');
-  if (statsEl) {
-    let txt = `${supported}/${total} steps`;
-    if (skipped > 0) txt += ` · ${skipped} skipped`;
-    if (hasNavigate) txt += ' · ⚠ navigate reloads page';
-    statsEl.textContent = txt;
+  // Stats pills
+  const { total, supported, skipped } = result.stats;
+  document.getElementById('exportBmStatSteps').textContent = `${supported} steps`;
+  document.getElementById('exportBmStatVars').textContent  = `${vars.length} variables`;
+  const skippedPill = document.getElementById('exportBmStatSkippedPill');
+  if (skipped > 0) {
+    document.getElementById('exportBmStatSkipped').textContent = `${skipped} skipped`;
+    skippedPill.style.display = '';
+  } else {
+    skippedPill.style.display = 'none';
   }
 }
 
@@ -512,16 +537,14 @@ function _switchTab(tab) {
 async function _copy() {
   if (!_currentCode) return;
   try {
-    // Minified single-line URL — safe to paste into any bookmark URL field
     await navigator.clipboard.writeText(_toBookmarkletUrl(_currentCode));
-    const btn = document.getElementById('exportBmCopy');
-    if (btn) {
+    for (const id of ['exportBmCopy', 'exportBmCopyHeader']) {
+      const btn = document.getElementById(id);
+      if (!btn) continue;
+      const orig = btn.textContent;
       btn.textContent = '✓ Copied!';
       btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = '📋 Copy';
-        btn.classList.remove('copied');
-      }, 1500);
+      setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
     }
   } catch {
     showToast('Clipboard không khả dụng', 'error');
