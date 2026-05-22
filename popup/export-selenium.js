@@ -3,7 +3,7 @@
  * Exports: generateSeleniumPy, initExportSelenium
  */
 
-import { showToast, lockScroll, unlockScroll, trapFocus, escHtml } from './utils.js';
+import { showToast, lockScroll, unlockScroll, trapFocus, escHtml, getUsedVarNames } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GENERATOR CORE
@@ -493,10 +493,14 @@ function _onTrigger() {
   _currentScenarioName = sel.options[sel.selectedIndex]?.text || 'Scenario';
 
   chrome.runtime.sendMessage({ type: 'GET_SCENARIOS' }, res => {
-    const scenario   = (res?.scenarios || {})[scenarioId];
-    _currentActions  = scenario?.actions || [];
+    const scenario  = (res?.scenarios || {})[scenarioId];
+    _currentActions = scenario?.actions || [];
     chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, varRes => {
-      _currentVariables = varRes?.variables || {};
+      const allVariables = varRes?.variables || {};
+      const usedNames = getUsedVarNames(_currentActions);
+      _currentVariables = Object.fromEntries(
+        Object.entries(allVariables).filter(([k]) => usedNames.has(k))
+      );
       _openModal(_currentScenarioName, _currentActions, _currentVariables);
     });
   });

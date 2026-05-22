@@ -191,3 +191,23 @@ export function debounce(fn, delay = 200) {
     t = setTimeout(() => fn(...args), delay);
   };
 }
+
+/* === Variable usage scanning === */
+
+/**
+ * Returns the set of variable names (without ${}) that are actually referenced
+ * in the given actions' string fields.
+ */
+export function getUsedVarNames(actions) {
+  const used = new Set();
+  const re = /\$\{([^}]+)\}/g;
+  for (const action of (actions || [])) {
+    for (const val of Object.values(action)) {
+      if (typeof val !== 'string') continue;
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(val)) !== null) used.add(m[1]);
+    }
+  }
+  return used;
+}

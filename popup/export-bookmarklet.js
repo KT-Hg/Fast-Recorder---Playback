@@ -3,7 +3,7 @@
  * Exports: generateBookmarklet, initExportBookmarklet
  */
 
-import { showToast, lockScroll, unlockScroll, trapFocus, escHtml } from './utils.js';
+import { showToast, lockScroll, unlockScroll, trapFocus, escHtml, getUsedVarNames } from './utils.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GENERATOR CORE
@@ -403,7 +403,11 @@ function _onTrigger() {
     const scenario = (res?.scenarios || {})[scenarioId];
     const actions = scenario?.actions || [];
     chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, varRes => {
-      const variables = varRes?.variables || {};
+      const allVariables = varRes?.variables || {};
+      const usedNames = getUsedVarNames(actions);
+      const variables = Object.fromEntries(
+        Object.entries(allVariables).filter(([k]) => usedNames.has(k))
+      );
       _openModal(scenarioName, actions, variables);
     });
   });
