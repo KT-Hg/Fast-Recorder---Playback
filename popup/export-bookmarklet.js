@@ -36,6 +36,14 @@ export function previewRandom(type, length) {
   return Array.from({ length }, () => ch[Math.floor(Math.random() * ch.length)]).join('');
 }
 
+/**
+ * Sanitize a string into a valid JS identifier.
+ * Prevents code injection when variable names from user input are embedded in generated code.
+ */
+function _sanitizeVarName(name) {
+  return (name || 'var').replace(/[^a-zA-Z0-9_$]/g, '_').replace(/^\d/, '_');
+}
+
 function getBestSel(action) {
   const s = action.selectors || {};
   return s.css
@@ -47,11 +55,17 @@ function getBestSel(action) {
 }
 
 // Returns a JS expression string representing the value.
-// If value contains ${varName}, wraps in a template literal so it references the JS var.
+// Escapes all injection vectors in template literals.
 function valueToJS(val) {
   if (val == null) return "''";
   const s = String(val);
-  if (/\$\{/.test(s)) return '`' + s.replace(/`/g, '\\`') + '`';
+  if (/\$\{/.test(s)) {
+    const escaped = s
+      .replace(/\\/g, '\\\\')   // backslash first
+      .replace(/`/g, '\\`')     // backtick
+      .replace(/\$\{/g, '\\${'); // ${...} → \${...} (no interpolation)
+    return '`' + escaped + '`';
+  }
   return JSON.stringify(s);
 }
 
@@ -159,15 +173,20 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
     }
 
     case 'script':
+      // Wrap in async IIFE so the user's code cannot leak variables or
+      // 'return' statements into the outer bookmarklet closure, and so that
+      // top-level 'await' works inside the script without syntax errors.
       out.push(`// Step ${stepNum}: script${lbl}`);
-      out.push(`// [USER SCRIPT BEGIN]`);
-      for (const line of (action.code || action.value || '').split('\n')) out.push(line);
-      out.push(`// [USER SCRIPT END]`);
+      out.push(`await (async () => {`);
+      out.push(`  // [USER SCRIPT BEGIN]`);
+      for (const line of (action.code || action.value || '').split('\n')) out.push(`  ${line}`);
+      out.push(`  // [USER SCRIPT END]`);
+      out.push(`})();`);
       if (delay > 0) out.push(`await sleep(${delay});`);
       break;
 
     case 'readdom': {
-      const varName = (action.varName || 'domVar').replace(/^\$\{|\}$/g, '');
+      const varName = _sanitizeVarName((action.varName || 'domVar').replace(/^\$\{|\}$/g, ''));
       out.push(`// Step ${stepNum}: readdom → "${varName}"${lbl}`);
       out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
       if (action.readFrom === 'value')        out.push(`${varName} = ${v}.value || '';`);
@@ -238,7 +257,7 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
 
   for (const a of enabled) {
     if (a.type === 'readdom' && a.varName) {
-      readdomVars.add(a.varName.replace(/^\$\{|\}$/g, ''));
+      readdomVars.add(_sanitizeVarName(a.varName.replace(/^\$\{|\}$/g, '')));
     }
   }
 
@@ -292,7 +311,8 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
     out.push('');
     out.push('  // --- RANDOM VARIABLE GENERATORS ---');
     for (const [k, spec] of Object.entries(randomSpecs)) {
-      out.push(`  const _gen_${k} = ${makeRandomFn(spec.type, spec.length)};`);
+      const safe = _sanitizeVarName(k);
+      out.push(`  const _gen_${safe} = ${makeRandomFn(spec.type, spec.length)};`);
     }
   }
 
@@ -304,10 +324,11 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
     out.push('');
     out.push('  // --- VARIABLES ---');
     for (const [k, v] of Object.entries(staticVars)) {
-      out.push(`  const ${k} = ${JSON.stringify(v)};`);
+      out.push(`  const ${_sanitizeVarName(k)} = ${JSON.stringify(v)};`);
     }
     for (const k of Object.keys(randomSpecs)) {
-      out.push(`  const ${k} = _gen_${k}();`);
+      const safe = _sanitizeVarName(k);
+      out.push(`  const ${safe} = _gen_${safe}();`);
     }
     for (const k of readdomVars) {
       out.push(`  let ${k} = '';`);

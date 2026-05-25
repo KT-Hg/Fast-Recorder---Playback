@@ -22,18 +22,41 @@ export function addVariableRow(key = '', value = '') {
     if (valueInput) valueInput.value = value;
     return;
   }
+  // Use DOM API instead of innerHTML to prevent XSS from untrusted key/value data.
   const row = document.createElement('tr');
-  row.innerHTML = `
-    <td><input type="text" class="var-key" value="${key}" placeholder="key" /></td>
-    <td><input type="text" class="var-value" value="${value}" placeholder="value" /></td>
-    <td class="var-actions-cell">
-      <button class="var-random-btn secondary" title="Set as random">&#9860;</button>
-      <button class="delete-row">&#x2715;</button>
-    </td>
-  `;
+
+  const keyTd = document.createElement('td');
+  const keyInput = document.createElement('input');
+  keyInput.type = 'text'; keyInput.className = 'var-key';
+  keyInput.value = key; keyInput.placeholder = 'key';
+  keyTd.appendChild(keyInput);
+
+  const valTd = document.createElement('td');
+  const valInput = document.createElement('input');
+  valInput.type = 'text'; valInput.className = 'var-value';
+  valInput.value = value; valInput.placeholder = 'value';
+  valTd.appendChild(valInput);
+
+  const actionsTd = document.createElement('td');
+  actionsTd.className = 'var-actions-cell';
+
+  const randBtn = document.createElement('button');
+  randBtn.className = 'var-random-btn secondary';
+  randBtn.title = 'Set as random';
+  randBtn.innerHTML = '&#9860;';
+  randBtn.addEventListener('click', () => _openModal(row));
+
+  const delBtn = document.createElement('button');
+  delBtn.innerHTML = '&#x2715;';
+  delBtn.className = 'delete-row';
+  delBtn.addEventListener('click', () => row.remove());
+
+  actionsTd.appendChild(randBtn);
+  actionsTd.appendChild(delBtn);
+  row.appendChild(keyTd);
+  row.appendChild(valTd);
+  row.appendChild(actionsTd);
   tbody.appendChild(row);
-  row.querySelector('.delete-row')?.addEventListener('click', () => row.remove());
-  row.querySelector('.var-random-btn')?.addEventListener('click', () => _openModal(row));
 }
 
 export function findEmptyRow() {

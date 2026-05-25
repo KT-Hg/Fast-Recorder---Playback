@@ -1,16 +1,10 @@
-/**
- * storage.js — Chrome storage CRUD helpers for scenarios, folders, variables
- * Exports: getScenarios, setScenarios, getFolders, setFolders, getVariables,
- *          generateId, getStack, pushUndo, undoStacks, mutateScenarioActions
- */
+/** storage.js — Chrome storage CRUD helpers for scenarios, folders, variables */
 
 /* === Scenarios === */
 
 export function getScenarios() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['scenarios'], (res) => {
-      resolve(res.scenarios || {});
-    });
+    chrome.storage.local.get(['scenarios'], (res) => resolve(res.scenarios || {}));
   });
 }
 
@@ -37,9 +31,7 @@ export function setScenarios(scenarios) {
 
 export function getFolders() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['folders'], (res) => {
-      resolve(res.folders || {});
-    });
+    chrome.storage.local.get(['folders'], (res) => resolve(res.folders || {}));
   });
 }
 
@@ -53,9 +45,7 @@ export function setFolders(folders) {
 
 export function getVariables() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['variables'], (res) => {
-      resolve(res.variables || {});
-    });
+    chrome.storage.local.get(['variables'], (res) => resolve(res.variables || {}));
   });
 }
 
@@ -65,13 +55,22 @@ export function generateId() {
   return crypto.randomUUID();
 }
 
-/* === Undo Stacks === */
+/* === Undo Stacks ===
+ * Tracks up to _UNDO_MAX_SCENARIOS scenarios with LRU eviction.
+ * Each stack is capped at 50 entries.
+ */
+const _UNDO_MAX_SCENARIOS = 20;
 
 export const undoStacks = {};
 
+const _undoOrder = [];
+
 if (chrome.storage.session) {
   chrome.storage.session.get(['undoStacks'], (res) => {
-    if (res?.undoStacks) Object.assign(undoStacks, res.undoStacks);
+    if (res?.undoStacks) {
+      Object.assign(undoStacks, res.undoStacks);
+      _undoOrder.push(...Object.keys(res.undoStacks));
+    }
   });
 }
 
@@ -87,21 +86,30 @@ function _persistUndoStacks() {
 }
 
 export function getStack(key) {
-  if (!undoStacks[key]) undoStacks[key] = { undo: [], redo: [] };
+  if (!undoStacks[key]) {
+    if (_undoOrder.length >= _UNDO_MAX_SCENARIOS) {
+      const evicted = _undoOrder.shift();
+      delete undoStacks[evicted];
+    }
+    undoStacks[key] = { undo: [], redo: [] };
+    _undoOrder.push(key);
+  } else {
+    const idx = _undoOrder.indexOf(key);
+    if (idx !== -1) { _undoOrder.splice(idx, 1); _undoOrder.push(key); }
+  }
   return undoStacks[key];
 }
 
 export function pushUndo(key, snapshot) {
   const s = getStack(key);
-  s.undo.push(structuredClone(snapshot));
+  s.undo.push(JSON.parse(JSON.stringify(snapshot)));
   if (s.undo.length > 50) s.undo.shift();
   s.redo = [];
   _persistUndoStacks();
 }
 
-/* === Scenario action mutation helper ===
- * Fetches scenarios, validates the target scenario exists, pushes undo,
- * applies updater(actions) → newActions, saves, returns newActions.
+/**
+ * Fetch a scenario, push undo, apply updater(actions) → newActions, and save.
  * Throws if scenarioId is not found.
  */
 export async function mutateScenarioActions(scenarioId, updater) {

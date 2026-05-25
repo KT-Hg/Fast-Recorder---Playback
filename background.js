@@ -5,7 +5,7 @@
  *   - Main chrome.runtime.onMessage handler (recording, CRUD, dispatch)
  */
 
-import { state } from './bg/state.js';
+import { state, persistRecordingState, restoreRecordingState, restoreCsvState, clearCsvState } from './bg/state.js';
 import {
   getScenarios, setScenarios, getFolders, setFolders,
   getVariables, generateId, getStack, pushUndo, mutateScenarioActions,
@@ -15,7 +15,7 @@ import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlay
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
 } from './bg/screenshot.js';
-import { ssReadAll, ssClear } from './bg/idb-screenshots.js';
+import { ssReadAll, ssClear, csvResultReadAll } from './bg/idb-screenshots.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -56,13 +56,32 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-/** On service worker startup — sync alarms with stored schedules */
+/** On service worker startup — sync alarms and restore recording/CSV state. */
 chrome.storage.local.get(["schedules"], (res) => {
   const schedules = res.schedules || [];
   schedules.forEach((s) => {
     if (s.enabled) registerScheduleAlarm(s);
   });
 });
+
+// Restore recording state if SW was suspended mid-recording.
+restoreRecordingState().then(() => { if (state.recording) updateBadge(); });
+
+// Check for interrupted CSV run — cache in state and notify popup if open.
+restoreCsvState().then((csvPending) => {
+  if (!csvPending) return;
+  state.csvInterrupted = {
+    scenarioId:   csvPending.scenarioId,
+    totalRows:    csvPending.rows?.length ?? 0,
+    resumeRow:    csvPending.currentRow ?? 0,
+    delayBetween: csvPending.delayBetween,
+    exportFormat: csvPending.exportFormat,
+  };
+  chrome.runtime.sendMessage({
+    type: 'CSV_RUN_INTERRUPTED',
+    pending: state.csvInterrupted,
+  }).catch(() => {});
+}).catch(() => {});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
@@ -98,6 +117,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (act.delay == null) act.delay = 500;
       state.currentActions.push(act);
       pushUndo("current", snapshot);
+      persistRecordingState(); // persist across SW suspend
     }
     chrome.runtime.sendMessage(request).catch(() => {});
     sendResponse({ received: true });
@@ -113,6 +133,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
     });
     sendResponse({ received: true });
+    return;
+  }
+
+  // Content script asks "what is my frameId?" on load so it can include it in
+  // recorded actions. Background has access to sender.frameId; content script does not.
+  if (type === "REGISTER_FRAME") {
+    sendResponse({ frameId: sender.frameId ?? 0 });
     return;
   }
 
@@ -149,6 +176,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       originalScenarioName: state.playback.originalScenarioName || null,
       currentScenarioIndex: state.sequencePlayback.currentIndex,
       totalScenarios: state.sequencePlayback.runList.length,
+      csvInterrupted: state.csvInterrupted,
     });
     return;
   }
@@ -182,6 +210,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const sid = state.recordingScenarioId;
     state.recordingScenarioId = null;
     updateBadge();
+    // Clear persisted recording state now that recording has stopped.
+    chrome.storage.session?.remove?.(['rec_recording','rec_scenarioId','rec_actions','rec_timestamp'], () => {});
     if (sid) {
       const newActions = [...state.currentActions];
       state.currentActions = [];
@@ -436,7 +466,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const id = generateId();
       scenarios[id] = { ...request.scenario, createdAt: Date.now() };
       await setScenarios(scenarios);
-      sendResponse({ success: true, id });
+      // Warn popup when imported scenario contains script actions (CSP risk).
+      const hasScriptActions = (request.scenario?.actions || []).some(a => a.type === 'script');
+      sendResponse({ success: true, id, hasScriptActions });
     });
     return true;
   }
@@ -525,12 +557,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (sanitized.folders && typeof sanitized.folders !== "object") {
       sendResponse({ success: false, error: "Invalid backup: folders must be an object" }); return true;
     }
-    chrome.storage.local.clear(() => {
-      chrome.storage.local.set(sanitized, () => {
+    // Auto-backup current data before overwriting, then merge (not clear+set)
+    // to avoid data loss if the browser crashes between clear() and set().
+    chrome.storage.local.get(null, (currentData) => {
+      const preBackup = { _autoBackup: true, _backupDate: new Date().toISOString(), ...currentData };
+      // Store backup under a separate key so it survives the restore
+      const withBackup = { ...sanitized, _preRestoreBackup: preBackup };
+      chrome.storage.local.set(withBackup, () => {
         if (chrome.runtime.lastError) {
           sendResponse({ success: false, error: chrome.runtime.lastError.message });
         } else {
-          sendResponse({ success: true });
+          state.recording = false;
+          state.currentActions = [];
+          sendResponse({ success: true, backedUp: true });
         }
       });
     });
@@ -559,6 +598,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (type === "STOP_PLAYBACK") {
     state.playback.active = false;
+    state.csvPlayback.active = false;
+    state.sequencePlayback.active = false;
     updateBadge();
     sendResponse({ stopped: true });
     return;
@@ -580,8 +621,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- CSV Playback --- */
   if (type === "START_CSV_PLAYBACK") {
+    state.csvInterrupted = null;
     startCsvPlayback(request.scenarioId, request.rows, request.delayBetween || 500, request.exportFormat || "csv");
     sendResponse({ started: true });
+    return;
+  }
+
+  // Resume an interrupted CSV run from the last checkpoint row.
+  // Passes full rows + startRowIndex so results keep original row indices.
+  if (type === "RESUME_CSV_PLAYBACK") {
+    restoreCsvState().then((csvPending) => {
+      if (!csvPending) { sendResponse({ error: 'No pending CSV state' }); return; }
+      const { scenarioId, rows, currentRow, delayBetween, exportFormat } = csvPending;
+      state.csvInterrupted = null;
+      startCsvPlayback(scenarioId, rows, delayBetween || 500, exportFormat || 'csv', currentRow);
+      sendResponse({ started: true, resumedFrom: currentRow });
+    });
+    return true;
+  }
+
+  if (type === "DISMISS_CSV_RESUME") {
+    state.csvInterrupted = null;
+    import('./bg/state.js').then(m => m.clearCsvState()).catch(() => {});
+    sendResponse({ ok: true });
     return;
   }
 
@@ -589,6 +651,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     state.csvPlayback.active = false;
     state.playback.active = false;
     updateBadge();
+    // Clear session/local checkpoint so a stopped run is never offered for resume.
+    clearCsvState().catch(() => {});
     sendResponse({ stopped: true });
     return;
   }
@@ -603,9 +667,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (type === "GET_CSV_RUN_RESULTS") {
-    chrome.storage.local.get(["csvRunResults"], (res) => {
-      sendResponse({ results: res.csvRunResults || [] });
-    });
+    csvResultReadAll()
+      .then(results => sendResponse({ results }))
+      .catch(e => { console.error('[CSV] IDB read failed:', e); sendResponse({ results: [] }); });
     return true;
   }
 
@@ -697,19 +761,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (id == null) { sendResponse({ error: "Download failed" }); return; }
       let responded = false;
       const respond = (r) => { if (!responded) { responded = true; sendResponse(r); } };
+
+      // Cleanup removes listener AND clears timeout to prevent leaks.
+      const cleanup = (result) => {
+        clearTimeout(timeoutHandle);
+        chrome.downloads.onChanged.removeListener(onChanged);
+        respond(result);
+      };
+
       const onChanged = (delta) => {
         if (delta.id !== id) return;
         const st = delta.state?.current;
-        if (st === 'complete')         { chrome.downloads.onChanged.removeListener(onChanged); respond({ success: true }); }
-        else if (st === 'interrupted') { chrome.downloads.onChanged.removeListener(onChanged); respond({ error: 'Cancelled' }); }
+        if (st === 'complete')         cleanup({ success: true });
+        else if (st === 'interrupted') cleanup({ error: 'Cancelled' });
       };
+
+      // Timeout ensures the listener is always removed even on hung downloads.
+      const timeoutHandle = setTimeout(() => cleanup({ error: 'Download timeout' }), 60_000);
+
       chrome.downloads.onChanged.addListener(onChanged);
       // Race-condition guard: download may have already completed before listener was added
       chrome.downloads.search({ id }, (items) => {
         if (!items?.length) return;
         const st = items[0].state;
-        if (st === 'complete')         { chrome.downloads.onChanged.removeListener(onChanged); respond({ success: true }); }
-        else if (st === 'interrupted') { chrome.downloads.onChanged.removeListener(onChanged); respond({ error: 'Cancelled' }); }
+        if (st === 'complete')         cleanup({ success: true });
+        else if (st === 'interrupted') cleanup({ error: 'Cancelled' });
       });
     });
     return true;

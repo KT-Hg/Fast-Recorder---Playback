@@ -1,10 +1,5 @@
 /**
  * content.js — content script for recording and executing actions.
- * Notes:
- * - Handles select/input correctly.
- * - Dispatches both input and change events.
- * - Waits for cascade dropdowns.
- * - Safe to run in SPAs.
  */
 
 // Safe wrapper — suppresses "Extension context invalidated" errors after extension reload
@@ -17,34 +12,61 @@ function safeSend(msg) {
 
 // Guard against multiple injections
 if (window.__actionRecorderInjected) {
-  console.log("[CONTENT] Already injected, sending CONTENT_READY");
-  // Still notify ready so playback can proceed
-  safeSend({ type: "CONTENT_READY" });
+  console.log('[CONTENT] Already injected, sending CONTENT_READY');
+  safeSend({ type: 'CONTENT_READY' });
 } else {
   window.__actionRecorderInjected = true;
 
-/* === State === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   STATE
+───────────────────────────────────────────────────────────────────────────── */
+
 let pickerMode = false;
 
-/* === Utilities === */
+function log(...args) { console.log('[CONTENT]', ...args); }
 
-function log(...args) {
-  console.log("[CONTENT]", ...args);
+// Ask the background for our frameId so recorded actions can target the correct iframe.
+// Defaults to 0 (main frame) when running in the top-level document or on error.
+let _myFrameId = 0;
+try {
+  chrome.runtime.sendMessage({ type: 'REGISTER_FRAME' }, (res) => {
+    if (!chrome.runtime.lastError && res?.frameId != null) {
+      _myFrameId = res.frameId;
+    }
+  });
+} catch (_) {}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   DYNAMIC ID DETECTION
+   Patterns that indicate auto-generated, unstable IDs.
+───────────────────────────────────────────────────────────────────────────── */
+
+const _DYNAMIC_ID_RE = new RegExp([
+  /^[:]/,                              // starts with : (React fiber IDs like :r0:)
+  /\d{5,}/,                            // 5+ consecutive digits (avoids filtering Tailwind color numbers like 600, 500)
+  /^[a-f0-9]{8}-[a-f0-9]{4}-/,        // UUID v4 prefix
+  /^(ember|ng-|mat-|uid-|id-)\d/,     // framework-generated
+  /^[a-z0-9]{20,}$/,                  // long opaque hashes (20+ lowercase alphanumeric)
+].map(r => r.source).join('|'), 'i');
+
+function _isDynamicId(id) {
+  if (!id) return true;
+  return _DYNAMIC_ID_RE.test(id);
 }
 
-/**
- * Build a simple CSS selector for an element.
- */
+/* ─────────────────────────────────────────────────────────────────────────────
+   SELECTOR BUILDERS
+───────────────────────────────────────────────────────────────────────────── */
+
 function getCssSelector(el) {
   if (!el) return null;
-  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (el.id && !_isDynamicId(el.id)) return `#${CSS.escape(el.id)}`;
 
   const path = [];
   let current = el;
   while (current && current.nodeType === 1 && current !== document.body) {
     let selector = current.tagName.toLowerCase();
 
-    // For input elements, add [type] and [name]/[value] for specificity
     if (current.tagName === 'INPUT' && current.type) {
       selector += `[type="${CSS.escape(current.type)}"]`;
       if (current.name) selector += `[name="${CSS.escape(current.name)}"]`;
@@ -52,11 +74,15 @@ function getCssSelector(el) {
         selector += `[value="${CSS.escape(current.value)}"]`;
       }
     } else if (current.className && typeof current.className === 'string') {
-      const cls = current.className.split(" ").filter(Boolean)[0];
-      if (cls) selector += `.${CSS.escape(cls)}`;
+      // Combine multiple stable classes for a more unique selector.
+      const stableClasses = current.className.split(/\s+/).filter(Boolean)
+        .filter(c => !_DYNAMIC_ID_RE.test(c))
+        .slice(0, 3);
+      if (stableClasses.length > 0) {
+        selector += stableClasses.map(c => `.${CSS.escape(c)}`).join('');
+      }
     }
 
-    // Add :nth-child if the selector alone matches siblings
     if (current.parentElement) {
       const siblings = current.parentElement.querySelectorAll(`:scope > ${selector}`);
       if (siblings.length > 1) {
@@ -68,309 +94,239 @@ function getCssSelector(el) {
     path.unshift(selector);
     current = current.parentElement;
   }
-  return path.join(" > ");
+  return path.join(' > ');
 }
 
 /**
- * Build XPath for an element (shorter version using IDs when possible)
+ * XPath with properly escaped IDs.
+ * XPath uses double-quoted attribute values; a literal " in the ID must be
+ * replaced with concat() to keep the expression valid.
  */
+function _xpathId(id) {
+  if (!id.includes('"')) return `//*[@id="${id}"]`;
+  // Build concat() to safely embed IDs containing double-quotes
+  const parts = id.split('"').map(p => `"${p}"`).join(', \'"\', ');
+  return `//*[@id=concat(${parts})]`;
+}
+
 function getXPath(el) {
   if (!el) return null;
-  if (el.id) return `//*[@id="${el.id}"]`;
-  
+  if (el.id && !_isDynamicId(el.id)) return _xpathId(el.id);
+
   const parts = [];
   let current = el;
-  
+
   while (current && current.nodeType === 1) {
-    if (current === document.body) {
-      parts.unshift('/html/body');
+    if (current === document.body) { parts.unshift('/html/body'); break; }
+
+    if (current.id && !_isDynamicId(current.id)) {
+      parts.unshift(_xpathId(current.id));   // anchor on stable ID
       break;
     }
-    
-    // If element has ID, use it as anchor
-    if (current.id) {
-      parts.unshift(`//*[@id="${current.id}"]`);
-      break;
-    }
-    
+
     let index = 1;
     let sibling = current.previousElementSibling;
     while (sibling) {
       if (sibling.tagName === current.tagName) index++;
       sibling = sibling.previousElementSibling;
     }
-    
-    const tagName = current.tagName.toLowerCase();
-    parts.unshift(`${tagName}[${index}]`);
+    parts.unshift(`${current.tagName.toLowerCase()}[${index}]`);
     current = current.parentElement;
   }
-  
   return parts.join('/');
 }
 
-/**
- * Build full XPath from root (most reliable but verbose)
- */
 function getFullXPath(el) {
   if (!el) return null;
-  
   const parts = [];
   let current = el;
-  
   while (current && current.nodeType === 1) {
-    if (current === document.documentElement) {
-      parts.unshift('/html');
-      break;
-    }
-    
+    if (current === document.documentElement) { parts.unshift('/html'); break; }
     let index = 1;
     let sibling = current.previousElementSibling;
     while (sibling) {
       if (sibling.tagName === current.tagName) index++;
       sibling = sibling.previousElementSibling;
     }
-    
-    const tagName = current.tagName.toLowerCase();
-    parts.unshift(`${tagName}[${index}]`);
+    parts.unshift(`${current.tagName.toLowerCase()}[${index}]`);
     current = current.parentElement;
   }
-  
   return parts.join('/');
 }
 
-/**
- * Get all possible selectors for an element
- */
 function getAllSelectors(el) {
   if (!el) return null;
-  
   const selectors = {
-    css: getCssSelector(el),
-    xpath: getXPath(el),
+    css:       getCssSelector(el),
+    xpath:     getXPath(el),
     fullXpath: getFullXPath(el),
   };
-  
-  // Add ID if exists
-  if (el.id) {
-    selectors.id = el.id;
-  }
-  
-  // Add name attribute if exists
-  if (el.name) {
-    selectors.name = el.name;
-  }
-  
-  // Add text content for links/buttons (trimmed, max 50 chars)
+  if (el.id && !_isDynamicId(el.id)) selectors.id = el.id;
+  if (el.name) selectors.name = el.name;
+
   const textContent = (el.textContent || '').trim();
-  if (textContent && textContent.length <= 50 && 
+  if (textContent && textContent.length <= 50 &&
       ['A', 'BUTTON', 'SPAN', 'LABEL', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(el.tagName)) {
-    selectors.text = textContent;
+    selectors.text    = textContent;
     selectors.textTag = el.tagName.toLowerCase();
   }
-  
-  // Add data-testid or data-id if exists
-  if (el.dataset?.testid) {
-    selectors.testId = el.dataset.testid;
-  }
-  if (el.dataset?.id) {
-    selectors.dataId = el.dataset.id;
-  }
-  
+  if (el.dataset?.testid) selectors.testId = el.dataset.testid;
+  if (el.dataset?.id)     selectors.dataId = el.dataset.id;
+
   return selectors;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   SHADOW DOM PIERCE
+   Web components (LitElement, Stencil, etc.) put their DOM inside shadow roots
+   that are invisible to document.querySelector.  This function walks the tree
+   recursively so selectors work across open shadow roots.
+───────────────────────────────────────────────────────────────────────────── */
 
-/**
- * Find element using multiple selector strategies with fallback
- */
-function findElementWithFallback(selectors, timeout = 5000) {
-  return new Promise((resolve, reject) => {
-    // Handle legacy string selector
-    if (typeof selectors === 'string') {
-      selectors = { css: selectors };
+function querySelectorDeep(selector, root = document) {
+  try {
+    const el = root.querySelector(selector);
+    if (el) return el;
+  } catch (_) { return null; }
+  const hosts = root.querySelectorAll('*');
+  for (const host of hosts) {
+    if (host.shadowRoot) {
+      const found = querySelectorDeep(selector, host.shadowRoot);
+      if (found) return found;
     }
-
-    const strategies = [];
-
-    // Priority order: most specific/unique first, most ambiguous last.
-    // fullXpath is absolute position-based — always unique, try first.
-    if (selectors.fullXpath) {
-      strategies.push({
-        type: 'fullXpath',
-        fn: () => document.evaluate(selectors.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
-      });
-    }
-    // id is unique by spec — second most reliable.
-    if (selectors.id) {
-      strategies.push({ type: 'id', fn: () => document.getElementById(selectors.id) });
-    }
-    // xpath with id-anchors — reliable but may have non-unique IDs on broken pages.
-    if (selectors.xpath) {
-      strategies.push({
-        type: 'xpath',
-        fn: () => document.evaluate(selectors.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
-      });
-    }
-    // css — specific if selector includes nth-child/type/value attributes.
-    if (selectors.css) {
-      strategies.push({ type: 'css', fn: () => document.querySelector(selectors.css) });
-    }
-    // testId / dataId — framework-specific, generally unique.
-    if (selectors.testId) {
-      strategies.push({ type: 'testId', fn: () => document.querySelector(`[data-testid="${CSS.escape(selectors.testId)}"]`) });
-    }
-    if (selectors.dataId) {
-      strategies.push({ type: 'dataId', fn: () => document.querySelector(`[data-id="${CSS.escape(selectors.dataId)}"]`) });
-    }
-    // name — ambiguous, multiple elements can share the same name.
-    if (selectors.name) {
-      strategies.push({ type: 'name', fn: () => document.querySelector(`[name="${CSS.escape(selectors.name)}"]`) });
-    }
-    // text — most ambiguous, last resort.
-    if (selectors.text && selectors.textTag) {
-      strategies.push({
-        type: 'text',
-        fn: () => [...document.querySelectorAll(selectors.textTag)].find(el => el.textContent.trim() === selectors.text)
-      });
-    }
-    
-    // Try each strategy
-    const tryStrategies = () => {
-      for (const strategy of strategies) {
-        try {
-          const el = strategy.fn();
-          if (el) {
-            log(`Found element using ${strategy.type}`);
-            return el;
-          }
-        } catch (e) {
-          // Strategy failed, try next
-        }
-      }
-      return null;
-    };
-    
-    // Immediate check
-    const el = tryStrategies();
-    if (el) return resolve(el);
-
-    // Wait with MutationObserver
-    let found = false;
-    const observer = new MutationObserver(() => {
-      if (found) return;
-      const el = tryStrategies();
-      if (el) {
-        found = true;
-        observer.disconnect();
-        resolve(el);
-      }
-    });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    setTimeout(() => {
-      if (found) return;
-      observer.disconnect();
-      reject(`Timeout: Element not found with any selector strategy`);
-    }, timeout);
-  });
-}
-
-/**
- * Find a descendant of `root` matching conditions.
- *
- * conditions: {
- *   matchMode    : "any" | "all"  — default "any" (OR). "all" = AND across filled fields.
- *   valueEquals  : string  — matches el.value === value
- *   textContains : string  — matches el's own text nodes include text (case-insensitive)
- *   idContains   : string  — matches el.id includes string (case-insensitive)
- *   classContains: string  — matches el.className includes string (case-insensitive)
- *   typeEquals   : string  — matches el.type === value (exact)
- * }
- *
- * Returns the first matching element in DOM order, or null.
- */
-function findElementByCondition(root, conditions) {
-  if (!root || !conditions) return null;
-  const { matchMode = "any", valueEquals, textContains, idContains, classContains, typeEquals } = conditions;
-  const normalize = (s) => (s ?? "").toString().trim().toLowerCase();
-
-  // Build list of active checks (only fields that were filled)
-  const checks = [];
-
-  if (valueEquals !== undefined && valueEquals !== "") {
-    checks.push(el => el.value !== undefined && String(el.value) === String(valueEquals));
-  }
-
-  if (textContains != null && textContains !== "") {
-    const needle = normalize(textContains);
-    checks.push(el => {
-      const ownText = normalize(
-        Array.from(el.childNodes)
-          .filter(n => n.nodeType === Node.TEXT_NODE)
-          .map(n => n.textContent)
-          .join("")
-      );
-      if (ownText.includes(needle)) return true;
-      return normalize(el.textContent).includes(needle);
-    });
-  }
-
-  if (idContains != null && idContains !== "") {
-    const needle = normalize(idContains);
-    checks.push(el => normalize(el.id).includes(needle));
-  }
-
-  if (classContains != null && classContains !== "") {
-    const needle = normalize(classContains);
-    checks.push(el => normalize(el.className).includes(needle));
-  }
-
-  if (typeEquals != null && typeEquals !== "") {
-    checks.push(el => el.type === typeEquals);
-  }
-
-  if (checks.length === 0) return null;
-
-  const test = matchMode === "all"
-    ? (el) => checks.every(fn => fn(el))
-    : (el) => checks.some(fn => fn(el));
-
-  const candidates = root.querySelectorAll("*");
-  for (const el of candidates) {
-    if (test(el)) return el;
   }
   return null;
 }
 
-/**
- * Wait for element to appear in DOM (for cascade dropdowns)
- */
+/* ─────────────────────────────────────────────────────────────────────────────
+   ELEMENT FINDER
+───────────────────────────────────────────────────────────────────────────── */
+
+function findElementWithFallback(selectors, timeout = 5000) {
+  return new Promise((resolve, reject) => {
+    if (typeof selectors === 'string') selectors = { css: selectors };
+
+    // Priority: most stable → most fragile
+    const strategies = [];
+    if (selectors.id)       strategies.push({ type: 'id',       fn: () => document.getElementById(selectors.id) });
+    if (selectors.testId)   strategies.push({ type: 'testId',   fn: () => document.querySelector(`[data-testid="${CSS.escape(selectors.testId)}"]`) });
+    if (selectors.dataId)   strategies.push({ type: 'dataId',   fn: () => document.querySelector(`[data-id="${CSS.escape(selectors.dataId)}"]`) });
+    if (selectors.xpath)    strategies.push({ type: 'xpath',    fn: () => document.evaluate(selectors.xpath,    document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
+    if (selectors.css)      strategies.push({ type: 'css',      fn: () => document.querySelector(selectors.css) });
+    if (selectors.css)      strategies.push({ type: 'cssShadow', fn: () => querySelectorDeep(selectors.css) }); // shadow DOM pierce
+    if (selectors.name)     strategies.push({ type: 'name',     fn: () => document.querySelector(`[name="${CSS.escape(selectors.name)}"]`) });
+    if (selectors.text && selectors.textTag) {
+      strategies.push({
+        type: 'text',
+        fn: () => [...document.querySelectorAll(selectors.textTag)].find(el => el.textContent.trim() === selectors.text),
+      });
+    }
+    if (selectors.fullXpath) strategies.push({ type: 'fullXpath', fn: () => document.evaluate(selectors.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
+
+    const tryStrategies = () => {
+      for (const strategy of strategies) {
+        try {
+          const el = strategy.fn();
+          if (el) { log(`Found element using ${strategy.type}`); return el; }
+        } catch (_) {}
+      }
+      return null;
+    };
+
+    const el = tryStrategies();
+    if (el) return resolve(el);
+
+    // RAF-debounced MutationObserver: fire at most once per animation frame.
+    // childList+subtree only — no attributes — avoids firing on every style change.
+    let found = false;
+    let rafQueued = false;
+
+    const observer = new MutationObserver(() => {
+      if (found || rafQueued) return;
+      rafQueued = true;
+      requestAnimationFrame(() => {
+        rafQueued = false;
+        if (found) return;
+        const el = tryStrategies();
+        if (el) {
+          found = true;
+          observer.disconnect();
+          clearTimeout(timer);
+          resolve(el);
+        }
+      });
+    });
+
+    // document.body can be null on about:blank / mid-parse — fall back to <html>.
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+
+    const timer = setTimeout(() => {
+      if (found) return;
+      observer.disconnect();
+      reject(new Error(`Timeout: Element not found with any selector strategy`));
+    }, timeout);
+  });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   CONDITION-BASED ELEMENT FIND
+   Uses TreeWalker for O(n) early-exit instead of querySelectorAll("*").
+───────────────────────────────────────────────────────────────────────────── */
+
+function findElementByCondition(root, conditions) {
+  if (!root || !conditions) return null;
+  const { matchMode = 'any', valueEquals, textContains, idContains, classContains, typeEquals } = conditions;
+  const normalize = (s) => (s ?? '').toString().trim().toLowerCase();
+
+  const checks = [];
+  if (valueEquals  !== undefined && valueEquals  !== '') checks.push(el => el.value !== undefined && String(el.value) === String(valueEquals));
+  if (textContains != null && textContains !== '') {
+    const needle = normalize(textContains);
+    checks.push(el => {
+      const ownText = normalize(
+        Array.from(el.childNodes).filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join(''),
+      );
+      return ownText.includes(needle) || normalize(el.textContent).includes(needle);
+    });
+  }
+  if (idContains    != null && idContains    !== '') { const n = normalize(idContains);    checks.push(el => normalize(el.id).includes(n)); }
+  if (classContains != null && classContains !== '') { const n = normalize(classContains); checks.push(el => normalize(el.className).includes(n)); }
+  if (typeEquals    != null && typeEquals    !== '') checks.push(el => el.type === typeEquals);
+  if (checks.length === 0) return null;
+
+  const test = matchMode === 'all'
+    ? (el) => checks.every(fn => fn(el))
+    : (el) => checks.some(fn => fn(el));
+
+  // TreeWalker with early-exit — avoids building a full NodeList.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node = walker.nextNode();
+  while (node) {
+    if (test(node)) return node;
+    node = walker.nextNode();
+  }
+  return null;
+}
+
 function waitForElement(selector, timeout = 5000) {
   return new Promise((resolve, reject) => {
     const el = document.querySelector(selector);
     if (el) return resolve(el);
 
     let resolved = false;
+    let rafQueued = false;
     const observer = new MutationObserver(() => {
-      if (resolved) return;
-      const el = document.querySelector(selector);
-      if (el) {
-        resolved = true;
-        observer.disconnect();
-        resolve(el);
-      }
+      if (resolved || rafQueued) return;
+      rafQueued = true;
+      requestAnimationFrame(() => {
+        rafQueued = false;
+        if (resolved) return;
+        const el = document.querySelector(selector);
+        if (el) { resolved = true; observer.disconnect(); clearTimeout(t); resolve(el); }
+      });
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    setTimeout(() => {
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    const t = setTimeout(() => {
       if (resolved) return;
       resolved = true;
       observer.disconnect();
@@ -379,104 +335,104 @@ function waitForElement(selector, timeout = 5000) {
   });
 }
 
-/* === Recording === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   RECORDING
+───────────────────────────────────────────────────────────────────────────── */
 
-document.addEventListener("click", (event) => {
-  if (pickerMode) return; // Skip recording while in pick mode
+document.addEventListener('click', (event) => {
+  if (pickerMode) return;
+
+  // Flush pending debounced input before recording the click.
+  const activeEl = document.activeElement;
+  if (activeEl && _inputDebounceTimers.has(activeEl)) {
+    clearTimeout(_inputDebounceTimers.get(activeEl));
+    _inputDebounceTimers.delete(activeEl);
+    const pendingSelectors = getAllSelectors(activeEl);
+    if (pendingSelectors) {
+      safeSend({
+        type: 'RECORDED_ACTION',
+        action: { type: 'input', selector: pendingSelectors.css, selectors: pendingSelectors, value: activeEl.value, frameId: _myFrameId },
+      });
+    }
+  }
 
   const selectors = getAllSelectors(event.target);
   if (!selectors) return;
-
-  safeSend({
-    type: "RECORDED_ACTION",
-    action: {
-      type: "click",
-      selector: selectors.css,
-      selectors: selectors
-    }
-  });
+  safeSend({ type: 'RECORDED_ACTION', action: { type: 'click', selector: selectors.css, selectors, frameId: _myFrameId } });
 }, true);
 
-// Fix #1: debounce input events so only the final value per element is recorded
-const _inputDebounceTimers = new Map();
+// WeakMap so detached DOM elements can be garbage-collected.
+const _inputDebounceTimers = new WeakMap();
 
-document.addEventListener("input", (event) => {
+document.addEventListener('input', (event) => {
   const el = event.target;
   const selectors = getAllSelectors(el);
   if (!selectors) return;
 
-  clearTimeout(_inputDebounceTimers.get(el));
+  if (_inputDebounceTimers.has(el)) clearTimeout(_inputDebounceTimers.get(el));
   _inputDebounceTimers.set(el, setTimeout(() => {
     _inputDebounceTimers.delete(el);
     safeSend({
-      type: "RECORDED_ACTION",
-      action: {
-        type: "input",
-        selector: selectors.css,
-        selectors: selectors,
-        value: el.value,
-      }
+      type: 'RECORDED_ACTION',
+      action: { type: 'input', selector: selectors.css, selectors, value: el.value, frameId: _myFrameId },
     });
   }, 400));
 }, true);
 
-/* === Playback === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   PLAYBACK
+───────────────────────────────────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type !== "PLAY_ACTION") return;
+  if (msg.type !== 'PLAY_ACTION') return;
 
   (async () => {
     const action = msg.action;
-    log("PLAY_ACTION", action);
+    log('PLAY_ACTION', action);
 
-    // Run custom script
-    // Read DOM value and return it as a variable
-    if (action.type === "readdom") {
+    /* ── readdom ── */
+    if (action.type === 'readdom') {
       const actionTimeout = (action.timeout && action.timeout > 0) ? action.timeout : 5000;
       try {
         let el;
-        if (action.selectors && typeof action.selectors === "object") {
+        if (action.selectors && typeof action.selectors === 'object') {
           el = await findElementWithFallback(action.selectors, actionTimeout);
         } else if (action.selector) {
           el = await findElementWithFallback({ css: action.selector }, actionTimeout);
         }
         if (!el) { sendResponse({ failed: true }); return; }
-        const value = action.readFrom === "value" ? (el.value ?? "")
-                    : action.readFrom === "attr"  ? (el.getAttribute(action.attrName || "") ?? "")
-                    : (el.textContent?.trim() ?? "");
+        const value = action.readFrom === 'value' ? (el.value ?? '')
+                    : action.readFrom === 'attr'  ? (el.getAttribute(action.attrName || '') ?? '')
+                    : (el.textContent?.trim() ?? '');
         sendResponse({ value });
-      } catch (e) {
+      } catch (_) {
         sendResponse({ failed: true });
       }
       return;
     }
 
-    // Script actions are now handled in background via CDP (bypasses page CSP).
-    // This branch is a fallback for edge cases only — strip javascript: prefix.
-    if (action.type === "script") {
+    /* ── script fallback (CDP path is preferred; this is for edge cases only) ── */
+    if (action.type === 'script') {
       try {
-        const code = (action.code || "").replace(/^javascript:/i, "").trim();
-        const fn = new Function("window", "document", code);
+        const code = (action.code || '').replace(/^javascript:/i, '').trim();
+        const fn = new Function('window', 'document', code);
         fn.call(window, window, document);
       } catch (err) {
-        log("Script error:", err);
+        log('Script error:', err);
       }
       sendResponse();
       return;
     }
 
-    // Wait for element using fallback strategies
-    // Fix #15: respect per-action timeout if provided, else default 5000ms
+    /* ── Resolve target element ── */
     const actionTimeout = (action.timeout && action.timeout > 0) ? action.timeout : 5000;
     let target;
     try {
       if (action.conditions && action.selector) {
-        // Condition-based matching: resolve parent element first, then search children
         const parent = await findElementWithFallback(
           action.selectors && typeof action.selectors === 'object'
-            ? action.selectors
-            : { css: action.selector },
-          actionTimeout
+            ? action.selectors : { css: action.selector },
+          actionTimeout,
         );
         target = parent ? findElementByCondition(parent, action.conditions) : null;
       } else if (action.selectors && typeof action.selectors === 'object') {
@@ -488,127 +444,142 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     } catch (e) {
       log(e);
-      // Fix #6: report failure so background can notify popup
-      sendResponse({ failed: true });
+      sendResponse({ failed: true, error: e.message });
       return;
     }
 
-    if (!target) {
-      // Fix #6: report failure so background can notify popup
-      sendResponse({ failed: true });
-      return;
-    }
+    if (!target) { sendResponse({ failed: true }); return; }
 
-    target.scrollIntoView({ behavior: "auto", block: "center" });
+    // scrollIntoView then re-query to get a live reference.
+    // Virtualized lists (React-Window, AG-Grid) may unmount and remount the node during scroll.
+    target.scrollIntoView({ behavior: 'auto', block: 'center' });
+    // Give the framework one rAF to remount if needed, then re-query
+    await new Promise(r => requestAnimationFrame(r));
+    if (action.selectors && typeof action.selectors === 'object') {
+      try {
+        const requeried = await findElementWithFallback(action.selectors, 500);
+        if (requeried) target = requeried;
+      } catch (_) { /* keep original target */ }
+    }
     target.focus();
 
-    // HOVER
-    if (action.type === "hover") {
+    /* ── HOVER ── */
+    if (action.type === 'hover') {
       const rect = target.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
+      const cy = rect.top  + rect.height / 2;
       const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
-      target.dispatchEvent(new MouseEvent("mouseover",  opts));
-      target.dispatchEvent(new MouseEvent("mouseenter", { ...opts, bubbles: false }));
-      target.dispatchEvent(new MouseEvent("mousemove",  opts));
+      target.dispatchEvent(new MouseEvent('mouseover',  opts));
+      target.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+      target.dispatchEvent(new MouseEvent('mousemove',  opts));
       sendResponse();
       return;
     }
 
-    // DRAG & DROP
-    if (action.type === "dragdrop") {
+    /* ── DRAG & DROP ── */
+    if (action.type === 'dragdrop') {
       let dropEl = null;
       if (action.targetSelector) {
-        const ts = (action.targetSelectors && typeof action.targetSelectors === "object")
+        const ts = (action.targetSelectors && typeof action.targetSelectors === 'object')
           ? action.targetSelectors : { css: action.targetSelector };
         dropEl = await findElementWithFallback(ts, actionTimeout).catch(() => null);
       }
       if (!dropEl) { sendResponse({ failed: true }); return; }
       const srcRect = target.getBoundingClientRect();
       const dstRect = dropEl.getBoundingClientRect();
-      const sx = srcRect.left + srcRect.width / 2, sy = srcRect.top + srcRect.height / 2;
-      const dx = dstRect.left + dstRect.width / 2, dy = dstRect.top + dstRect.height / 2;
+      const sx = srcRect.left + srcRect.width  / 2, sy = srcRect.top  + srcRect.height / 2;
+      const dx = dstRect.left + dstRect.width  / 2, dy = dstRect.top  + dstRect.height / 2;
       const dt = new DataTransfer();
-      const fireM = (el, t, x, y, extra = {}) =>
-        el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y, ...extra }));
-      const fireD = (el, t, x, y) =>
-        el.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
-      fireM(target, "mousedown", sx, sy, { button: 0 });
-      fireD(target, "dragstart", sx, sy);
-      fireD(dropEl, "dragenter", dx, dy);
-      fireD(dropEl, "dragover",  dx, dy);
-      fireD(dropEl, "drop",      dx, dy);
-      fireD(target, "dragend",   dx, dy);
-      fireM(target, "mouseup",   dx, dy);
+      const fireM = (el, t, x, y, extra = {}) => el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y, ...extra }));
+      const fireD = (el, t, x, y) => el.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, clientX: x, clientY: y, dataTransfer: dt }));
+      fireM(target, 'mousedown', sx, sy, { button: 0 });
+      fireD(target, 'dragstart', sx, sy);
+      fireD(dropEl, 'dragenter', dx, dy);
+      fireD(dropEl, 'dragover',  dx, dy);
+      fireD(dropEl, 'drop',      dx, dy);
+      fireD(target, 'dragend',   dx, dy);
+      fireM(target, 'mouseup',   dx, dy);
       sendResponse();
       return;
     }
 
-    // CLICK
-    if (action.type === "click") {
-      // Native click() handles checkbox/radio toggle + event dispatch correctly
+    /* ── CLICK ── */
+    if (action.type === 'click') {
+      // Dispatch full mousedown → mouseup → click sequence.
+      // Some JS frameworks (jQuery widgets, custom components) only respond to
+      // mousedown/mouseup; target.click() alone misses those handlers.
+      const rect = target.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top  + rect.height / 2;
+      const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+      target.dispatchEvent(new MouseEvent('mousedown', opts));
+      target.dispatchEvent(new MouseEvent('mouseup',   opts));
+      target.click(); // fires 'click' event + follows links/submits forms
+      sendResponse();
+      return;
+    }
+
+    /* ── DROPDOWN fallback ── */
+    if (action.type === 'dropdown') {
       target.click();
       sendResponse();
       return;
     }
 
-    // OPEN DROPDOWN — handled via CDP in background; this is a fallback only
-    if (action.type === "dropdown") {
-      target.click();
-      sendResponse();
-      return;
-    }
-
-    // INPUT / SELECT
-    if (action.type === "input") {
-      // Handle SELECT correctly
-      if (target.tagName === "SELECT") {
-        // Set value directly on select element
+    /* ── INPUT / SELECT ── */
+    if (action.type === 'input') {
+      if (target.isContentEditable) {
+        // Rich-text editors (Quill, Draft.js, Tiptap) use contenteditable divs.
+        // Direct .textContent assignment bypasses their internal state;
+        // execCommand triggers the editor's mutation observer correctly.
+        target.focus();
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, action.value ?? '');
+        target.dispatchEvent(new Event('input',  { bubbles: true }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        sendResponse();
+        return;
+      } else if (target.tagName === 'SELECT') {
         target.value = action.value;
-        
-        // If direct value assignment didn't work, find and select the option
         if (target.value !== action.value) {
           const option = [...target.options].find(
-            o => o.value === action.value || o.text === action.value
+            o => o.value === action.value || o.text === action.value,
           );
-          if (option) {
-            option.selected = true;
-            target.value = option.value;
-          }
+          if (option) { option.selected = true; target.value = option.value; }
         }
-        
-        // Dispatch events in the correct order for frameworks (React/Vue/Angular)
-        target.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
-        target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
-        
-        // Some frameworks need additional events
-        target.dispatchEvent(new Event("blur", { bubbles: true }));
-        target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new Event('input',  { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+        target.dispatchEvent(new Event('blur',   { bubbles: true }));
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       } else {
-        target.value = action.value ?? "";
-        
-        // Fire both input and change for frameworks
-        target.dispatchEvent(new Event("input", { bubbles: true }));
-        target.dispatchEvent(new Event("change", { bubbles: true }));
-        
-        // Dispatch blur to trigger async operations (API calls, etc.)
-        target.dispatchEvent(new Event("blur", { bubbles: true }));
+        // Walk up the prototype chain to find the native value setter.
+        // React/Vue store internal state in fiber — direct assignment bypasses it.
+        // The native setter triggers the synthetic event system correctly.
+        let nativeSetter = null;
+        let proto = Object.getPrototypeOf(target);
+        while (proto && proto !== Object.prototype) {
+          const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (desc?.set) { nativeSetter = desc.set; break; }
+          proto = Object.getPrototypeOf(proto);
+        }
+        if (nativeSetter) {
+          nativeSetter.call(target, action.value ?? '');
+        } else {
+          target.value = action.value ?? '';
+        }
+        target.dispatchEvent(new Event('input',  { bubbles: true }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        target.dispatchEvent(new Event('blur',   { bubbles: true }));
       }
 
-      // If action specifies an element to wait for (e.g., loading indicator), wait for it
       if (action.waitForElement) {
         (async () => {
-          try {
-            await waitForElement(action.waitForElement, 5000);
-            log("Waited for element:", action.waitForElement);
-          } catch (e) {
-            log("Element wait timeout, continuing anyway");
-          }
+          try { await waitForElement(action.waitForElement, 5000); }
+          catch (_) { log('Element wait timeout, continuing'); }
           sendResponse();
         })();
         return;
       }
-
       sendResponse();
       return;
     }
@@ -619,7 +590,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true; // async
 });
 
-/* === Element Picker === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   ELEMENT PICKER
+───────────────────────────────────────────────────────────────────────────── */
 
 function showPickerBar() {
   if (document.getElementById('__picker_bar')) return;
@@ -629,24 +602,21 @@ function showPickerBar() {
   bar.textContent = '🎯 Click an element to select it. Press ESC to cancel.';
   document.documentElement.appendChild(bar);
 }
-function hidePickerBar() {
-  document.getElementById('__picker_bar')?.remove();
-}
+function hidePickerBar() { document.getElementById('__picker_bar')?.remove(); }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "START_PICK_MODE") {
+  if (msg.type === 'START_PICK_MODE') {
     pickerMode = true;
-    document.body.style.cursor = "crosshair";
+    document.body.style.cursor = 'crosshair';
     showPickerBar();
   }
-
-  if (msg.type === "STOP_PICK_MODE") {
+  if (msg.type === 'STOP_PICK_MODE') {
     pickerMode = false;
     clearPickerUI();
   }
 });
 
-let _pickerTarget = null; // element currently highlighted by mouseover
+let _pickerTarget = null;
 
 function _updatePickerOverlay(el) {
   _pickerTarget = el;
@@ -655,13 +625,8 @@ function _updatePickerOverlay(el) {
     overlay = document.createElement('div');
     overlay.id = '__picker_overlay';
     overlay.style.cssText = [
-      'position:fixed',
-      'pointer-events:none',
-      'z-index:2147483646',
-      'box-sizing:border-box',
-      'border:2px solid #4f46e5',
-      'background:rgba(79,70,229,0.08)',
-      'transition:none',
+      'position:fixed', 'pointer-events:none', 'z-index:2147483646', 'box-sizing:border-box',
+      'border:2px solid #4f46e5', 'background:rgba(79,70,229,0.08)', 'transition:none',
     ].join(';');
     document.documentElement.appendChild(overlay);
   }
@@ -672,12 +637,11 @@ function _updatePickerOverlay(el) {
   overlay.style.height = r.height + 'px';
   overlay.style.display = '';
 
-  // Update picker bar to show which element is highlighted
   const bar = document.getElementById('__picker_bar');
   if (bar) {
-    const tag  = el.tagName.toLowerCase();
-    const id   = el.id   ? `#${el.id}`   : '';
-    const cls  = el.className && typeof el.className === 'string'
+    const tag = el.tagName.toLowerCase();
+    const id  = el.id   ? `#${el.id}`   : '';
+    const cls = el.className && typeof el.className === 'string'
       ? '.' + el.className.trim().split(/\s+/)[0] : '';
     bar.textContent = `🎯 ${tag}${id || cls}  —  Click to select. ESC to cancel.`;
   }
@@ -688,24 +652,20 @@ function _removePickerOverlay() {
   document.getElementById('__picker_overlay')?.remove();
 }
 
-document.addEventListener("mouseover", (event) => {
+document.addEventListener('mouseover', (event) => {
   if (!pickerMode) return;
   _updatePickerOverlay(event.target);
 }, true);
 
-document.addEventListener("click", (event) => {
+document.addEventListener('click', (event) => {
   if (!pickerMode) return;
-
   event.preventDefault();
-  event.stopImmediatePropagation(); // Prevent recording listener from also firing
+  event.stopImmediatePropagation();
 
-  // Use the last highlighted element from mouseover, not event.target.
-  // event.target on click can differ (e.g. cursor drifts to sibling label during click).
   const el = _pickerTarget || event.target;
   const selectors = getAllSelectors(el);
   if (!selectors) return;
 
-  // Compute bounding rect synchronously (no async) so background can use it immediately
   const _cr = el.getBoundingClientRect();
   const pickedRect = {
     x:      Math.round(_cr.left + window.scrollX),
@@ -714,79 +674,51 @@ document.addEventListener("click", (event) => {
     height: Math.round(_cr.height),
   };
 
-  // Save to storage so popup can access it even if closed
-  chrome.storage.local.set({
-    lastPickedSelector: selectors.css,
-    lastPickedSelectors: selectors
-  });
-
-  safeSend({
-    type: "ELEMENT_PICKED",
-    selector: selectors.css,
-    selectors: selectors,
-    rect: pickedRect,
-  });
-
+  chrome.storage.local.set({ lastPickedSelector: selectors.css, lastPickedSelectors: selectors });
+  safeSend({ type: 'ELEMENT_PICKED', selector: selectors.css, selectors, rect: pickedRect });
   pickerMode = false;
   clearPickerUI();
 }, true);
 
 function clearPickerUI() {
-  document.body.style.cursor = "auto";
+  document.body.style.cursor = 'auto';
   hidePickerBar();
   _removePickerOverlay();
 }
 
-/* === Full Page Screenshot Helper === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   FULL PAGE SCREENSHOT HELPER
+───────────────────────────────────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === "GET_PAGE_DIMENSIONS") {
+  if (msg.type === 'GET_PAGE_DIMENSIONS') {
     const body = document.body;
     const html = document.documentElement;
-    const fullHeight = Math.max(
-      body.scrollHeight, body.offsetHeight,
-      html.clientHeight, html.scrollHeight, html.offsetHeight
-    );
-    const fullWidth = Math.max(
-      body.scrollWidth, body.offsetWidth,
-      html.clientWidth, html.scrollWidth, html.offsetWidth
-    );
+    const fullHeight = Math.max(body.scrollHeight, body.offsetHeight, html.clientHeight, html.scrollHeight, html.offsetHeight);
+    const fullWidth  = Math.max(body.scrollWidth,  body.offsetWidth,  html.clientWidth,  html.scrollWidth,  html.offsetWidth);
     sendResponse({
-      fullWidth,
-      fullHeight,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
+      fullWidth, fullHeight,
+      viewportWidth:   window.innerWidth,
+      viewportHeight:  window.innerHeight,
+      scrollX:         window.scrollX,
+      scrollY:         window.scrollY,
       devicePixelRatio: window.devicePixelRatio || 1,
     });
     return true;
   }
 
-  // Get element bounding rect (absolute page coordinates) for element screenshot
-  if (msg.type === "GET_ELEMENT_RECT") {
+  if (msg.type === 'GET_ELEMENT_RECT') {
     try {
       let el = null;
-
-      // Prefer fullXpath (exact, index-based) when available — CSS selectors can be ambiguous
-      // when multiple elements share the same tag+class combination.
       const s = msg.selectors;
-      if (s?.fullXpath) {
-        el = document.evaluate(s.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-      }
-      if (!el && s?.xpath) {
-        el = document.evaluate(s.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-      }
-      if (!el && s?.id) {
-        el = document.getElementById(s.id);
-      }
-      if (!el && msg.selector) {
-        el = document.querySelector(msg.selector);
-      }
+      if (s?.fullXpath) el = document.evaluate(s.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      if (!el && s?.xpath) el = document.evaluate(s.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      if (!el && s?.id)    el = document.getElementById(s.id);
+      if (!el && msg.selector) el = document.querySelector(msg.selector);
 
-      if (!el) { sendResponse({ error: "Element not found" }); return true; }
+      if (!el) { sendResponse({ error: 'Element not found' }); return true; }
       const rect = el.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) { sendResponse({ error: "Element has no size" }); return true; }
+      if (rect.width === 0 || rect.height === 0) { sendResponse({ error: 'Element has no size' }); return true; }
       sendResponse({
         x: rect.left + window.scrollX,
         y: rect.top  + window.scrollY,
@@ -800,132 +732,113 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // Check condition for conditional actions
-  if (msg.type === "CHECK_CONDITION") {
-    const { conditionType, selector, expectedValue } = msg;
-    let result = false;
-    
-    try {
-      switch (conditionType) {
-        case 'elementExists': {
-          // Check if element exists in DOM
-          const el = document.querySelector(selector);
-          result = !!el;
-          break;
-        }
-        case 'elementNotExists': {
-          // Check if element does NOT exist
-          const el = document.querySelector(selector);
-          result = !el;
-          break;
-        }
-        case 'elementVisible': {
-          // Check if element exists and is visible
-          const el = document.querySelector(selector);
-          if (el) {
-            const style = getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            result = style.display !== 'none' && 
-                     style.visibility !== 'hidden' && 
-                     style.opacity !== '0' &&
-                     rect.width > 0 && rect.height > 0;
+  /* ── CHECK_CONDITION ── */
+  if (msg.type === 'CHECK_CONDITION') {
+    const { conditionType, selector, selectors: selectorMap, expectedValue } = msg;
+
+    (async () => {
+      let result = false;
+      try {
+        const getEl = async () => {
+          if (selectorMap && typeof selectorMap === 'object') {
+            return findElementWithFallback(selectorMap, 2000).catch(() => null);
           }
-          break;
-        }
-        case 'elementHidden': {
-          // Check if element is hidden or doesn't exist
-          const el = document.querySelector(selector);
-          if (!el) {
-            result = true;
-          } else {
-            const style = getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            result = style.display === 'none' || 
-                     style.visibility === 'hidden' || 
-                     style.opacity === '0' ||
-                     rect.width === 0 || rect.height === 0;
+          if (selector) {
+            return findElementWithFallback({ css: selector }, 2000).catch(() => null);
           }
-          break;
-        }
-        case 'textContains': {
-          // Check if element contains expected text
-          const el = document.querySelector(selector);
-          if (el) {
-            result = el.textContent.includes(expectedValue);
+          return null;
+        };
+
+        switch (conditionType) {
+          case 'elementExists': {
+            const el = await getEl();
+            result = !!el;
+            break;
           }
-          break;
-        }
-        case 'textEquals': {
-          // Check if element text equals expected value
-          const el = document.querySelector(selector);
-          if (el) {
-            result = el.textContent.trim() === expectedValue.trim();
+          case 'elementNotExists': {
+            const el = await getEl();
+            result = !el;
+            break;
           }
-          break;
-        }
-        case 'valueEquals': {
-          // Check if input value equals expected value
-          const el = document.querySelector(selector);
-          if (el && 'value' in el) {
-            result = el.value === expectedValue;
-          }
-          break;
-        }
-        case 'valueContains': {
-          // Check if input value contains expected value
-          const el = document.querySelector(selector);
-          if (el && 'value' in el) {
-            result = el.value.includes(expectedValue);
-          }
-          break;
-        }
-        case 'urlContains': {
-          // Check if current URL contains expected value
-          result = window.location.href.includes(expectedValue);
-          break;
-        }
-        case 'urlEquals': {
-          // Check if current URL equals expected value
-          result = window.location.href === expectedValue;
-          break;
-        }
-        case 'hasClass': {
-          // Check if element has specific class
-          const el = document.querySelector(selector);
-          if (el) {
-            result = el.classList.contains(expectedValue);
-          }
-          break;
-        }
-        case 'hasAttribute': {
-          // Check if element has specific attribute (supports "attr" or "attr=value" format)
-          const el = document.querySelector(selector);
-          if (el) {
-            if (expectedValue.includes('=')) {
-              const eqIdx = expectedValue.indexOf('=');
-              const attrName = expectedValue.slice(0, eqIdx);
-              const attrVal = expectedValue.slice(eqIdx + 1);
-              result = el.hasAttribute(attrName) && el.getAttribute(attrName) === attrVal;
-            } else {
-              result = el.hasAttribute(expectedValue);
+          case 'elementVisible': {
+            const el = await getEl();
+            if (el) {
+              const style = getComputedStyle(el);
+              const rect  = el.getBoundingClientRect();
+              result = style.display !== 'none' && style.visibility !== 'hidden' &&
+                       style.opacity !== '0' && rect.width > 0 && rect.height > 0;
             }
+            break;
           }
-          break;
+          case 'elementHidden': {
+            const el = await getEl();
+            if (!el) {
+              result = true;
+            } else {
+              const style = getComputedStyle(el);
+              const rect  = el.getBoundingClientRect();
+              result = style.display === 'none' || style.visibility === 'hidden' ||
+                       style.opacity === '0' || rect.width === 0 || rect.height === 0;
+            }
+            break;
+          }
+          case 'textContains': {
+            const el = await getEl();
+            if (el) result = el.textContent.includes(expectedValue);
+            break;
+          }
+          case 'textEquals': {
+            const el = await getEl();
+            if (el) result = el.textContent.trim() === (expectedValue || '').trim();
+            break;
+          }
+          case 'valueEquals': {
+            const el = await getEl();
+            if (el && 'value' in el) result = el.value === expectedValue;
+            break;
+          }
+          case 'valueContains': {
+            const el = await getEl();
+            if (el && 'value' in el) result = el.value.includes(expectedValue);
+            break;
+          }
+          case 'urlContains': result = window.location.href.includes(expectedValue); break;
+          case 'urlEquals':   result = window.location.href === expectedValue; break;
+          case 'hasClass': {
+            const el = await getEl();
+            if (el) result = el.classList.contains(expectedValue);
+            break;
+          }
+          case 'hasAttribute': {
+            const el = await getEl();
+            if (el) {
+              if ((expectedValue || '').includes('=')) {
+                const eqIdx  = expectedValue.indexOf('=');
+                const attrName = expectedValue.slice(0, eqIdx);
+                const attrVal  = expectedValue.slice(eqIdx + 1);
+                result = el.hasAttribute(attrName) && el.getAttribute(attrName) === attrVal;
+              } else {
+                result = el.hasAttribute(expectedValue);
+              }
+            }
+            break;
+          }
+          default:
+            result = true; // Unknown condition type — do not block playback
         }
-        default:
-          result = true; // Unknown condition type, continue
+      } catch (e) {
+        log('CHECK_CONDITION error:', e);
+        result = false; // error → false so broken conditions don't silently pass
       }
-    } catch (e) {
-      log('CHECK_CONDITION error:', e);
-      result = true; // Continue on error
-    }
-    
-    sendResponse({ result });
-    return true;
+      sendResponse({ result });
+    })();
+    return true; // async
   }
 });
 
-/* === Hotkeys === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   HOTKEYS
+───────────────────────────────────────────────────────────────────────────── */
 
 let activeHotkeys = {
   startRecord:         'Alt+R',
@@ -943,7 +856,6 @@ let activeHotkeys = {
 chrome.storage.sync.get(['hotkeys'], (res) => {
   if (res.hotkeys) activeHotkeys = { ...activeHotkeys, ...res.hotkeys };
 });
-
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.hotkeys) {
     activeHotkeys = { ...activeHotkeys, ...changes.hotkeys.newValue };
@@ -964,7 +876,9 @@ function getKeyCombo(e) {
   return parts.join('+');
 }
 
-/* === Visible Screenshot Countdown === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   VISIBLE SCREENSHOT COUNTDOWN
+───────────────────────────────────────────────────────────────────────────── */
 
 let _countdownActive = false;
 let _countdownTimer  = null;
@@ -972,7 +886,6 @@ let _countdownTimer  = null;
 function _startVisibleCountdown(seconds, crop) {
   if (_countdownActive) return;
   _countdownActive = true;
-
   let remaining = seconds;
 
   const overlay = document.createElement('div');
@@ -1022,7 +935,6 @@ function _fireVisibleCapture(crop) {
   document.getElementById('__screenshot_countdown')?.remove();
   _countdownActive = false;
   _countdownTimer  = null;
-  // Two rAF frames ensure overlay is fully removed from the rendered frame before capture
   requestAnimationFrame(() => requestAnimationFrame(() => {
     safeSend({ type: 'TAKE_SCREENSHOT', crop: !!crop });
   }));
@@ -1035,7 +947,6 @@ function _cancelCountdown() {
   _countdownTimer  = null;
 }
 
-// Handle countdown request from popup (button click)
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'START_VISIBLE_COUNTDOWN') {
     _startVisibleCountdown(msg.seconds || 3, !!msg.crop);
@@ -1043,22 +954,12 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  // ESC cancels countdown overlay first, then picker mode
-  if (e.key === 'Escape' && _countdownActive) {
-    e.preventDefault();
-    _cancelCountdown();
-    return;
-  }
-
+  if (e.key === 'Escape' && _countdownActive) { e.preventDefault(); _cancelCountdown(); return; }
   if (pickerMode && e.key === 'Escape') {
-    e.preventDefault();
-    pickerMode = false;
-    clearPickerUI();
-    safeSend({ type: 'STOP_PICK_MODE' });
-    return;
+    e.preventDefault(); pickerMode = false; clearPickerUI();
+    safeSend({ type: 'STOP_PICK_MODE' }); return;
   }
 
-  // Skip when user is typing in a form field
   const tag = document.activeElement?.tagName;
   if (['INPUT', 'TEXTAREA'].includes(tag)) return;
   if (document.activeElement?.isContentEditable) return;
@@ -1069,184 +970,91 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     chrome.runtime.sendMessage({ type: 'IS_TAB_ACTIVATED' }, (res) => {
       if (!res?.activated) return;
-      if (combo === activeHotkeys.startRecord) {
-        safeSend({ type: 'START_RECORD' });
-        log('Hotkey: START_RECORD');
-      } else {
-        safeSend({ type: 'STOP_RECORD' });
-        log('Hotkey: STOP_RECORD');
-      }
+      if (combo === activeHotkeys.startRecord) { safeSend({ type: 'START_RECORD' }); log('Hotkey: START_RECORD'); }
+      else                                     { safeSend({ type: 'STOP_RECORD'  }); log('Hotkey: STOP_RECORD');  }
     });
   } else if (combo === activeHotkeys.screenshot) {
     e.preventDefault();
     chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
-      if (res.screenshotCountdownEnabled) {
-        _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
-      } else {
-        safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
-      }
+      if (res.screenshotCountdownEnabled) _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
+      else safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
     });
-    log('Hotkey: TAKE_SCREENSHOT');
-  } else if (combo === activeHotkeys.screenshotFull) {
+  } else if (combo === activeHotkeys.screenshotFull)   { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_FULL', crop: true }); }
+  else if (activeHotkeys.screenshotScrollV && combo === activeHotkeys.screenshotScrollV) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_V' }); }
+  else if (activeHotkeys.screenshotScrollH && combo === activeHotkeys.screenshotScrollH) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_H' }); }
+  else if (activeHotkeys.segV && combo === activeHotkeys.segV)   { e.preventDefault(); safeSend({ type: 'HOTKEY_SEG_START', dir: 'vertical'   }); }
+  else if (activeHotkeys.segH && combo === activeHotkeys.segH)   { e.preventDefault(); safeSend({ type: 'HOTKEY_SEG_START', dir: 'horizontal' }); }
+  else if (activeHotkeys.segStop && combo === activeHotkeys.segStop) {
     e.preventDefault();
-    safeSend({ type: 'TAKE_SCREENSHOT_FULL', crop: true });
-    log('Hotkey: TAKE_SCREENSHOT_FULL');
-  } else if (activeHotkeys.screenshotScrollV && combo === activeHotkeys.screenshotScrollV) {
-    e.preventDefault();
-    safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_V' });
-    log('Hotkey: TAKE_SCREENSHOT_SCROLL_V');
-  } else if (activeHotkeys.screenshotScrollH && combo === activeHotkeys.screenshotScrollH) {
-    e.preventDefault();
-    safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_H' });
-    log('Hotkey: TAKE_SCREENSHOT_SCROLL_H');
-  } else if (activeHotkeys.segV && combo === activeHotkeys.segV) {
-    e.preventDefault();
-    safeSend({ type: 'HOTKEY_SEG_START', dir: 'vertical' });
-    log('Hotkey: SEG_START vertical');
-  } else if (activeHotkeys.segH && combo === activeHotkeys.segH) {
-    e.preventDefault();
-    safeSend({ type: 'HOTKEY_SEG_START', dir: 'horizontal' });
-    log('Hotkey: SEG_START horizontal');
-  } else if (activeHotkeys.segStop && combo === activeHotkeys.segStop) {
-    e.preventDefault();
-    // Trigger the stop button if segment capture is active
-    if (_segCapture) {
-      document.querySelector('#__ext_seg_bar_stop')?.click();
-    }
-    log('Hotkey: SEG_STOP');
+    if (_segCapture) document.querySelector('#__ext_seg_bar_stop')?.click();
   } else if (activeHotkeys.screenshotElement && combo === activeHotkeys.screenshotElement) {
-    e.preventDefault();
-    safeSend({ type: 'HOTKEY_SCREENSHOT_ELEMENT' });
-    log('Hotkey: SCREENSHOT_ELEMENT');
+    e.preventDefault(); safeSend({ type: 'HOTKEY_SCREENSHOT_ELEMENT' });
   }
 }, true);
 
-/* === Full-page screenshot stitching === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   PING / PONG
+───────────────────────────────────────────────────────────────────────────── */
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type !== "STITCH_SCREENSHOTS") return;
-
-  const { segments, fullWidth, fullHeight, devicePixelRatio: dpr, horizontal } = msg;
-
-  const canvasW = Math.round(fullWidth  * dpr);
-  const canvasH = Math.round(fullHeight * dpr);
-
-  // Chrome canvas hard limit — beyond this toDataURL returns empty string
-  const MAX_DIM = 16384;
-  if (canvasW > MAX_DIM || canvasH > MAX_DIM) {
-    console.warn(`[STITCH] Canvas too large (${canvasW}x${canvasH}), max ${MAX_DIM}. Stitching should be done in service worker.`);
-    sendResponse({ error: `Canvas dimension ${Math.max(canvasW, canvasH)}px exceeds limit` });
-    return true;
-  }
-
-  const canvas = document.createElement("canvas");
-  canvas.width  = canvasW;
-  canvas.height = canvasH;
-  const ctx = canvas.getContext("2d");
-
-  // Load and draw each segment using pre-computed src/dest values
-  (async () => {
-    for (const seg of segments) {
-      await new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          if (horizontal) {
-            // srcY→srcX, srcH→srcW, destY→destX for horizontal stitching
-            if (seg.srcH > 0) {
-              ctx.drawImage(img, seg.srcY, 0, seg.srcH, img.height, seg.destY, 0, seg.srcH, img.height);
-            }
-          } else {
-            if (seg.srcH > 0) {
-              ctx.drawImage(img, 0, seg.srcY, img.width, seg.srcH, 0, seg.destY, img.width, seg.srcH);
-            }
-          }
-          resolve();
-        };
-        img.onerror = resolve;
-        img.src = seg.dataUrl;
-      });
-    }
-    sendResponse({ dataUrl: canvas.toDataURL("image/png") });
-  })();
-
-  return true; // async
-});
-
-/* === Ping/Pong for connection check === */
-
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === "PING") {
-    sendResponse({ type: "PONG", ready: true, timestamp: Date.now() });
+  if (msg.type === 'PING') {
+    sendResponse({ type: 'PONG', ready: true, timestamp: Date.now() });
     return true;
   }
 });
 
-/* === Segment Capture Overlay === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   SEGMENT CAPTURE OVERLAY
+───────────────────────────────────────────────────────────────────────────── */
 
 let _segCapture = null;
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type !== "START_SEGMENT_TAB") return;
+  if (msg.type !== 'START_SEGMENT_TAB') return;
 
-  // Remove any existing overlay
-  if (_segCapture) {
-    _segCapture.cleanup();
-  }
+  if (_segCapture) _segCapture.cleanup();
 
-  const dir = msg.dir;
-  const isVert = dir === "vertical";
+  const dir    = msg.dir;
+  const isVert = dir === 'vertical';
   const startX = window.scrollX;
   const startY = window.scrollY;
 
-  const bar = document.createElement("div");
+  const bar = document.createElement('div');
   bar.style.cssText = [
-    "position:fixed",
-    "top:0",
-    "left:0", "right:0",
-    "background:rgba(20,20,20,0.92)",
-    "color:#fff",
-    "font:13px/1.4 sans-serif",
-    "padding:8px 14px",
-    "display:flex",
-    "align-items:center",
-    "gap:12px",
-    "z-index:2147483647",
-    "box-shadow:0 2px 8px rgba(0,0,0,0.5)",
-  ].join(";");
+    'position:fixed', 'top:0', 'left:0', 'right:0',
+    'background:rgba(20,20,20,0.92)', 'color:#fff',
+    'font:13px/1.4 sans-serif', 'padding:8px 14px',
+    'display:flex', 'align-items:center', 'gap:12px',
+    'z-index:2147483647', 'box-shadow:0 2px 8px rgba(0,0,0,0.5)',
+  ].join(';');
 
-  const lblStart = document.createElement("span");
-  lblStart.textContent = `\uD83D\uDCCD B\u1eaft \u0111\u1ea7u: X = ${startX}px, Y = ${startY}px`;
+  const lblStart   = document.createElement('span');
+  lblStart.textContent = `📍 Bắt đầu: X = ${startX}px, Y = ${startY}px`;
 
-  const lblCurrent = document.createElement("span");
-  lblCurrent.style.flex = "1";
+  const lblCurrent = document.createElement('span');
+  lblCurrent.style.flex = '1';
 
   const updateLbl = () => {
     const endX = window.scrollX + window.innerWidth;
     const endY = window.scrollY + window.innerHeight;
-
-    const distX = Math.abs(endX - startX);
-    const distY = Math.abs(endY - startY);
-    lblCurrent.textContent = `\u0110\u1ebfn: X=${endX}px, Y=${endY}px (W=${distX}px, H=${distY}px)`;
+    lblCurrent.textContent = `Đến: X=${endX}px, Y=${endY}px (W=${Math.abs(endX - startX)}px, H=${Math.abs(endY - startY)}px)`;
   };
   updateLbl();
 
-  const btnCancel = document.createElement("button");
-  btnCancel.textContent = "\u2716 H\u1ee7y";
-  btnCancel.style.cssText = "background:#555;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;";
+  const btnCancel = document.createElement('button');
+  btnCancel.textContent = '✖ Hủy';
+  btnCancel.style.cssText = 'background:#555;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;';
 
-  const btnStop = document.createElement("button");
-  btnStop.id = "__ext_seg_bar_stop";
-  btnStop.textContent = "\u23F9 D\u1eebng & Ch\u1ee5p";
-  btnStop.style.cssText = "background:#e74c3c;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;";
+  const btnStop = document.createElement('button');
+  btnStop.id = '__ext_seg_bar_stop';
+  btnStop.textContent = '⏹ Dừng & Chụp';
+  btnStop.style.cssText = 'background:#e74c3c;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;';
 
   bar.append(lblStart, lblCurrent, btnCancel, btnStop);
   document.documentElement.appendChild(bar);
 
-  /* --- Auto-scroll loop (speed from storage, default 2px/frame) --- */
-  let rafId = null;
-  let scrollStopped = false;
-  let scrollStep = 2;
-  const speedKey = isVert ? "segScrollSpeedV" : "segScrollSpeedH";
+  let rafId = null, scrollStopped = false, scrollStep = 2;
+  const speedKey = isVert ? 'segScrollSpeedV' : 'segScrollSpeedH';
   chrome.storage.sync.get([speedKey], (res) => {
     scrollStep = Math.min(10, Math.max(0.1, parseFloat(res[speedKey]) || 2));
   });
@@ -1254,16 +1062,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const scrollLoop = () => {
     if (scrollStopped) return;
     const before = isVert ? window.scrollY : window.scrollX;
-    if (isVert) window.scrollBy(0, scrollStep);
-    else        window.scrollBy(scrollStep, 0);
+    if (isVert) window.scrollBy(0, scrollStep); else window.scrollBy(scrollStep, 0);
     const after = isVert ? window.scrollY : window.scrollX;
     updateLbl();
-    // Auto-stop when page end is reached
-    if (after === before) {
-      scrollStopped = true;
-      btnStop.textContent = "\u23F9 Ch\u1ee5p (cu\u1ed1i trang)";
-      return;
-    }
+    if (after === before) { scrollStopped = true; btnStop.textContent = '⏹ Chụp (cuối trang)'; return; }
     rafId = requestAnimationFrame(scrollLoop);
   };
   rafId = requestAnimationFrame(scrollLoop);
@@ -1275,28 +1077,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     _segCapture = null;
   };
 
-  btnCancel.addEventListener("click", () => {
+  btnCancel.addEventListener('click', () => {
     cleanup();
-    chrome.runtime.sendMessage({ type: "CANCEL_SEGMENT_CAPTURE" });
+    chrome.runtime.sendMessage({ type: 'CANCEL_SEGMENT_CAPTURE' });
   });
 
-  btnStop.addEventListener("click", () => {
+  btnStop.addEventListener('click', () => {
     const endX = window.scrollX + window.innerWidth;
     const endY = window.scrollY + window.innerHeight;
     cleanup();
-
-    // Scroll back to start position before capture so screenshot.js tiles from the correct origin
     window.scrollTo(startX, startY);
-
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const payload = {
-        type: "CAPTURE_SEGMENT",
-        xStart: Math.min(startX, endX),
-        yStart: Math.min(startY, endY),
-        xEnd: Math.max(startX, endX),
-        yEnd: Math.max(startY, endY)
-      };
-      chrome.runtime.sendMessage(payload);
+      chrome.runtime.sendMessage({
+        type: 'CAPTURE_SEGMENT',
+        xStart: Math.min(startX, endX), yStart: Math.min(startY, endY),
+        xEnd:   Math.max(startX, endX), yEnd:   Math.max(startY, endY),
+      });
     }));
   });
 
@@ -1305,9 +1101,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true;
 });
 
-/* === Notify ready === */
+/* ─────────────────────────────────────────────────────────────────────────────
+   NOTIFY READY
+───────────────────────────────────────────────────────────────────────────── */
 
-safeSend({ type: "CONTENT_READY" });
-log("Content script READY");
+safeSend({ type: 'CONTENT_READY' });
+log('Content script READY');
 
 } // End of injection guard

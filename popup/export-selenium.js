@@ -28,12 +28,13 @@ function msToSec(ms) {
   return parseFloat((ms / 1000).toFixed(3));
 }
 
-// Picks the best available selector and returns { type, value }
+// Picks the best available selector and returns { type, value }.
+// ID is the most stable selector — prioritised over generic CSS.
 function getBestSelInfo(action) {
   const s = action.selectors || {};
-  if (s.css)       return { type: 'css',       value: s.css };
   if (s.id)        return { type: 'id',        value: s.id };
   if (s.name)      return { type: 'name',      value: s.name };
+  if (s.css)       return { type: 'css',       value: s.css };
   if (s.text)      return { type: 'text',      value: s.text };
   if (s.xpath)     return { type: 'xpath',     value: s.xpath };
   if (s.fullXpath) return { type: 'fullXpath', value: s.fullXpath };
@@ -75,13 +76,14 @@ function selToPy(selInfo) {
   }
 }
 
-// Converts a value that may contain ${varName} to a Python string/f-string
+// Converts a value that may contain ${varName} to a Python string/f-string.
+// Sanitizes variable names to valid Python identifiers (${var-name} → {var_name}).
 function valueToPy(val) {
   if (val == null) return '""';
   const s = String(val);
   if (/\$\{/.test(s)) {
     const inner = s
-      .replace(/\$\{([^}]+)\}/g, '{$1}')
+      .replace(/\$\{([^}]+)\}/g, (_, name) => `{${name.replace(/[^a-zA-Z0-9_]/g, '_')}}`)
       .replace(/\\/g, '\\\\')
       .replace(/"/g, '\\"');
     return `f"${inner}"`;
@@ -119,8 +121,19 @@ function condExprPy(action, selPy) {
       return `driver.current_url == ${exp}`;
     case 'hasClass':
       return `${exp} in (driver.find_element(${selPy}).get_attribute('class') or '' if driver.find_elements(${selPy}) else '')`;
-    case 'hasAttribute':
+    case 'hasAttribute': {
+      // If expectedValue is "attr=value", split on the first '=' and generate
+      // a proper attribute-value comparison (get_attribute("attr=value") always returns None).
+      const rawExp = action.expectedValue || '';
+      const eqIdx  = rawExp.indexOf('=');
+      if (eqIdx > 0) {
+        const attrNamePy = JSON.stringify(rawExp.slice(0, eqIdx));
+        const attrValPy  = JSON.stringify(rawExp.slice(eqIdx + 1));
+        return `(driver.find_element(${selPy}).get_attribute(${attrNamePy}) == ${attrValPy}) if driver.find_elements(${selPy}) else False`;
+      }
+      // No '=' — check that the attribute exists (non-null, non-empty)
       return `bool(driver.find_element(${selPy}).get_attribute(${exp})) if driver.find_elements(${selPy}) else False`;
+    }
     default:
       return `True  # unknown condition: ${action.conditionType}`;
   }
@@ -375,7 +388,7 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   out.push(`# ============================`);
   out.push('');
   out.push(`driver = webdriver.${driverType}()`);
-  out.push(`driver.implicitly_wait(${msToSec(elTimeout)})`);
+  // implicitly_wait is intentionally omitted — it conflicts with WebDriverWait/EC.
   out.push('');
 
   // If no navigate action exists as the first real step, emit a driver.get() line.
@@ -396,7 +409,7 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   if (hasVars) {
     out.push('# --- VARIABLES ---');
     for (const [k, v] of Object.entries(staticVars)) {
-      out.push(`${k} = ${JSON.stringify(v)}`);
+      out.push(`${safeVarName(k)} = ${JSON.stringify(v)}`);
     }
     for (const [k, spec] of Object.entries(randomSpecs)) {
       const charset = spec.type === 'alpha'
@@ -404,7 +417,7 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
         : spec.type === 'numeric'
           ? 'string.digits'
           : 'string.ascii_letters + string.digits';
-      out.push(`${k} = ''.join(random.choices(${charset}, k=${spec.length}))`);
+      out.push(`${safeVarName(k)} = ''.join(random.choices(${charset}, k=${spec.length}))`);
     }
     for (const k of readdomVars) {
       out.push(`${k} = ''`);

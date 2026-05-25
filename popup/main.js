@@ -807,17 +807,18 @@ function renderSwitchCaseList(editingIdx = -1) {
         if (!grouped[fid]) grouped[fid] = [];
         grouped[fid].push({ id, name: s.name });
       });
+      // XSS-NEW-1: escape all user-controlled data inserted into innerHTML
       let optionsHtml = "";
       (grouped[""] || []).sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
         const sel = s.id === c.scenarioId ? " selected" : "";
-        optionsHtml += `<option value="${s.id}"${sel}>${s.name}</option>`;
+        optionsHtml += `<option value="${escHtml(s.id)}"${sel}>${escHtml(s.name)}</option>`;
       });
       Object.entries(folders).forEach(([fid, f]) => {
         if (!grouped[fid]?.length) return;
-        optionsHtml += `<optgroup label="${f.name}">`;
+        optionsHtml += `<optgroup label="${escHtml(f.name)}">`;
         grouped[fid].sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
           const sel = s.id === c.scenarioId ? " selected" : "";
-          optionsHtml += `<option value="${s.id}"${sel}>${s.name}</option>`;
+          optionsHtml += `<option value="${escHtml(s.id)}"${sel}>${escHtml(s.name)}</option>`;
         });
         optionsHtml += `</optgroup>`;
       });
@@ -825,7 +826,7 @@ function renderSwitchCaseList(editingIdx = -1) {
       row.innerHTML = `
         <div class="sw-inline-row">
           <input class="sw-edit-val sw-edit-input" placeholder="Case value (empty = default)"
-            value="${isDefault ? "" : c.value}"
+            value="${isDefault ? "" : escHtml(c.value)}"
             ${isDefault ? 'disabled title="Default case — value cannot be changed"' : ""}
             ${isDefault ? 'style="opacity:0.5;"' : ""} />
         </div>
@@ -861,10 +862,11 @@ function renderSwitchCaseList(editingIdx = -1) {
     } else {
       // ── View mode ──
       row.className = "sw-case-row-view";
-      const label = c.value === "__default__" ? "⬡ default" : `"${c.value}"`;
+      // XSS-NEW-1: c.value and c.scenarioName are user-authored — escape before inserting into innerHTML
+      const label = c.value === "__default__" ? "⬡ default" : `"${escHtml(c.value)}"`;
       row.innerHTML = `
         <span class="sw-case-label">${label}</span>
-        <span class="sw-case-target">→ ${c.scenarioName || c.scenarioId}</span>
+        <span class="sw-case-target">→ ${escHtml(c.scenarioName || c.scenarioId)}</span>
         <button data-idx="${idx}" class="sw-case-edit secondary sw-case-btn" title="Edit case">✎</button>
         <button data-idx="${idx}" class="sw-case-del secondary sw-case-btn" title="Delete case">🗑</button>
       `;
