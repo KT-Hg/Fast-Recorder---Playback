@@ -27,6 +27,9 @@ export function updateBadge() {
 
 /* ── Notifications ──────────────────────────────────────────────────────────── */
 
+// Minimal 1×1 transparent PNG — satisfies chrome.notifications iconUrl requirement
+// without a real asset file.  The MV3 service worker cannot access extension
+// assets via relative URLs at notification-creation time.
 const _NOTIF_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+gBkAAAAAAASUVORK5CYII=';
 
 export async function sendCompletionNotification(title, message) {
@@ -47,13 +50,14 @@ const _RANDOM_CHARSETS = {
   alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
 };
 
+/** Resolve {random:type:len} placeholders to generated strings at run start. */
 export function resolveRandomVars(vars) {
   const result = {};
   for (const [k, v] of Object.entries(vars)) {
     const m = typeof v === 'string' && v.match(/^\{random:(\w+):(\d+)\}$/);
     if (m) {
       const charset = _RANDOM_CHARSETS[m[1]] || _RANDOM_CHARSETS.alphanumeric;
-      const len = Math.min(parseInt(m[2], 10), 512);
+      const len = Math.min(parseInt(m[2], 10), 512); // 512-char cap prevents DoS via huge random values
       result[k] = Array.from({ length: len }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
     } else {
       result[k] = v;
@@ -62,15 +66,19 @@ export function resolveRandomVars(vars) {
   return result;
 }
 
+/** Substitute ${varName} placeholders in plain string fields. */
 export function applyVars(str, vars) {
   if (typeof str !== 'string' || !vars) return str;
   return str.replace(/\$\{([^}]+)\}/g, (_, k) => (k in vars ? vars[k] : `\${${k}}`));
 }
 
 /**
- * Safe code-field substitution — escapes the variable value so it cannot break
- * out of any JS string context (single-quoted, double-quoted, or template literal).
- * Backslash must be escaped first to avoid double-escaping.
+ * Substitute ${varName} placeholders in script/code fields.
+ *
+ * Separate from applyVars because variable values injected into code strings
+ * must be escaped to prevent breaking out of any JS string context
+ * (single-quoted, double-quoted, or template literal).
+ * Backslash must be escaped first to avoid double-escaping downstream.
  */
 function _applyVarsToCode(code, vars) {
   if (typeof code !== 'string' || !vars) return code;
@@ -113,18 +121,19 @@ export function tryDetachDebugger(tabId) {
 }
 
 /**
- * Open a dropdown via CDP trusted click.
+ * Open a dropdown via a CDP trusted click.
  *
- * For native <select>: sends mousePressed only (no mouseReleased, no detach —
- * detaching synthesizes mouseReleased and closes the OS native dropdown popup).
- * For custom dropdowns: full click then detach.
+ * Native <select>: sends mousePressed only (no mouseReleased, no detach).
+ * Detaching synthesizes a mouseReleased event which closes the OS native
+ * dropdown popup before the user can interact with it.
+ *
+ * Custom dropdowns: full press+release then detach.
  *
  * A 10-second safety timeout ensures the returned Promise always resolves even
  * if chrome.debugger.attach never fires (e.g. on a crashed renderer).
  */
 export function openDropdownViaCdp(tabId, selector) {
   return new Promise((resolve) => {
-    // Safety net: always resolve within 10 s regardless of CDP state.
     const _safetyTimer = setTimeout(resolve, 10_000);
     const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
 
@@ -143,6 +152,8 @@ export function openDropdownViaCdp(tabId, selector) {
             _safeResolve();
           };
 
+          // Allow a brief stabilisation period when attaching fresh; skip
+          // if a session was already open to avoid visible flicker.
           const delay = alreadyAttached ? 0 : 700;
 
           setTimeout(() => {
@@ -160,6 +171,8 @@ export function openDropdownViaCdp(tabId, selector) {
                   const y = Math.round(info.y);
 
                   if (info.isSelect) {
+                    // Native <select>: send only mousePressed — do NOT detach here.
+                    // Detaching would synthesize mouseReleased and close the popup.
                     chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent',
                       { type: 'mousePressed', x, y, button: 'left', clickCount: 1, modifiers: 0 },
                       () => {
@@ -170,6 +183,7 @@ export function openDropdownViaCdp(tabId, selector) {
                       },
                     );
                   } else {
+                    // Custom dropdown: full click sequence then detach.
                     markSessionClosed(tabId);
                     chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent',
                       { type: 'mousePressed', x, y, button: 'left', clickCount: 1, modifiers: 0 },
@@ -195,6 +209,7 @@ export function openDropdownViaCdp(tabId, selector) {
         });
       };
 
+      // Focus the window first so the OS native dropdown renders on-screen.
       if (tab?.windowId) {
         chrome.windows.update(tab.windowId, { focused: true }, focusAndOpen);
       } else {
@@ -204,11 +219,13 @@ export function openDropdownViaCdp(tabId, selector) {
   });
 }
 
+/** Execute arbitrary JavaScript in the page via CDP Runtime.evaluate. */
 export async function runScriptViaCdp(tabId, code) {
   const expression = code.replace(/^javascript:/i, '').trim();
   return new Promise((resolve) => {
     chrome.debugger.attach({ tabId }, '1.3', () => {
       if (chrome.runtime.lastError) {
+        // Already attached from a previous operation — reuse the session.
         chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
           expression, awaitPromise: false,
         }, () => { void chrome.runtime.lastError; resolve(); });
@@ -227,10 +244,11 @@ export async function runScriptViaCdp(tabId, code) {
 /* ── Tab Helpers ────────────────────────────────────────────────────────────── */
 
 /**
- * Get the active tab ID with multi-layer fallback:
- *  1. Focused window active tab
- *  2. Any window's active non-chrome tab
- *  3. Session-stored last-known tab
+ * Get the active tab ID with a multi-layer fallback to handle edge cases where
+ * no focused window is available (e.g. popup opened via keyboard shortcut):
+ *  1. Focused window's active tab
+ *  2. Any window's active tab on an eligible (non-chrome://) URL
+ *  3. Session-stored last-known tab (survives SW suspend)
  */
 export function getActiveTabId() {
   return new Promise((resolve) => {
@@ -265,7 +283,7 @@ export function getActiveTabId() {
   });
 }
 
-/** Get the current URL of a tab (returns null on error). */
+/** Get the current URL of a tab. Returns null on error or missing tab. */
 export function getTabUrl(tabId) {
   return new Promise((resolve) => {
     chrome.tabs.get(tabId, (tab) => {
@@ -275,7 +293,10 @@ export function getTabUrl(tabId) {
   });
 }
 
-/** Wait until tab status = 'complete' or timeout. Resolves true on success, false otherwise. */
+/**
+ * Wait until a tab reaches status='complete' or the timeout elapses.
+ * Resolves true on success, false on timeout or tab removal.
+ */
 export function waitForTabLoad(tabId, timeoutMs = 15_000) {
   return new Promise((resolve) => {
     let resolved = false;
@@ -288,6 +309,7 @@ export function waitForTabLoad(tabId, timeoutMs = 15_000) {
       resolve(ok);
     };
 
+    // Handle the case where the tab has already completed loading.
     chrome.tabs.get(tabId, (tab) => {
       if (chrome.runtime.lastError) { finish(false); return; }
       if (tab?.status === 'complete') { finish(true); return; }
@@ -308,12 +330,13 @@ export function waitForTabLoad(tabId, timeoutMs = 15_000) {
 
 /**
  * Send a message to the content script on a tab with a hard timeout.
+ * Returns a failure object on timeout so callers can distinguish
+ * "no content script" from actual action failures.
  *
  * @param {number}  tabId
  * @param {object}  msg
  * @param {number}  [timeout=10_000]
- * @param {number}  [frameId]  When provided, message is delivered only to that
- *                             specific frame. Omit to target the main frame.
+ * @param {number}  [frameId]  Target a specific iframe; omit for main frame.
  */
 export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
   return new Promise((resolve) => {

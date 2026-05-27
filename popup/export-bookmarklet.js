@@ -1,5 +1,15 @@
 /**
- * export-bookmarklet.js — Convert a Scenario to a standalone JS Bookmarklet
+ * export-bookmarklet.js — Convert a recorded scenario into a standalone JS bookmarklet.
+ *
+ * The generated code is a self-contained `javascript:(async () => { … })()` IIFE
+ * that reproduces click/input/hover/navigate/wait/script/condition actions using
+ * only browser APIs — no extension required at run time. Screenshot and switch
+ * actions are skipped with a comment because they depend on the Extension API.
+ *
+ * Variable interpolation is handled in the generated code: static variables become
+ * `const` declarations; `{random:type:len}` variables become inline generators that
+ * produce a fresh value on each bookmark click.
+ *
  * Exports: generateBookmarklet, initExportBookmarklet
  */
 
@@ -239,8 +249,15 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 }
 
 /**
- * generateBookmarklet(scenarioName, actions, variables, opts)
- * Returns { code: string, stats: object }
+ * Generate a self-contained JS bookmarklet string for the given scenario.
+ *
+ * @param {string}   scenarioName - Human-readable name embedded as a comment.
+ * @param {object[]} actions      - Scenario action array (disabled actions are skipped).
+ * @param {object}   variables    - Key/value pairs; random specs are expanded inline.
+ * @param {object}   opts
+ * @param {number}   opts.stepDelay  - Default inter-step delay in ms (default 300).
+ * @param {number}   opts.elTimeout  - Element wait timeout in ms (default 5000).
+ * @returns {{ code: string, stats: { total, supported, skipped, hasNavigate, staticVarCount, randomVarCount } }}
  */
 export function generateBookmarklet(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 300, elTimeout = 5000 } = opts;
@@ -290,7 +307,9 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('      if (found) { obs.disconnect(); res(found); }');
   out.push('    });');
   out.push('    obs.observe(document.body, { childList: true, subtree: true });');
-  // Note: backtick and ${sel} below are literal characters in the output string (single-quoted here)
+  // This string is single-quoted so `${sel}` is NOT template-interpolated by our
+  // generator — it is emitted verbatim. In the generated bookmarklet, `sel` will be
+  // a real JS variable, and the backtick template literal will work correctly at run time.
   out.push('    setTimeout(() => { obs.disconnect(); rej(new Error(`Timeout: ${sel}`)); }, timeout);');
   out.push('  });');
   out.push('');
@@ -348,7 +367,7 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('');
   out.push('  } catch (err) {');
   out.push("    console.error('❌ Bookmarklet error:', err);");
-  out.push("    alert('Lỗi: ' + err.message);");
+  out.push("    alert('Error: ' + err.message);");
   out.push('  }');
   out.push('');
   out.push('})();');
@@ -367,10 +386,12 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
 // UI MODULE
 // ─────────────────────────────────────────────────────────────────────────────
 
-let _currentCode = '';
+let _currentCode         = '';
 let _currentScenarioName = '';
-let _releaseFocus = null;
+let _currentActions      = [];
+let _releaseFocus        = null;
 
+/** Wire the export-bookmarklet modal trigger and all modal-internal buttons. */
 export function initExportBookmarklet() {
   const triggerBtn = document.getElementById('exportBookmarklet');
   if (!triggerBtn) return;
@@ -379,9 +400,7 @@ export function initExportBookmarklet() {
   document.getElementById('exportBmClose')?.addEventListener('click', _close);
   document.getElementById('exportBmCancel')?.addEventListener('click', _close);
   document.getElementById('exportBmCopy')?.addEventListener('click', _copy);
-  document.getElementById('exportBmCopyHeader')?.addEventListener('click', _copy);
   document.getElementById('exportBmDownload')?.addEventListener('click', _download);
-  document.getElementById('exportBmDownloadHeader')?.addEventListener('click', _download);
   document.getElementById('exportBmRegenerate')?.addEventListener('click', _regenerate);
 
   document.getElementById('exportBmWrapBtn')?.addEventListener('click', () => {
@@ -415,7 +434,7 @@ export function initExportBookmarklet() {
 function _onTrigger() {
   const sel = document.getElementById('exportCodeSelect');
   const scenarioId = sel?.value;
-  if (!scenarioId) { showToast('Chọn một scenario trước', 'error'); return; }
+  if (!scenarioId) { showToast('Please select a scenario first', 'error'); return; }
 
   const scenarioName = sel.options[sel.selectedIndex]?.text || 'Scenario';
   _currentScenarioName = scenarioName;
@@ -423,6 +442,7 @@ function _onTrigger() {
   chrome.runtime.sendMessage({ type: 'GET_SCENARIOS' }, res => {
     const scenario = (res?.scenarios || {})[scenarioId];
     const actions = scenario?.actions || [];
+    _currentActions = actions;
     chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, varRes => {
       const allVariables = varRes?.variables || {};
       const usedNames = getUsedVarNames(actions);
@@ -469,7 +489,7 @@ function _renderModal(scenarioName, result, variables) {
   const warning = document.getElementById('exportBmWarning');
   const skipMsg = document.getElementById('exportBmSkipMsg');
   if (result.stats.skipped > 0) {
-    skipMsg.textContent = `${result.stats.skipped} action bị bỏ qua (screenshot/switch — yêu cầu Extension API)`;
+    skipMsg.textContent = `${result.stats.skipped} action(s) skipped (screenshot/switch — requires Extension API)`;
     warning.style.display = '';
   } else {
     warning.style.display = 'none';
@@ -505,11 +525,22 @@ function _renderModal(scenarioName, result, variables) {
     }
   }
 
+  // Actions review tab
+  const actStats = _renderActionsTab(_currentActions);
+
   // Stats pills
-  const { total, supported, skipped } = result.stats;
+  const { supported, skipped } = result.stats;
   document.getElementById('exportBmStatSteps').textContent = `${supported} steps`;
   document.getElementById('exportBmStatVars').textContent  = `${vars.length} variables`;
+
+  const warnPill    = document.getElementById('exportBmStatWarnPill');
   const skippedPill = document.getElementById('exportBmStatSkippedPill');
+  if (actStats.warnCount > 0) {
+    document.getElementById('exportBmStatWarn').textContent = `${actStats.warnCount} verify`;
+    warnPill.style.display = '';
+  } else {
+    warnPill.style.display = 'none';
+  }
   if (skipped > 0) {
     document.getElementById('exportBmStatSkipped').textContent = `${skipped} skipped`;
     skippedPill.style.display = '';
@@ -533,10 +564,13 @@ function _toBookmarkletUrl(code) {
     .trim();
 }
 
-// Strip the javascript: prefix for saving as a .js file
+/**
+ * Strip the `javascript:` URI prefix for saving as a .js file.
+ * `trimStart()` removes the leading newline that follows `javascript:` in the
+ * multi-line pretty-printed template.
+ */
 function _toJsFile(code) {
   const body = code.startsWith('javascript:') ? code.slice('javascript:'.length) : code;
-  // Also remove the empty lines before try block for cleaner file
   return body.trimStart();
 }
 
@@ -556,6 +590,7 @@ function _switchTab(tab) {
   });
   document.getElementById('exportBmTabPreview').hidden   = tab !== 'preview';
   document.getElementById('exportBmTabVariables').hidden = tab !== 'variables';
+  document.getElementById('exportBmTabActions').hidden   = tab !== 'actions';
   document.getElementById('exportBmTabSettings').hidden  = tab !== 'settings';
 }
 
@@ -563,16 +598,15 @@ async function _copy() {
   if (!_currentCode) return;
   try {
     await navigator.clipboard.writeText(_toBookmarkletUrl(_currentCode));
-    for (const id of ['exportBmCopy', 'exportBmCopyHeader']) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
+    const btn = document.getElementById('exportBmCopy');
+    if (btn) {
       const orig = btn.textContent;
       btn.textContent = '✓ Copied!';
       btn.classList.add('copied');
       setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
     }
   } catch {
-    showToast('Clipboard không khả dụng', 'error');
+    showToast('Clipboard not available', 'error');
   }
 }
 
@@ -598,13 +632,105 @@ function _regenerate() {
   chrome.runtime.sendMessage({ type: 'GET_SCENARIOS' }, res => {
     const scenario  = (res?.scenarios || {})[scenarioId];
     const actions   = scenario?.actions || [];
+    _currentActions = actions;
     chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, varRes => {
       const variables = varRes?.variables || {};
       const result    = generateBookmarklet(_currentScenarioName, actions, variables, { stepDelay: delay, elTimeout: timeout });
       _currentCode    = result.code;
       _renderModal(_currentScenarioName, result, variables);
       _switchTab('preview');
-      showToast('Code đã được tạo lại');
+      showToast('Code regenerated');
     });
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIONS REVIEW TAB
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _ACT_TYPE_INFO = {
+  navigate:           { icon: '🌐', label: 'navigate',   cls: 'nav' },
+  click:              { icon: '👆', label: 'click',      cls: 'click' },
+  input:              { icon: '⌨',  label: 'input',      cls: 'input' },
+  hover:              { icon: '🖱',  label: 'hover',      cls: 'hover' },
+  dropdown:           { icon: '▼',  label: 'dropdown',   cls: 'click' },
+  dragdrop:           { icon: '↔',  label: 'dragdrop',   cls: 'dragdrop' },
+  wait:               { icon: '⏱',  label: 'wait',       cls: 'wait' },
+  script:             { icon: '📜', label: 'script',     cls: 'script' },
+  condition:          { icon: '🔀', label: 'condition',  cls: 'condition' },
+  screenshot:         { icon: '📷', label: 'screenshot', cls: 'screenshot' },
+  screenshot_full:    { icon: '📷', label: 'scr-full',   cls: 'screenshot' },
+  screenshot_element: { icon: '📷', label: 'scr-elem',   cls: 'screenshot' },
+  screenshot_tovar:   { icon: '📷', label: 'scr-var',    cls: 'screenshot' },
+  readdom:            { icon: '📖', label: 'readdom',    cls: 'readdom' },
+  switch:             { icon: '🔄', label: 'switch',     cls: 'wait' },
+};
+
+function _actionDesc(a) {
+  const sel = (a.selectors?.css
+    || (a.selectors?.id ? '#' + a.selectors.id : '')
+    || a.selector
+    || '').slice(0, 40);
+  switch (a.type) {
+    case 'navigate':  return (a.value || a.url || '').slice(0, 50);
+    case 'wait':      return `${a.delay ?? a.value ?? 1000} ms`;
+    case 'script':    return 'custom JS code';
+    case 'condition': return a.conditionType || 'condition';
+    case 'switch':    return `→ ${(a.scenario || a.value || '')}`.slice(0, 40);
+    case 'readdom':   return `${sel} → \${${a.varName || 'var'}}`;
+    case 'screenshot':
+    case 'screenshot_full':    return 'viewport';
+    case 'screenshot_element': return sel || 'element';
+    case 'screenshot_tovar':   return `→ \${${a.varName || 'screenshot'}}`;
+    case 'input': {
+      const v = a.value ? ` = "${String(a.value).slice(0, 15)}"` : '';
+      return `${sel}${v}`;
+    }
+    default: return sel;
+  }
+}
+
+function _renderActionsTab(actions) {
+  const listEl    = document.getElementById('exportBmActList');
+  const summaryEl = document.getElementById('exportBmActSummary');
+  if (!listEl || !summaryEl) return { okCount: 0, warnCount: 0, skipCount: 0 };
+
+  let okCount = 0, skipCount = 0, warnCount = 0;
+  let html = '';
+
+  const enabled = (actions || []).filter(a => !a.disabled);
+  enabled.forEach((a, i) => {
+    const info = _ACT_TYPE_INFO[a.type] || { icon: '●', label: a.type, cls: 'wait' };
+    const desc = _actionDesc(a);
+    let status, statusLabel, rowCls;
+    if (SKIPPED_TYPES.has(a.type)) {
+      status = 'skip'; statusLabel = '— Skip'; rowCls = 'row-skip'; skipCount++;
+    } else if (a.type === 'script') {
+      status = 'warn'; statusLabel = '⚠ Verify'; rowCls = 'row-warn'; warnCount++;
+    } else {
+      status = 'ok'; statusLabel = '✓ OK'; rowCls = ''; okCount++;
+    }
+    html += `<div class="export-bm-action-row ${rowCls}">
+      <span class="export-bm-action-step">${i + 1}</span>
+      <span class="export-bm-action-type abt-${info.cls}">${info.icon} ${info.label}</span>
+      <span class="export-bm-action-desc">${escHtml(desc)}</span>
+      <span class="export-bm-action-status ast-${status}">${statusLabel}</span>
+    </div>`;
+  });
+  listEl.innerHTML = html;
+
+  let sumHtml = '<span class="export-bm-act-sum-label">Will export:</span>';
+  sumHtml += `<span class="export-bm-act-sum-pill act-sum-ok">✓ ${okCount} OK</span>`;
+  if (warnCount) sumHtml += `<span class="export-bm-act-sum-pill act-sum-warn">⚠ ${warnCount} needs review</span>`;
+  if (skipCount) sumHtml += `<span class="export-bm-act-sum-pill act-sum-skip">— ${skipCount} skipped</span>`;
+  summaryEl.innerHTML = sumHtml;
+
+  const badge = document.getElementById('exportBmActCount');
+  if (badge) {
+    const warnTotal = skipCount + warnCount;
+    badge.textContent = warnTotal > 0 ? `${warnTotal} ⚠` : String(enabled.length);
+    badge.className   = 'export-bm-tab-count' + (warnTotal > 0 ? ' warn' : '');
+  }
+
+  return { okCount, warnCount, skipCount };
 }

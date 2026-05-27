@@ -1,8 +1,10 @@
 /**
- * background.js — Service Worker (ES module entry point)
- * Orchestrates all bg/ modules. Contains only:
- *   - Schedule / alarm setup
- *   - Main chrome.runtime.onMessage handler (recording, CRUD, dispatch)
+ * background.js — Service Worker (ES module entry point).
+ *
+ * Acts as the message router and alarm scheduler; delegates all heavy logic
+ * to the bg/ modules.  Responsibilities here:
+ *   - Schedule alarm registration / teardown
+ *   - Single chrome.runtime.onMessage handler (recording, CRUD, playback dispatch)
  */
 
 import { state, persistRecordingState, restoreRecordingState, restoreCsvState, clearCsvState } from './bg/state.js';
@@ -21,7 +23,10 @@ import { ssReadAll, ssClear, csvResultReadAll } from './bg/idb-screenshots.js';
 
 const ALARM_PREFIX = "sched_";
 
-/** Milliseconds until the next occurrence of "HH:MM" */
+/**
+ * Compute milliseconds until the next wall-clock occurrence of a "HH:MM" string.
+ * If the time has already passed today, the result is for tomorrow's occurrence.
+ */
 function _msUntilTime(timeStr) {
   const [hh, mm] = timeStr.split(":").map(Number);
   const now = new Date();
@@ -46,7 +51,7 @@ function unregisterScheduleAlarm(id) {
   chrome.alarms.clear(ALARM_PREFIX + id);
 }
 
-/** Set default settings on first install (do not overwrite existing values on update) */
+// Set defaults on first install only — do not overwrite user settings on extension update.
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
     const defaults = {};
@@ -56,7 +61,8 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-/** On service worker startup — sync alarms and restore recording/CSV state. */
+// On SW startup: re-register alarms that were cleared when the SW was terminated.
+// chrome.alarms are persistent but the in-memory alarm list is lost on SW restart.
 chrome.storage.local.get(["schedules"], (res) => {
   const schedules = res.schedules || [];
   schedules.forEach((s) => {
@@ -64,10 +70,10 @@ chrome.storage.local.get(["schedules"], (res) => {
   });
 });
 
-// Restore recording state if SW was suspended mid-recording.
+// Restore an in-progress recording if the SW was suspended mid-session.
 restoreRecordingState().then(() => { if (state.recording) updateBadge(); });
 
-// Check for interrupted CSV run — cache in state and notify popup if open.
+// Detect an interrupted CSV run and cache it so the popup can offer resume.
 restoreCsvState().then((csvPending) => {
   if (!csvPending) return;
   state.csvInterrupted = {
@@ -104,7 +110,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { type } = request;
 
-  // Screenshot messages are handled by their own listener in bg/screenshot.js
+  // Screenshot messages have their own dedicated listener in bg/screenshot.js.
+  // Returning undefined here (not `true`) tells Chrome this handler did not
+  // handle the message, so the screenshot listener can take over.
   if (["TAKE_SCREENSHOT", "TAKE_SCREENSHOT_FULL",
        "TAKE_SCREENSHOT_SCROLL_V", "TAKE_SCREENSHOT_SCROLL_H",
        "TAKE_SCREENSHOT_ELEMENT"].includes(type)) return;
@@ -127,8 +135,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (type === "CONTENT_READY") {
     const tabId = sender.tab?.id;
     chrome.storage.local.get(["playbackCheckpoint"], ({ playbackCheckpoint: cp }) => {
+      // If a playback checkpoint exists for this tab and is less than 60 s old,
+      // the page likely reloaded mid-playback — offer to resume from the last step.
       if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000) {
-        // Tab reloaded mid-playback — offer resume to popup
         chrome.runtime.sendMessage({ type: "OFFER_RESUME", checkpoint: cp }).catch(() => {});
       }
     });
@@ -136,8 +145,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;
   }
 
-  // Content script asks "what is my frameId?" on load so it can include it in
-  // recorded actions. Background has access to sender.frameId; content script does not.
+  // Content script needs its own frameId to tag recorded actions for correct
+  // iframe targeting during playback.  sender.frameId is only available on the
+  // background side; content scripts cannot access it directly.
   if (type === "REGISTER_FRAME") {
     sendResponse({ frameId: sender.frameId ?? 0 });
     return;
@@ -197,7 +207,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.scenarioId) {
       startRecording(request.scenarioId);
     } else {
-      chrome.storage.local.get(["lastSelectedScenario"], (res) => {
+      // Hotkey-triggered recording: no scenarioId in request, so we fall back to
+    // the last selected scenario from the popup (async storage read).
+    chrome.storage.local.get(["lastSelectedScenario"], (res) => {
         startRecording(res?.lastSelectedScenario || null);
       });
       return true;
@@ -210,7 +222,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const sid = state.recordingScenarioId;
     state.recordingScenarioId = null;
     updateBadge();
-    // Clear persisted recording state now that recording has stopped.
+    // Remove session-storage snapshot — persisted only to survive SW suspend
+    // during recording, no longer needed after stop.
     chrome.storage.session?.remove?.(['rec_recording','rec_scenarioId','rec_actions','rec_timestamp'], () => {});
     if (sid) {
       const newActions = [...state.currentActions];
@@ -466,7 +479,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const id = generateId();
       scenarios[id] = { ...request.scenario, createdAt: Date.now() };
       await setScenarios(scenarios);
-      // Warn popup when imported scenario contains script actions (CSP risk).
+      // Flag script actions in imported scenarios so the popup can warn the user —
+    // imported code runs with the extension's elevated CSP privileges.
       const hasScriptActions = (request.scenario?.actions || []).some(a => a.type === 'script');
       sendResponse({ success: true, id, hasScriptActions });
     });
@@ -557,11 +571,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (sanitized.folders && typeof sanitized.folders !== "object") {
       sendResponse({ success: false, error: "Invalid backup: folders must be an object" }); return true;
     }
-    // Auto-backup current data before overwriting, then merge (not clear+set)
-    // to avoid data loss if the browser crashes between clear() and set().
+    // Merge (not clear+set) to avoid data loss if the browser crashes between
+    // clear() and set().  Take a snapshot of current data first so the user
+    // can roll back if the restored backup is wrong.
     chrome.storage.local.get(null, (currentData) => {
       const preBackup = { _autoBackup: true, _backupDate: new Date().toISOString(), ...currentData };
-      // Store backup under a separate key so it survives the restore
+      // Store the snapshot under a separate key so it survives the restore write.
       const withBackup = { ...sanitized, _preRestoreBackup: preBackup };
       chrome.storage.local.set(withBackup, () => {
         if (chrome.runtime.lastError) {
@@ -627,8 +642,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;
   }
 
-  // Resume an interrupted CSV run from the last checkpoint row.
-  // Passes full rows + startRowIndex so results keep original row indices.
+  // Resume an interrupted CSV run from the last persisted checkpoint.
+  // The full rows array is reloaded from local storage (not session) because it
+  // may exceed the session-storage quota.  startRowIndex is passed to
+  // startCsvPlayback so result records keep their original row indices.
   if (type === "RESUME_CSV_PLAYBACK") {
     restoreCsvState().then((csvPending) => {
       if (!csvPending) { sendResponse({ error: 'No pending CSV state' }); return; }
@@ -651,7 +668,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     state.csvPlayback.active = false;
     state.playback.active = false;
     updateBadge();
-    // Clear session/local checkpoint so a stopped run is never offered for resume.
+    // Discard the checkpoint so a user-stopped run is never offered as resumable.
     clearCsvState().catch(() => {});
     sendResponse({ stopped: true });
     return;
@@ -700,7 +717,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (idx >= 0) schedules[idx] = request.schedule;
       else schedules.push(request.schedule);
       chrome.storage.local.set({ schedules }, () => {
-        // Re-register alarm with updated settings
+        // Always unregister first — ensures a time change takes effect immediately
+        // rather than firing at the old time.
         unregisterScheduleAlarm(request.schedule.id);
         registerScheduleAlarm(request.schedule);
         sendResponse({ success: true });
@@ -776,11 +794,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         else if (st === 'interrupted') cleanup({ error: 'Cancelled' });
       };
 
-      // Timeout ensures the listener is always removed even on hung downloads.
+      // 60 s hard timeout removes the listener even on hung/stalled downloads,
+      // preventing a permanent listener leak in the service worker.
       const timeoutHandle = setTimeout(() => cleanup({ error: 'Download timeout' }), 60_000);
 
       chrome.downloads.onChanged.addListener(onChanged);
-      // Race-condition guard: download may have already completed before listener was added
+      // Race guard: the download may have already completed between the download()
+      // call and the listener registration.  Poll current state to catch that window.
       chrome.downloads.search({ id }, (items) => {
         if (!items?.length) return;
         const st = items[0].state;
@@ -805,6 +825,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (type === "ELEMENT_PICKED") {
     state.pickMode = false;
     updateBadge();
+    // Minimal 1×1 transparent PNG — same rationale as _NOTIF_ICON in bg/utils.js.
     const _ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAA+gBkAAAAAAASUVORK5CYII=";
     chrome.storage.local.get(["elemShotPickPending", "elemShotPickCrop"], (flags) => {
       if (flags.elemShotPickPending && request.selector) {
@@ -813,7 +834,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const tabId = request.tabId || sender.tab?.id;
         if (tabId) {
           if (!request.selector && !request.selectors) {
-            chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: "Không thể lấy selector element" }, () => { void chrome.runtime.lastError; });
+            chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: "Could not get element selector" }, () => { void chrome.runtime.lastError; });
             return;
           }
           chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
@@ -823,17 +844,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             takeElementScreenshot(tabId, request.selector, saveMode, prefix, crop, false, false, request.selectors)
               .then((result) => {
                 chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result }).catch(() => {});
-                const _notif = (msg) => chrome.notifications.create("elemshot_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: msg }, () => { void chrome.runtime.lastError; });
-                if (result.error) _notif("Lỗi: " + result.error);
-                else if (!crop)   _notif("Đã lưu: " + (result.filename || "screenshot"));
+                const _notif = (msg) => chrome.notifications.create("elemshot_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: msg }, () => { void chrome.runtime.lastError; });
+                if (result.error) _notif("Error: " + result.error);
+                else if (!crop)   _notif("Saved: " + (result.filename || "screenshot"));
               })
-              .catch((e) => chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Chụp Element", message: "Lỗi: " + e.message }, () => { void chrome.runtime.lastError; }));
+              .catch((e) => chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: "Error: " + e.message }, () => { void chrome.runtime.lastError; }));
           });
         }
       } else {
         chrome.action.openPopup().catch(() => {
-          // openPopup() fails in MV3 when not triggered by user gesture.
-          // Show a badge so the user knows to click the extension icon.
+          // openPopup() requires a user gesture in MV3 — it fails silently when
+          // triggered programmatically (e.g. after an async flow).  Fall back to
+          // a badge so the user knows to click the extension icon manually.
           chrome.action.setBadgeText({ text: "✓" });
           chrome.action.setBadgeBackgroundColor({ color: "#22c55e" });
         });
@@ -910,4 +932,3 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-console.log("[BACKGROUND] Service Worker loaded");

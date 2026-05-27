@@ -26,8 +26,10 @@ function _notifyAlreadyRunning() {
   chrome.runtime.sendMessage({ type: 'PLAYBACK_ALREADY_RUNNING' }).catch(() => {});
 }
 
-/* ── Module-level screenshot settings cache ─────────────────────────────────── */
-// Reset at the start of each public playback function so stale settings are never used.
+/* ── Screenshot settings cache ──────────────────────────────────────────────── */
+
+// Cached per playback run so repeated screenshot actions don't each issue a
+// storage read.  Reset at the start of each public entry point.
 let _ssSettings = null;
 
 async function _getSsSettings() {
@@ -45,18 +47,20 @@ async function _getSsSettings() {
  * @param {number}  tabId
  * @param {Array}   actions
  * @param {object}  vars              Resolved variable map (null → load from storage)
- * @param {object}  screenshotsResult Accumulator for base64 screenshots
- * @param {boolean} forceAutoSave     Override saveMode to "auto"
+ * @param {object}  screenshotsResult Accumulator for base64 screenshots (CSV mode)
+ * @param {boolean} forceAutoSave     Override saveMode to "auto" (CSV mode)
  * @param {boolean} skipDownload      Skip file download (CSV/export mode)
- * @param {number}  startFromIndex    Resume from this action index
- * @param {Array}   failedActions     Accumulator for failure records
- * @param {number}  _depth            Recursion depth counter (switch scenario guard)
+ * @param {number}  startFromIndex    Resume from this action index (checkpoint resume)
+ * @param {Array}   failedActions     Accumulator for failure records (CSV mode)
+ * @param {number}  _depth            Recursion depth counter — guards against infinite
+ *                                    switch loops
  */
 export async function playActionsOnTab(
   tabId, actions, vars = null, screenshotsResult = null,
   forceAutoSave = false, skipDownload = false, startFromIndex = 0,
   failedActions = null, _depth = 0,
 ) {
+  // Guard against infinite switch/nested-scenario recursion.
   if (_depth > 10) {
     console.error('[PLAYBACK] Max switch/nested-scenario depth (10) exceeded — aborting branch');
     chrome.runtime.sendMessage({
@@ -80,7 +84,8 @@ export async function playActionsOnTab(
 
       state.playback.actionIndex = i;
 
-      // Save checkpoint every 5 actions to allow resume after tab reload.
+      // Persist a checkpoint every 5 actions so the popup can offer resume
+      // if the tab reloads mid-playback (e.g. from a navigate action).
       if (state.playback.scenarioId && i % 5 === 0) {
         chrome.storage.local.set({
           playbackCheckpoint: {
@@ -109,7 +114,7 @@ export async function playActionsOnTab(
               chrome.tabs.onRemoved.removeListener(removedListener);
               clearInterval(spaPoller);
               clearTimeout(navTimeout);
-              setTimeout(resolve, 500);
+              setTimeout(resolve, 500); // brief settle time after status=complete
             };
 
             const listener = (updatedTabId, changeInfo) => {
@@ -123,9 +128,11 @@ export async function playActionsOnTab(
             try { chrome.tabs.update(tabId, { url: targetUrl }); }
             catch (e) { done(false); return; }
 
-            // SPA fallback: poll URL every 200 ms. Using strict equality and startsWith(targetUrl)
-            // only (not the reverse) to avoid false-positives when the current URL is a prefix
-            // of the target URL (e.g. current = "/", target = "/checkout").
+            // SPA fallback: some single-page apps never fire status='complete' on
+            // in-app navigation.  Poll the tab URL every 200 ms instead.
+            // Only accept an exact or prefix match in the target→current direction
+            // to avoid false-positives when the current URL is a prefix of the
+            // target (e.g. current="/", target="/checkout").
             const spaPoller = setInterval(async () => {
               if (resolved) { clearInterval(spaPoller); return; }
               try {
@@ -164,7 +171,7 @@ export async function playActionsOnTab(
           continue;
         }
 
-        /* ── Script — CDP execution ── */
+        /* ── Script — CDP execution (bypasses page CSP) ── */
         if (action.type === 'script') {
           await runScriptViaCdp(tabId, action.code || '');
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
@@ -185,7 +192,7 @@ export async function playActionsOnTab(
           continue;
         }
 
-        /* ── Screenshot → Variable ── */
+        /* ── Screenshot → Variable (CSV mode) ── */
         if (action.type === 'screenshot_tovar') {
           const settings = await _getSsSettings();
           try {
@@ -241,7 +248,7 @@ export async function playActionsOnTab(
           continue;
         }
 
-        /* ── Condition (if) ── */
+        /* ── Condition (if / skip-N) ── */
         if (action.type === 'condition') {
           const condResult = await tabMsg(tabId, {
             type: 'CHECK_CONDITION',
@@ -254,6 +261,8 @@ export async function playActionsOnTab(
           if (!passed) {
             const rawSkip = parseInt(action.skipCount || action.conditionSkipCount || 1, 10);
             const skip    = Math.max(1, isNaN(rawSkip) ? 1 : rawSkip);
+            // Guard against misconfigured skipCount=0 which would create an
+            // infinite loop (condition re-evaluates itself every iteration).
             if (rawSkip === 0) console.warn('[PLAYBACK] Condition skipCount=0 would cause infinite loop; treating as 1');
             i += skip;
           }
@@ -261,14 +270,14 @@ export async function playActionsOnTab(
           continue;
         }
 
-        /* ── Switch ── */
+        /* ── Switch (variable → scenario branch) ── */
         if (action.type === 'switch') {
           const switchVal = action.switchVar || '';
           const cases     = action.cases || [];
           let matched     = cases.find(c => c.value === switchVal);
           if (!matched) matched = cases.find(c => c.value === '__default__');
           if (matched?.scenarioId) {
-            const scenarios    = await getScenarios();
+            const scenarios      = await getScenarios();
             const targetScenario = scenarios[matched.scenarioId];
             if (targetScenario?.actions?.length) {
               const caseLabel    = matched.value === '__default__' ? 'default' : matched.value;
@@ -277,6 +286,8 @@ export async function playActionsOnTab(
               state.playback.actionIndex   = 0;
               state.playback.totalActions  = targetScenario.actions.length;
               chrome.runtime.sendMessage({ type: 'SWITCH_SCENARIO', scenarioName: switchedName, caseLabel }).catch(() => {});
+              // Pass a copy of vars so the nested scenario cannot mutate the parent's
+              // variable map; merge returned vars back after completion.
               const nestedVars = await playActionsOnTab(
                 tabId, targetScenario.actions, { ...resolvedVars },
                 screenshotsResult, forceAutoSave, skipDownload, 0, null, _depth + 1,
@@ -304,9 +315,10 @@ export async function playActionsOnTab(
 
         const result = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, 10_000, action.frameId);
 
-        // If a click/select caused an immediate navigation, the content script may have
-        // become unreachable before it could respond.  Check for URL change and, if it
-        // happened, treat the click as successful rather than failed.
+        // If a click/select caused an immediate navigation, the content script may
+        // have become unreachable before it could send a response.  Detect this by
+        // comparing the URL before and after — if it changed, treat the action as
+        // successful and wait for the new page to finish loading.
         if (_isClickLike && result?._noContentScript && preActionUrl !== null) {
           const postClickUrl = await getTabUrl(tabId).catch(() => null);
           if (postClickUrl !== null && postClickUrl !== preActionUrl) {
@@ -322,7 +334,8 @@ export async function playActionsOnTab(
           if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
         }
 
-        // For non-failed click/select, check if the action triggered a navigation.
+        // For succeeded click/select, also check for post-action navigation
+        // (e.g. form submit that navigates rather than using AJAX).
         if (preActionUrl !== null && !result?.failed) {
           const postActionUrl = await getTabUrl(tabId).catch(() => null);
           if (postActionUrl !== null && postActionUrl !== preActionUrl) {
@@ -350,6 +363,7 @@ export async function playActionsOnTab(
 
 /* ── Single Scenario Playback ───────────────────────────────────────────────── */
 
+/** Resume a scenario from a saved checkpoint after a tab reload mid-playback. */
 export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) {
   const scenarios = await getScenarios();
   const scenario  = scenarios[scenarioId];
@@ -395,6 +409,8 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
   updateBadge();
 
   try {
+    // Pass resolved vars from one loop to the next so readdom variables
+    // accumulate across loop iterations.
     let loopVars = null;
     for (let loop = 0; loop < loops; loop++) {
       if (!state.playback.active) break;
@@ -476,7 +492,10 @@ export async function startSequence(runList) {
 
 /* ── CSV Playback ───────────────────────────────────────────────────────────── */
 
-/** Collect variable keys actually referenced or produced by a scenario's actions. */
+/**
+ * Collect variable names actually referenced by a scenario's actions so the
+ * per-row result record only stores relevant keys (keeps IDB entries small).
+ */
 function collectRelevantKeys(actions) {
   const keys    = new Set();
   const VAR_RE  = /\$\{([^}]+)\}/g;
@@ -497,18 +516,19 @@ function collectRelevantKeys(actions) {
         }
       }
     }
+    // readdom and screenshot_tovar produce variables that are also "relevant".
     if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) keys.add(a.varName);
   }
   return keys;
 }
 
 /**
- * CSV playback entry point.
+ * CSV data-driven playback entry point.
  *
- * Results are written to IndexedDB one row at a time via csvResultWrite — O(1) per row.
- * This replaces the previous approach of accumulating all results in a JS array and
- * re-writing the entire array to chrome.storage.local every batch (was O(n²) in total
- * bytes written).
+ * Results are written to IndexedDB one row at a time via csvResultWrite — O(1)
+ * per row.  This replaces the previous approach of accumulating all results in
+ * a JS array and re-writing the entire array to chrome.storage.local each batch,
+ * which was O(n²) in total bytes written.
  *
  * @param {number} startRowIndex  Resume from this row (for interrupted run resume).
  */
@@ -516,9 +536,11 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   _ssSettings = null;
 
+  // xlsx/html/zip formats post-process screenshots client-side — skip downloading
+  // individual files during the run to avoid the browser download dialog.
   const skipDownload = exportFormat === 'xlsx' || exportFormat === 'html' || exportFormat === 'zip';
   state.csvPlayback = { active: true, rows, currentRow: startRowIndex, scenarioId, delayBetween };
-  state.csvInterrupted = null; // clear any previous interrupt once a new run starts
+  state.csvInterrupted = null;
   updateBadge();
 
   await saveCsvRows(rows);
@@ -542,10 +564,11 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     return;
   }
 
-  const actions       = scenario.actions || [];
-  const relevantKeys  = collectRelevantKeys(actions);
+  const actions      = scenario.actions || [];
+  const relevantKeys = collectRelevantKeys(actions);
 
-  // Clear previous run's results and screenshots before starting a new run.
+  // Clear previous run's results and screenshots before starting — a fresh
+  // run should never show stale data from the prior run.
   await Promise.all([
     new Promise(r => chrome.storage.local.remove('csvRunResults', r)),
     ssClear(),
@@ -561,6 +584,8 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
 
     await persistCsvState(scenarioId, i, delayBetween, exportFormat);
 
+    // Merge base variables with row data; CSV columns override base vars when
+    // names collide so per-row data always takes precedence.
     const rowVars = { ...baseVars, ...rows[i] };
     state.playback = {
       active: true, tabId, scenarioId,
@@ -578,11 +603,12 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     completedRows++;
     if (failedActions.length > 0) failedRows++;
 
+    // Only store variables that are actually referenced by the scenario to
+    // keep IDB records lean.
     const filteredVars = Object.fromEntries(
       Object.entries(finalVars).filter(([k]) => relevantKeys.has(k)),
     );
 
-    // Write result directly to IDB — no in-memory accumulation.
     await csvResultWrite(i, { rowIndex: i, vars: filteredVars, failures: failedActions });
 
     for (const [vn, b64] of Object.entries(screenshotsResult)) {

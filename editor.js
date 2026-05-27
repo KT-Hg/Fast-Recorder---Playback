@@ -211,10 +211,12 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     applyCanvasSize(); render();
   }
   function undo() {
+    if(pendingShape) { discardPending(); return; } // Ctrl+Z with a pending shape → discard instead of undoing
     if (!undoStack.length) return;
     redoStack.push(currentSnap()); restoreSnap(undoStack.pop()); syncUR();
   }
   function redo() {
+    if(pendingShape) commitPending(); // Commit any pending shape before redoing
     if (!redoStack.length) return;
     undoStack.push(currentSnap()); restoreSnap(redoStack.pop()); syncUR();
   }
@@ -256,14 +258,17 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     ctx.drawImage(workCanvas, 0, 0, workCanvas.width, workCanvas.height, 0, 0, zW, zH);
     if (isAnnotating && annotStartC && annotPrevC)
       drawShapePreview(ctx, currentTool, annotStartC, annotPrevC, freePoints);
+    if (pendingShape) drawPendingHandles();
     if (currentTool === "crop") drawCropOverlay();
   }
 
   /* === 7. Shape drawing === */
-  function drawShapePreview(tCtx, tool, p1c, p2c, fpts) {
-    const lw = Math.max(1, strokeWidth * es());
+  function drawShapePreview(tCtx, tool, p1c, p2c, fpts, opts = {}) {
+    const sw  = opts.strokeWidth ?? strokeWidth;
+    const col = opts.color       ?? drawColor;
+    const lw  = Math.max(1, sw * es());
     tCtx.save();
-    tCtx.strokeStyle = drawColor; tCtx.fillStyle = drawColor;
+    tCtx.strokeStyle = col; tCtx.fillStyle = col;
     tCtx.lineWidth = lw; tCtx.lineCap = "round"; tCtx.lineJoin = "round";
 
     if (tool === "draw") {
@@ -335,6 +340,9 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     const w=Math.abs(p2w.x-p1w.x), h=Math.abs(p2w.y-p1w.y);
     if (w<4||h<4) return;
     saveUndo();
+    // Pixelate-blur: downscale to 1/F then upscale back with smoothing disabled.
+    // F=12 gives ~8–10 px blocks at typical screen sizes — readable enough to notice
+    // the redaction without leaking detail. Higher values produce coarser blocks.
     const F=12, tmp=document.createElement("canvas");
     tmp.width=Math.max(1,Math.round(w/F)); tmp.height=Math.max(1,Math.round(h/F));
     tmp.getContext("2d").drawImage(workCanvas,x,y,w,h,0,0,tmp.width,tmp.height);
@@ -442,10 +450,27 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   let isPanning=false, panStart={}, spaceHeld=false;
   const selInfo=document.getElementById("selInfo");
 
+  /* Pending shape — an uncommitted rect/ellipse/arrow that can be repositioned/resized
+   * before being baked into workCanvas. Stored with the color/strokeWidth at draw time
+   * so later tool-bar changes do not retroactively alter the shape. */
+  let pendingShape  = null;   // { tool, p1w, p2w, color, strokeWidth }
+  let pendingMode   = "idle"; // "idle" | "move" | "resize"
+  let pendingHandle = null;   // which resize handle is being dragged ("nw", "se", "p1", etc.)
+  let pendingDragW  = {};     // { startWx, startWy, p1w:{x,y}, p2w:{x,y} }
+
   /* === 11. Mouse events === */
   cvs.addEventListener("mousemove", e => {
-    if (isPanning||isAnnotating||cropMode!=="idle") return;
+    if (isPanning||isAnnotating||cropMode!=="idle"||pendingMode!=="idle") return;
     if (spaceHeld) { cvs.style.cursor="grab"; return; }
+    // Update cursor to reflect the hit zone under the pointer when hovering over a pending shape.
+    if (pendingShape) {
+      const {cx,cy}=canvasPos(e);
+      const pz=getPendingZone(cx,cy);
+      if(pz==="move")              { cvs.style.cursor="move"; return; }
+      if(pz==="p1"||pz==="p2")    { cvs.style.cursor="crosshair"; return; }
+      if(pz)                       { cvs.style.cursor=CROP_CUR[pz]||"crosshair"; return; }
+      cvs.style.cursor=TOOL_CURSORS[currentTool]||"crosshair"; return;
+    }
     if (currentTool==="crop") {
       const {cx,cy}=canvasPos(e);
       cvs.style.cursor=CROP_CUR[getCropZone(cx,cy)]||"crosshair";
@@ -467,8 +492,9 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     if (e.button!==0) return;
     if (spaceHeld)    { startPan(e); return; }
     const {cx,cy}=canvasPos(e);
-    if (currentTool==="text") { showTextInput(cx,cy); return; }
+    if (currentTool==="text") { if(pendingShape) commitPending(); showTextInput(cx,cy); return; }
     if (currentTool==="crop") {
+      if(pendingShape) commitPending();
       const zone=getCropZone(cx,cy);
       if (zone==="new") {
         const sw=toWork(cx,cy); cropSel=null; cropMode="new";
@@ -487,6 +513,25 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
         cvs.style.cursor=CROP_CUR[zone];
       }
     } else {
+      // If a pending shape exists, check whether the click hits it (move/resize) or falls outside (commit then start new).
+      if(pendingShape) {
+        const pz=getPendingZone(cx,cy);
+        if(pz==="move") {
+          pendingMode="move";
+          const wm=toWork(cx,cy);
+          pendingDragW={startWx:wm.x,startWy:wm.y,p1w:{...pendingShape.p1w},p2w:{...pendingShape.p2w}};
+          cvs.style.cursor="move"; return;
+        }
+        if(pz) {
+          // resize handle
+          pendingMode="resize"; pendingHandle=pz;
+          const wm=toWork(cx,cy);
+          pendingDragW={startWx:wm.x,startWy:wm.y,p1w:{...pendingShape.p1w},p2w:{...pendingShape.p2w}};
+          cvs.style.cursor=(pz==="p1"||pz==="p2")?"crosshair":(CROP_CUR[pz]||"crosshair"); return;
+        }
+        // Click outside the pending shape — commit it and start drawing a new one.
+        commitPending();
+      }
       isAnnotating=true;
       annotStartW=toWork(cx,cy); annotStartC={cx,cy}; annotPrevC={cx,cy};
       freePoints=[{...annotStartW}];
@@ -495,6 +540,46 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
 
   document.addEventListener("mousemove", e => {
     if (isPanning) { doPan(e); return; }
+
+    // Handle pending-shape drag: either moving the whole shape or resizing via a handle.
+    if(pendingMode!=="idle"&&pendingShape) {
+      const {cx,cy}=canvasPos(e), wPos=toWork(cx,cy);
+      if(pendingMode==="move") {
+        const {startWx,startWy,p1w,p2w}=pendingDragW;
+        const dx=wPos.x-startWx, dy=wPos.y-startWy;
+        pendingShape.p1w={x:p1w.x+dx,y:p1w.y+dy};
+        pendingShape.p2w={x:p2w.x+dx,y:p2w.y+dy};
+        render(); return;
+      }
+      if(pendingMode==="resize") {
+        const {startWx,startWy,p1w,p2w}=pendingDragW;
+        const dx=wPos.x-startWx, dy=wPos.y-startWy;
+        if(pendingShape.tool==="arrow") {
+          if(pendingHandle==="p1")
+            pendingShape.p1w={x:clamp(p1w.x+dx,0,workCanvas.width),y:clamp(p1w.y+dy,0,workCanvas.height)};
+          else
+            pendingShape.p2w={x:clamp(p2w.x+dx,0,workCanvas.width),y:clamp(p2w.y+dy,0,workCanvas.height)};
+        } else {
+          // rect/ellipse: resize by moving individual edges of the normalized bounding box.
+          let minx=Math.min(p1w.x,p2w.x), maxx=Math.max(p1w.x,p2w.x);
+          let miny=Math.min(p1w.y,p2w.y), maxy=Math.max(p1w.y,p2w.y);
+          switch(pendingHandle){
+            case"nw":minx+=dx;miny+=dy;break; case"ne":maxx+=dx;miny+=dy;break;
+            case"sw":minx+=dx;maxy+=dy;break; case"se":maxx+=dx;maxy+=dy;break;
+            case"n": miny+=dy;break; case"s": maxy+=dy;break;
+            case"w": minx+=dx;break; case"e": maxx+=dx;break;
+          }
+          minx=clamp(minx,0,workCanvas.width);  miny=clamp(miny,0,workCanvas.height);
+          maxx=clamp(maxx,0,workCanvas.width);  maxy=clamp(maxy,0,workCanvas.height);
+          if(maxx-minx<2){if("nw sw w".includes(pendingHandle))minx=maxx-2;else maxx=minx+2;}
+          if(maxy-miny<2){if("nw ne n".includes(pendingHandle))miny=maxy-2;else maxy=miny+2;}
+          pendingShape.p1w={x:minx,y:miny};
+          pendingShape.p2w={x:maxx,y:maxy};
+        }
+        render(); return;
+      }
+    }
+
     if (cropMode==="idle"&&!isAnnotating) return;
     const {cx,cy}=canvasPos(e), wPos=toWork(cx,cy);
 
@@ -544,6 +629,12 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   });
 
   document.addEventListener("mouseup", e => {
+    // Finish a pending-shape drag; reset mode so the next mousedown starts fresh.
+    if(pendingMode!=="idle") {
+      pendingMode="idle"; pendingHandle=null;
+      cvs.style.cursor=TOOL_CURSORS[currentTool]||"crosshair";
+      render(); return;
+    }
     if (isPanning) {
       isPanning=false;
       cvs.style.cursor=spaceHeld?"grab":(TOOL_CURSORS[currentTool]||"crosshair");
@@ -570,6 +661,22 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
       const p2w=toWork(cx,cy);
       if (currentTool==="blur") {
         applyBlur(annotStartW,p2w);
+      } else if (currentTool==="draw") {
+        // Freehand path: commit immediately — no adjust phase needed.
+        saveUndo();
+        const drew=commitShape(currentTool,annotStartW,p2w,freePoints);
+        if (!drew){undoStack.pop();syncUR();} else render();
+      } else if (["rect","ellipse","arrow"].includes(currentTool)) {
+        // Keep the shape in pending state so the user can reposition/resize before committing.
+        const big = currentTool==="arrow"
+          ? Math.hypot(p2w.x-annotStartW.x,p2w.y-annotStartW.y)>=4
+          : Math.abs(p2w.x-annotStartW.x)>=2 && Math.abs(p2w.y-annotStartW.y)>=2;
+        if(big) {
+          pendingShape={tool:currentTool,p1w:{...annotStartW},p2w:{...p2w},
+                        color:drawColor,strokeWidth:strokeWidth};
+          selInfo.textContent="Drag handles to resize · drag body to move · Esc to discard";
+        }
+        render();
       } else {
         saveUndo();
         const drew=commitShape(currentTool,annotStartW,p2w,freePoints);
@@ -592,8 +699,115 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
 
   function normW({x,y,w,h}){return{x:w<0?x+w:x,y:h<0?y+h:y,w:Math.abs(w),h:Math.abs(h)};}
 
+  /* === 12b. Pending shape helpers === */
+
+  /** Returns the shortest distance from point (px, py) to line segment (ax,ay)–(bx,by). */
+  function distToSegment(px,py,ax,ay,bx,by) {
+    const dx=bx-ax, dy=by-ay, len2=dx*dx+dy*dy;
+    if(len2===0) return Math.hypot(px-ax,py-ay);
+    const t=Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/len2));
+    return Math.hypot(px-ax-t*dx,py-ay-t*dy);
+  }
+
+  /**
+   * Returns the hit zone of the pending shape at canvas coordinates (cx, cy).
+   *   rect/ellipse → "nw"|"n"|"ne"|"e"|"se"|"s"|"sw"|"w"|"move"|null
+   *   arrow        → "p1"|"p2"|"move"|null
+   */
+  function getPendingZone(cx,cy) {
+    if(!pendingShape) return null;
+    const HHIT_P=14, ps=pendingShape;
+
+    if(ps.tool==="arrow") {
+      const p1c=toCanv(ps.p1w.x,ps.p1w.y), p2c=toCanv(ps.p2w.x,ps.p2w.y), r=HHIT_P/2;
+      if(Math.hypot(cx-p1c.cx,cy-p1c.cy)<r) return "p1";
+      if(Math.hypot(cx-p2c.cx,cy-p2c.cy)<r) return "p2";
+      const hitR=Math.max(8, ps.strokeWidth*es()/2+4);
+      if(distToSegment(cx,cy,p1c.cx,p1c.cy,p2c.cx,p2c.cy)<hitR) return "move";
+      return null;
+    }
+
+    // rect / ellipse: bounding box handles
+    const norm=normW({x:ps.p1w.x,y:ps.p1w.y,w:ps.p2w.x-ps.p1w.x,h:ps.p2w.y-ps.p1w.y});
+    const np1=toCanv(norm.x,norm.y), np2=toCanv(norm.x+norm.w,norm.y+norm.h);
+    const sx=np1.cx, sy=np1.cy, ex=np2.cx, ey=np2.cy, r=HHIT_P/2;
+    const mx=(sx+ex)/2, my=(sy+ey)/2;
+    const onL=Math.abs(cx-sx)<r, onR=Math.abs(cx-ex)<r;
+    const onT=Math.abs(cy-sy)<r, onB=Math.abs(cy-ey)<r;
+    const onCX=Math.abs(cx-mx)<r, onCY=Math.abs(cy-my)<r;
+    if(onL&&onT)return"nw"; if(onR&&onT)return"ne";
+    if(onL&&onB)return"sw"; if(onR&&onB)return"se";
+    if(onCX&&onT)return"n"; if(onCX&&onB)return"s";
+    if(onL&&onCY)return"w"; if(onR&&onCY)return"e";
+    if(cx>=sx&&cx<=ex&&cy>=sy&&cy<=ey)return"move";
+    return null;
+  }
+
+  /** Bake the pending shape into workCanvas, then clear pending state. */
+  function commitPending() {
+    if(!pendingShape) return;
+    const ps=pendingShape;
+    pendingShape=null; pendingMode="idle"; pendingHandle=null;
+    // Use the color/strokeWidth captured at draw time — toolbar changes made after drawing
+    // must not retroactively alter a shape the user is mid-adjusting.
+    const savedColor=drawColor, savedWidth=strokeWidth;
+    drawColor=ps.color; strokeWidth=ps.strokeWidth;
+    saveUndo();
+    const drew=commitShape(ps.tool,ps.p1w,ps.p2w,[]);
+    if(!drew){undoStack.pop();syncUR();}
+    drawColor=savedColor; strokeWidth=savedWidth;
+    selInfo.textContent=TOOL_HINTS[currentTool]||"";
+    render();
+  }
+
+  /** Discard the pending shape without writing it to workCanvas. */
+  function discardPending() {
+    pendingShape=null; pendingMode="idle"; pendingHandle=null;
+    selInfo.textContent=TOOL_HINTS[currentTool]||"";
+    render();
+  }
+
+  /** Draw the pending shape and its adjustment handles onto the display canvas. */
+  function drawPendingHandles() {
+    if(!pendingShape) return;
+    const ps=pendingShape, HVIZ_P=8;
+    const p1c=toCanv(ps.p1w.x,ps.p1w.y), p2c=toCanv(ps.p2w.x,ps.p2w.y);
+
+    // Render with the shape's own color/strokeWidth, not the current toolbar values.
+    drawShapePreview(ctx,ps.tool,p1c,p2c,[],{strokeWidth:ps.strokeWidth,color:ps.color});
+
+    ctx.save();
+    if(ps.tool==="arrow") {
+      // Two square handles at the arrow tail and head.
+      [p1c,p2c].forEach(({cx,cy})=>{
+        const hh=HVIZ_P/2;
+        ctx.fillStyle="#fff"; ctx.fillRect(cx-hh,cy-hh,HVIZ_P,HVIZ_P);
+        ctx.strokeStyle="#22c55e"; ctx.lineWidth=1.5; ctx.setLineDash([]);
+        ctx.strokeRect(cx-hh+.5,cy-hh+.5,HVIZ_P-1,HVIZ_P-1);
+      });
+    } else {
+      // Eight corner/edge handles around the bounding box, with a green dashed selection outline.
+      const norm=normW({x:ps.p1w.x,y:ps.p1w.y,w:ps.p2w.x-ps.p1w.x,h:ps.p2w.y-ps.p1w.y});
+      const np1=toCanv(norm.x,norm.y), np2=toCanv(norm.x+norm.w,norm.y+norm.h);
+      const sx=np1.cx, sy=np1.cy, ex=np2.cx, ey=np2.cy;
+      const mx=(sx+ex)/2, my=(sy+ey)/2, hh=Math.floor(HVIZ_P/2);
+      ctx.strokeStyle="#22c55e"; ctx.lineWidth=1; ctx.setLineDash([5,3]);
+      ctx.strokeRect(sx,sy,ex-sx,ey-sy);
+      ctx.setLineDash([]);
+      [[sx-hh,sy-hh],[mx-hh,sy-hh],[ex-hh,sy-hh],
+       [ex-hh,my-hh],[ex-hh,ey-hh],[mx-hh,ey-hh],
+       [sx-hh,ey-hh],[sx-hh,my-hh]].forEach(([hx,hy])=>{
+        ctx.fillStyle="#fff"; ctx.fillRect(hx,hy,HVIZ_P,HVIZ_P);
+        ctx.strokeStyle="#22c55e"; ctx.lineWidth=1.5;
+        ctx.strokeRect(hx+.5,hy+.5,HVIZ_P-1,HVIZ_P-1);
+      });
+    }
+    ctx.restore();
+  }
+
   /* === 13. Transforms === */
   function rotateWork(deg) {
+    if(pendingShape) commitPending();
     saveUndo();
     const w=workCanvas.width, h=workCanvas.height;
     const tmp=document.createElement("canvas");
@@ -608,6 +822,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     applyCanvasSize(); render(); viewport.scrollLeft=0; viewport.scrollTop=0;
   }
   function flipWork(horiz) {
+    if(pendingShape) commitPending();
     saveUndo();
     const w=workCanvas.width, h=workCanvas.height;
     const tmp=document.createElement("canvas"); tmp.width=w; tmp.height=h;
@@ -675,9 +890,15 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     contextBar.innerHTML = html;
     // Re-wire inputs
     const cp = document.getElementById("colorPick");
-    if (cp) cp.addEventListener("input", e => { drawColor = e.target.value; textInput.style.color = drawColor; });
+    if (cp) cp.addEventListener("input", e => {
+      drawColor = e.target.value; textInput.style.color = drawColor;
+      if(pendingShape){pendingShape.color=drawColor;render();}  // live preview
+    });
     const ss = document.getElementById("strokeSz");
-    if (ss) ss.addEventListener("change", e => { strokeWidth = parseInt(e.target.value, 10); });
+    if (ss) ss.addEventListener("change", e => {
+      strokeWidth = parseInt(e.target.value, 10);
+      if(pendingShape){pendingShape.strokeWidth=strokeWidth;render();}  // live preview
+    });
   }
 
   TOOLS.forEach(id=>{
@@ -697,6 +918,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   }
 
   function setTool(id) {
+    if(pendingShape) commitPending(); // Commit any in-flight shape before switching tools.
     currentTool=id;
     TOOLS.forEach(t=>{
       document.getElementById("tool"+t.charAt(0).toUpperCase()+t.slice(1))
@@ -892,6 +1114,11 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
       return;
     }
 
+    /* === Escape: discard pending shape === */
+    if (e.key==="Escape" && pendingShape && !isAnnotating && cropMode==="idle") {
+      e.preventDefault(); discardPending(); return;
+    }
+
     /* === Space → pan mode === */
     if (e.key===" " && !spaceHeld && !isAnnotating && cropMode==="idle") {
       e.preventDefault(); spaceHeld=true; cvs.style.cursor="grab"; return;
@@ -941,6 +1168,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
 
   /* === 17. Save / Cancel === */
   document.getElementById("btnSaveCrop").addEventListener("click", () => {
+    if(pendingShape) commitPending();
     if (!cropSel) return;
     const {x,y,w,h}=cropSel;
     const off=document.createElement("canvas"); off.width=w; off.height=h;
@@ -950,12 +1178,13 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     });
   });
   document.getElementById("btnSaveFull").addEventListener("click", () => {
+    if(pendingShape) commitPending();
     chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:workCanvas.toDataURL("image/png"),downloadPath,saveAs}, (res) => {
       if (res?.success) { showSaveToast(`Saved full: ${workCanvas.width}×${workCanvas.height} px`); setTimeout(()=>window.close(), 1200); }
     });
   });
   function confirmCloseIfDirty() {
-    if (undoStack.length > 0) {
+    if (undoStack.length > 0 || pendingShape) {
       showConfirm("Unsaved changes will be lost. Close?", () => window.close(), {
         title: 'Discard changes?', danger: true, okLabel: 'Close'
       });
@@ -975,6 +1204,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   }
 
   async function copyToClipboard() {
+    if(pendingShape) commitPending();
     const srcCanvas = (cropSel && cropSel.w >= 2 && cropSel.h >= 2)
       ? (() => {
           const { x, y, w, h } = cropSel;

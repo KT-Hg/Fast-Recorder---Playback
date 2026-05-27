@@ -1,8 +1,11 @@
 /**
- * content.js — content script for recording and executing actions.
+ * content.js — Content script injected into every eligible tab.
+ * Handles action recording (click, input events), action playback, element
+ * picker UI, screenshot helpers, hotkeys, and segment-capture overlay.
  */
 
-// Safe wrapper — suppresses "Extension context invalidated" errors after extension reload
+// Suppress "Extension context invalidated" errors thrown after an extension
+// reload or update while old content scripts are still alive in open tabs.
 function safeSend(msg) {
   try {
     if (!chrome.runtime?.id) return;
@@ -10,9 +13,9 @@ function safeSend(msg) {
   } catch (_) {}
 }
 
-// Guard against multiple injections
+// Guard against multiple injections — chrome.scripting.executeScript can be
+// called more than once on a tab (e.g. reconnect after content script crash).
 if (window.__actionRecorderInjected) {
-  console.log('[CONTENT] Already injected, sending CONTENT_READY');
   safeSend({ type: 'CONTENT_READY' });
 } else {
   window.__actionRecorderInjected = true;
@@ -23,10 +26,9 @@ if (window.__actionRecorderInjected) {
 
 let pickerMode = false;
 
-function log(...args) { console.log('[CONTENT]', ...args); }
-
-// Ask the background for our frameId so recorded actions can target the correct iframe.
-// Defaults to 0 (main frame) when running in the top-level document or on error.
+// Background has access to sender.frameId; content scripts do not.  We ask for
+// it on load so every recorded action can embed the frameId and be replayed in
+// the correct iframe.  Defaults to 0 (main frame) on error.
 let _myFrameId = 0;
 try {
   chrome.runtime.sendMessage({ type: 'REGISTER_FRAME' }, (res) => {
@@ -38,15 +40,17 @@ try {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DYNAMIC ID DETECTION
-   Patterns that indicate auto-generated, unstable IDs.
+   Identifies auto-generated IDs that are unstable across page loads and
+   therefore unsafe to use as selectors.
 ───────────────────────────────────────────────────────────────────────────── */
 
 const _DYNAMIC_ID_RE = new RegExp([
-  /^[:]/,                              // starts with : (React fiber IDs like :r0:)
-  /\d{5,}/,                            // 5+ consecutive digits (avoids filtering Tailwind color numbers like 600, 500)
+  /^[:]/,                              // React fiber IDs (":r0:", ":ra:")
+  /\d{5,}/,                            // 5+ consecutive digits — excludes Tailwind
+                                       // utility numbers (600, 500) which are < 5 digits
   /^[a-f0-9]{8}-[a-f0-9]{4}-/,        // UUID v4 prefix
-  /^(ember|ng-|mat-|uid-|id-)\d/,     // framework-generated
-  /^[a-z0-9]{20,}$/,                  // long opaque hashes (20+ lowercase alphanumeric)
+  /^(ember|ng-|mat-|uid-|id-)\d/,     // common framework ID prefixes
+  /^[a-z0-9]{20,}$/,                  // long opaque hashes (e.g. crypto.randomUUID output)
 ].map(r => r.source).join('|'), 'i');
 
 function _isDynamicId(id) {
@@ -71,10 +75,12 @@ function getCssSelector(el) {
       selector += `[type="${CSS.escape(current.type)}"]`;
       if (current.name) selector += `[name="${CSS.escape(current.name)}"]`;
       if (current.type === 'radio' && current.value) {
+        // Radio buttons with the same name share the same selector without value.
         selector += `[value="${CSS.escape(current.value)}"]`;
       }
     } else if (current.className && typeof current.className === 'string') {
-      // Combine multiple stable classes for a more unique selector.
+      // Combine up to 3 stable classes for a more unique selector without being
+      // fragile (more than 3 classes increases the chance of version-churn).
       const stableClasses = current.className.split(/\s+/).filter(Boolean)
         .filter(c => !_DYNAMIC_ID_RE.test(c))
         .slice(0, 3);
@@ -98,13 +104,15 @@ function getCssSelector(el) {
 }
 
 /**
- * XPath with properly escaped IDs.
- * XPath uses double-quoted attribute values; a literal " in the ID must be
- * replaced with concat() to keep the expression valid.
+ * Build an XPath expression that targets an element by its id attribute,
+ * safely handling IDs that contain double-quote characters.
+ *
+ * XPath attribute values must be quoted; a literal " inside a double-quoted
+ * string is invalid XPath.  The workaround is XPath's concat() function to
+ * join the parts around the embedded quote character.
  */
 function _xpathId(id) {
   if (!id.includes('"')) return `//*[@id="${id}"]`;
-  // Build concat() to safely embed IDs containing double-quotes
   const parts = id.split('"').map(p => `"${p}"`).join(', \'"\', ');
   return `//*[@id=concat(${parts})]`;
 }
@@ -178,9 +186,9 @@ function getAllSelectors(el) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    SHADOW DOM PIERCE
-   Web components (LitElement, Stencil, etc.) put their DOM inside shadow roots
-   that are invisible to document.querySelector.  This function walks the tree
-   recursively so selectors work across open shadow roots.
+   Web components (LitElement, Stencil, etc.) render into shadow roots that are
+   opaque to document.querySelector.  This recursive walk traverses open shadow
+   roots so CSS selectors can resolve across component boundaries.
 ───────────────────────────────────────────────────────────────────────────── */
 
 function querySelectorDeep(selector, root = document) {
@@ -206,14 +214,15 @@ function findElementWithFallback(selectors, timeout = 5000) {
   return new Promise((resolve, reject) => {
     if (typeof selectors === 'string') selectors = { css: selectors };
 
-    // Priority: most stable → most fragile
+    // Strategy order: most stable selector type first so a reliable match
+    // is used whenever possible; fragile selectors (full XPath) only as last resort.
     const strategies = [];
     if (selectors.id)       strategies.push({ type: 'id',       fn: () => document.getElementById(selectors.id) });
     if (selectors.testId)   strategies.push({ type: 'testId',   fn: () => document.querySelector(`[data-testid="${CSS.escape(selectors.testId)}"]`) });
     if (selectors.dataId)   strategies.push({ type: 'dataId',   fn: () => document.querySelector(`[data-id="${CSS.escape(selectors.dataId)}"]`) });
     if (selectors.xpath)    strategies.push({ type: 'xpath',    fn: () => document.evaluate(selectors.xpath,    document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
     if (selectors.css)      strategies.push({ type: 'css',      fn: () => document.querySelector(selectors.css) });
-    if (selectors.css)      strategies.push({ type: 'cssShadow', fn: () => querySelectorDeep(selectors.css) }); // shadow DOM pierce
+    if (selectors.css)      strategies.push({ type: 'cssShadow', fn: () => querySelectorDeep(selectors.css) }); // fall through to shadow DOM pierce
     if (selectors.name)     strategies.push({ type: 'name',     fn: () => document.querySelector(`[name="${CSS.escape(selectors.name)}"]`) });
     if (selectors.text && selectors.textTag) {
       strategies.push({
@@ -227,7 +236,7 @@ function findElementWithFallback(selectors, timeout = 5000) {
       for (const strategy of strategies) {
         try {
           const el = strategy.fn();
-          if (el) { log(`Found element using ${strategy.type}`); return el; }
+          if (el) { return el; }
         } catch (_) {}
       }
       return null;
@@ -236,8 +245,10 @@ function findElementWithFallback(selectors, timeout = 5000) {
     const el = tryStrategies();
     if (el) return resolve(el);
 
-    // RAF-debounced MutationObserver: fire at most once per animation frame.
-    // childList+subtree only — no attributes — avoids firing on every style change.
+    // MutationObserver with rAF debounce: coalesces burst DOM mutations (common
+    // in React renders) into at most one check per animation frame.
+    // childList+subtree only — omitting "attributes" prevents firing on every
+    // CSS class/style update which would make this very hot.
     let found = false;
     let rafQueued = false;
 
@@ -257,7 +268,7 @@ function findElementWithFallback(selectors, timeout = 5000) {
       });
     });
 
-    // document.body can be null on about:blank / mid-parse — fall back to <html>.
+    // document.body is null during early HTML parsing; fall back to <html>.
     observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
 
     const timer = setTimeout(() => {
@@ -270,7 +281,8 @@ function findElementWithFallback(selectors, timeout = 5000) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    CONDITION-BASED ELEMENT FIND
-   Uses TreeWalker for O(n) early-exit instead of querySelectorAll("*").
+   Walks a container's subtree with a TreeWalker for O(n) early-exit rather
+   than building a full NodeList with querySelectorAll("*").
 ───────────────────────────────────────────────────────────────────────────── */
 
 function findElementByCondition(root, conditions) {
@@ -361,7 +373,8 @@ document.addEventListener('click', (event) => {
   safeSend({ type: 'RECORDED_ACTION', action: { type: 'click', selector: selectors.css, selectors, frameId: _myFrameId } });
 }, true);
 
-// WeakMap so detached DOM elements can be garbage-collected.
+// WeakMap keyed by element so timers are GC'd when their element is removed
+// from the DOM without needing an explicit cleanup step.
 const _inputDebounceTimers = new WeakMap();
 
 document.addEventListener('input', (event) => {
@@ -369,6 +382,9 @@ document.addEventListener('input', (event) => {
   const selectors = getAllSelectors(el);
   if (!selectors) return;
 
+  // 400 ms debounce: records the final value after typing pauses rather than
+  // one action per keystroke.  This keeps the action list readable and reduces
+  // the number of recorded actions for long inputs.
   if (_inputDebounceTimers.has(el)) clearTimeout(_inputDebounceTimers.get(el));
   _inputDebounceTimers.set(el, setTimeout(() => {
     _inputDebounceTimers.delete(el);
@@ -411,14 +427,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return;
     }
 
-    /* ── script fallback (CDP path is preferred; this is for edge cases only) ── */
+    /* ── script — content-script fallback (CDP is preferred; used when debugger unavailable) ── */
     if (action.type === 'script') {
       try {
         const code = (action.code || '').replace(/^javascript:/i, '').trim();
         const fn = new Function('window', 'document', code);
         fn.call(window, window, document);
       } catch (err) {
-        log('Script error:', err);
+        console.error('[CONTENT] Script error:', err);
       }
       sendResponse();
       return;
@@ -443,17 +459,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         target = null;
       }
     } catch (e) {
-      log(e);
+      console.error('[CONTENT] Element find error:', e);
       sendResponse({ failed: true, error: e.message });
       return;
     }
 
     if (!target) { sendResponse({ failed: true }); return; }
 
-    // scrollIntoView then re-query to get a live reference.
-    // Virtualized lists (React-Window, AG-Grid) may unmount and remount the node during scroll.
+    // scrollIntoView first, then re-query on the next rAF.
+    // Virtualized lists (React-Window, AG-Grid) unmount and remount rows during
+    // scroll — the original `target` reference may be stale after scrolling.
     target.scrollIntoView({ behavior: 'auto', block: 'center' });
-    // Give the framework one rAF to remount if needed, then re-query
     await new Promise(r => requestAnimationFrame(r));
     if (action.selectors && typeof action.selectors === 'object') {
       try {
@@ -505,9 +521,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     /* ── CLICK ── */
     if (action.type === 'click') {
-      // Dispatch full mousedown → mouseup → click sequence.
-      // Some JS frameworks (jQuery widgets, custom components) only respond to
-      // mousedown/mouseup; target.click() alone misses those handlers.
+      // Fire the full mousedown → mouseup → click sequence with realistic
+      // clientX/Y coordinates.  Some frameworks (jQuery UI, custom widgets)
+      // require mousedown/mouseup to fire their internal handlers; target.click()
+      // alone only fires "click" and misses those.
       const rect = target.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top  + rect.height / 2;
@@ -529,9 +546,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     /* ── INPUT / SELECT ── */
     if (action.type === 'input') {
       if (target.isContentEditable) {
-        // Rich-text editors (Quill, Draft.js, Tiptap) use contenteditable divs.
-        // Direct .textContent assignment bypasses their internal state;
-        // execCommand triggers the editor's mutation observer correctly.
+        // Rich-text editors (Quill, Draft.js, Tiptap) manage state via mutation
+        // observers on contenteditable.  Direct .textContent assignment bypasses
+        // those observers; document.execCommand fires the correct mutation events.
         target.focus();
         document.execCommand('selectAll', false, null);
         document.execCommand('insertText', false, action.value ?? '');
@@ -552,9 +569,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         target.dispatchEvent(new Event('blur',   { bubbles: true }));
         target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       } else {
-        // Walk up the prototype chain to find the native value setter.
-        // React/Vue store internal state in fiber — direct assignment bypasses it.
-        // The native setter triggers the synthetic event system correctly.
+        // Walk the prototype chain to find the native HTMLInputElement value setter.
+        // React/Vue override .value to track their internal fiber state — direct
+        // property assignment (el.value = x) bypasses that override and breaks
+        // controlled components.  The native setter triggers the synthetic event
+        // system (SyntheticInputEvent) correctly.
         let nativeSetter = null;
         let proto = Object.getPrototypeOf(target);
         while (proto && proto !== Object.prototype) {
@@ -575,7 +594,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (action.waitForElement) {
         (async () => {
           try { await waitForElement(action.waitForElement, 5000); }
-          catch (_) { log('Element wait timeout, continuing'); }
+          catch (_) { /* element wait timeout — continue */ }
           sendResponse();
         })();
         return;
@@ -824,11 +843,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             break;
           }
           default:
-            result = true; // Unknown condition type — do not block playback
+            // Unknown condition type — pass rather than block so new types
+            // added in the editor don't silently freeze an existing scenario.
+            result = true;
         }
       } catch (e) {
-        log('CHECK_CONDITION error:', e);
-        result = false; // error → false so broken conditions don't silently pass
+        console.error('[CONTENT] CHECK_CONDITION error:', e);
+        result = false; // error → false; broken conditions should not silently pass playback
       }
       sendResponse({ result });
     })();
@@ -905,11 +926,11 @@ function _startVisibleCountdown(seconds, crop) {
 
   const hint = document.createElement('span');
   hint.style.cssText = 'font:12px system-ui,sans-serif;color:rgba(255,255,255,0.75);';
-  hint.textContent = 'Mở dropdown…';
+  hint.textContent = 'Open dropdown…';
 
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = '✕';
-  cancelBtn.title = 'Hủy (ESC)';
+  cancelBtn.title = 'Cancel (ESC)';
   cancelBtn.style.cssText = [
     'margin-left:4px', 'padding:1px 5px', 'border:none',
     'background:rgba(255,255,255,0.15)', 'color:#fff', 'border-radius:4px',
@@ -970,8 +991,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     chrome.runtime.sendMessage({ type: 'IS_TAB_ACTIVATED' }, (res) => {
       if (!res?.activated) return;
-      if (combo === activeHotkeys.startRecord) { safeSend({ type: 'START_RECORD' }); log('Hotkey: START_RECORD'); }
-      else                                     { safeSend({ type: 'STOP_RECORD'  }); log('Hotkey: STOP_RECORD');  }
+      if (combo === activeHotkeys.startRecord) { safeSend({ type: 'START_RECORD' }); }
+      else                                     { safeSend({ type: 'STOP_RECORD'  }); }
     });
   } else if (combo === activeHotkeys.screenshot) {
     e.preventDefault();
@@ -1029,7 +1050,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   ].join(';');
 
   const lblStart   = document.createElement('span');
-  lblStart.textContent = `📍 Bắt đầu: X = ${startX}px, Y = ${startY}px`;
+  lblStart.textContent = `📍 Start: X = ${startX}px, Y = ${startY}px`;
 
   const lblCurrent = document.createElement('span');
   lblCurrent.style.flex = '1';
@@ -1037,17 +1058,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const updateLbl = () => {
     const endX = window.scrollX + window.innerWidth;
     const endY = window.scrollY + window.innerHeight;
-    lblCurrent.textContent = `Đến: X=${endX}px, Y=${endY}px (W=${Math.abs(endX - startX)}px, H=${Math.abs(endY - startY)}px)`;
+    lblCurrent.textContent = `To: X=${endX}px, Y=${endY}px (W=${Math.abs(endX - startX)}px, H=${Math.abs(endY - startY)}px)`;
   };
   updateLbl();
 
   const btnCancel = document.createElement('button');
-  btnCancel.textContent = '✖ Hủy';
+  btnCancel.textContent = '✖ Cancel';
   btnCancel.style.cssText = 'background:#555;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;';
 
   const btnStop = document.createElement('button');
   btnStop.id = '__ext_seg_bar_stop';
-  btnStop.textContent = '⏹ Dừng & Chụp';
+  btnStop.textContent = '⏹ Stop & Capture';
   btnStop.style.cssText = 'background:#e74c3c;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;';
 
   bar.append(lblStart, lblCurrent, btnCancel, btnStop);
@@ -1065,7 +1086,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (isVert) window.scrollBy(0, scrollStep); else window.scrollBy(scrollStep, 0);
     const after = isVert ? window.scrollY : window.scrollX;
     updateLbl();
-    if (after === before) { scrollStopped = true; btnStop.textContent = '⏹ Chụp (cuối trang)'; return; }
+    if (after === before) { scrollStopped = true; btnStop.textContent = '⏹ Capture (end of page)'; return; }
     rafId = requestAnimationFrame(scrollLoop);
   };
   rafId = requestAnimationFrame(scrollLoop);
@@ -1106,6 +1127,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 ───────────────────────────────────────────────────────────────────────────── */
 
 safeSend({ type: 'CONTENT_READY' });
-log('Content script READY');
 
 } // End of injection guard

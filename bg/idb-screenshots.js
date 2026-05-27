@@ -14,9 +14,9 @@
 
 const SS_MAX_ENTRIES = 5_000;
 
-const DB_NAME  = 'FastRecorder_CsvScreenshots';
-const DB_VER   = 2;
-const STORE    = 'shots';
+const DB_NAME       = 'FastRecorder_CsvScreenshots';
+const DB_VER        = 2;
+const STORE         = 'shots';
 const RESULTS_STORE = 'results';
 
 let _db = null;
@@ -40,6 +40,12 @@ async function _getDb() {
   return _openDb();
 }
 
+/**
+ * Execute fn(db) with automatic reconnect on InvalidStateError.
+ * InvalidStateError occurs when the IDB connection is closed by the browser
+ * (e.g. after a service worker restart or forced GC), so we null the cached
+ * handle and open a fresh connection before retrying.
+ */
 async function _withDb(fn) {
   try {
     return await fn(await _getDb());
@@ -56,8 +62,8 @@ async function _withDb(fn) {
 
 export function ssWrite(rowIdx, varName, base64) {
   return _withDb(db => new Promise((resolve, reject) => {
-    const tx      = db.transaction(STORE, 'readwrite');
-    const store   = tx.objectStore(STORE);
+    const tx       = db.transaction(STORE, 'readwrite');
+    const store    = tx.objectStore(STORE);
     const countReq = store.count();
 
     countReq.onsuccess = () => {
@@ -102,6 +108,7 @@ export function ssReadAll(maxEntries = 5_000) {
   }));
 }
 
+/** Read a paginated slice of screenshots (cursor-based, O(offset + limit)). */
 export function ssReadPage(offset = 0, limit = 500) {
   return _withDb(db => new Promise((resolve, reject) => {
     const result  = {};
@@ -141,8 +148,9 @@ export function ssClear() {
 /* ── CSV Run Results ──────────────────────────────────────────────────────── */
 
 /**
- * Write a single row result — O(1) per row, no accumulation in memory.
- * Replaces the chrome.storage.local batch-write approach that was O(n²) in total bytes written.
+ * Write a single row result — O(1) per row, no in-memory accumulation.
+ * Replaced the previous chrome.storage.local batch-write approach which was
+ * O(n²) in total bytes written (each row rewrote the entire accumulated array).
  */
 export function csvResultWrite(rowIdx, result) {
   return _withDb(db => new Promise((resolve, reject) => {

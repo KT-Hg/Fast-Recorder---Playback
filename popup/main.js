@@ -1,7 +1,10 @@
 /**
- * main.js — Core popup logic (recording, scenarios, playback, schedule, CSV)
- * This module contains tightly-coupled UI logic that shares many DOM references.
- * Split from the original monolithic popup.js; uses shared utils and state.
+ * main.js — Core popup UI logic: recording, scenario management, playback, schedule, CSV.
+ *
+ * All logic lives inside the `initMain()` function body (a single large closure) so that
+ * DOM queries run after the document is ready and module-level variables are scoped to
+ * the function rather than the module. This avoids cross-module DOM query races while
+ * keeping all tightly-coupled UI state local.
  *
  * Exports: initMain
  */
@@ -32,7 +35,7 @@ let actionClipboard = null;
 let pickerMode = false;
 
 /* === CONDITION HELP MODAL === */
-let _condLang = 'vi';
+let _condLang = 'en';
 
 const COND_DATA = [
   {
@@ -234,7 +237,7 @@ let _condHelpOpener = null;
 document.getElementById("conditionHelpBtn")?.addEventListener("click", (e) => {
   _condHelpOpener = e.currentTarget;
   chrome.storage.local.get('condHelpLang', ({ condHelpLang }) => {
-    applyCondLang(condHelpLang || 'vi');
+    applyCondLang(condHelpLang || 'en');
   });
   _openModal("conditionHelpModal", "#conditionHelpClose");
 });
@@ -282,16 +285,30 @@ const CARD_HELP_DATA = {
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">② Action Type</span><span class="ch-title">Loại hành động</span></div><p class="ch-desc">
         • <b>Click</b> — click vào element. Với checkbox/radio: tự toggle trạng thái checked.<br>
         • <b>Input</b> — nhập giá trị vào ô text, textarea, hoặc chọn option trong &lt;select&gt;. Tự kích hoạt sự kiện <code>input</code> và <code>change</code>.<br>
+        • <b>Hover</b> — giả lập di chuột qua element (kích hoạt <code>mouseover</code> / <code>mouseenter</code> / <code>mousemove</code>). Dùng để mở menu hover.<br>
+        • <b>Open Dropdown</b> — mở dropdown bằng trusted click qua CDP (dành cho dropdown native không phản hồi JS click thông thường). Chỉ cần selector, không cần value.<br>
+        • <b>Drag &amp; Drop</b> — kéo element nguồn (Selector) và thả vào element đích. Cần điền cả selector của element đích ở phần Drop Target.<br>
         • <b>Navigate</b> — điều hướng đến URL. Extension chờ trang tải xong (<code>status: complete</code>) trước khi tiếp tục action kế tiếp.<br>
-        • <b>Run JS</b> — chạy đoạn code JavaScript tùy ý trong ngữ cảnh trang. Ví dụ: <code>window.scrollTo(0, 500)</code> hoặc <code>document.title = 'Test'</code>.<br>
+        • <b>Wait (ms)</b> — dừng chờ một khoảng thời gian cố định (tính bằng ms). Không cần selector.<br>
+        • <b>Run JS</b> — chạy đoạn code JavaScript tùy ý qua CDP (bỏ qua CSP của trang). Ví dụ: <code>window.scrollTo(0, 500)</code>.<br>
         • <b>Condition (If)</b> — kiểm tra điều kiện; nếu <b>FALSE</b> thì bỏ qua N action tiếp theo. Nhấn nút <b>?</b> bên cạnh dropdown để xem hướng dẫn chi tiết.<br>
-        • <b>Screenshot (Visible)</b> — chụp phần nhìn thấy của trang.<br>
-        • <b>Screenshot (Full Page)</b> — chụp toàn bộ trang (cuộn xuống và ghép lại).</p></div>
+        • <b>Switch (Variable → Scenario)</b> — rẽ nhánh sang scenario khác dựa trên giá trị biến. Định nghĩa các case: giá trị → scenario.<br>
+        • <b>Read DOM → Variable</b> — đọc text, value hoặc thuộc tính của element và lưu vào biến để dùng ở action sau.<br>
+        • <b>Screenshot (Visible)</b> — chụp phần nhìn thấy của trang (viewport).<br>
+        • <b>Screenshot (Full Page)</b> — chụp toàn bộ trang bằng cách cuộn và ghép nhiều ảnh lại.<br>
+        • <b>Screenshot (Element)</b> — chụp một element cụ thể theo selector.<br>
+        • <b>Screenshot → Variable (CSV)</b> — chụp ảnh và lưu tên file/base64 vào biến. Dùng trong CSV run để mỗi dòng dữ liệu có ảnh riêng.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Child Condition</span><span class="ch-title">Tìm phần tử con theo điều kiện</span></div><p class="ch-desc">Có thể dùng với <b>Click</b>, <b>Input</b>, <b>Hover</b>. Khi điền vào, trường <b>Selector</b> trở thành <b>phần tử cha</b>, extension tìm trong các con của nó một phần tử khớp điều kiện:<br>
+        • <b>value equals</b> — khớp <code>el.value === "..."</code> (input, select, checkbox)<br>
+        • <b>text contains</b> — khớp element có nội dung text chứa chuỗi (không phân biệt hoa thường)<br>
+        Để trống cả hai để tác động trực tiếp lên selector như bình thường.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">③ Value</span><span class="ch-title">Giá trị</span></div><p class="ch-desc">
         • <b>Input</b>: text sẽ được nhập vào field<br>
         • <b>Navigate</b>: URL đầy đủ, ví dụ <code>https://example.com/login</code><br>
-        • <b>Run JS</b>: code JavaScript (nhiều dòng được hỗ trợ)<br>
-        • <b>Screenshot</b>: tên file tuỳ chọn (bỏ trống = dùng prefix mặc định)<br><br>
+        • <b>Wait</b>: số ms cần chờ, ví dụ <code>2000</code> = 2 giây<br>
+        • <b>Run JS</b>: code JavaScript (hỗ trợ nhiều dòng)<br>
+        • <b>Screenshot</b>: tên file tuỳ chọn (bỏ trống = dùng prefix mặc định)<br>
+        • <b>Screenshot → Variable</b>: tên biến sẽ nhận giá trị filename, ví dụ <code>screenshotFile</code><br><br>
         Hỗ trợ biến động: <code>\${varName}</code> được thay thế bằng giá trị từ Variables table khi chạy.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">④ Delay</span><span class="ch-title">Thời gian chờ sau action</span></div><p class="ch-desc">Thời gian chờ (ms) <b>sau khi</b> action thực hiện xong trước khi chuyển sang action tiếp theo. Ví dụ: đặt <code>1000</code> để chờ 1 giây sau khi click submit để trang có thời gian phản hồi. Mặc định = 0 (không chờ).</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">⑤ Label</span><span class="ch-title">Nhãn ghi chú</span></div><p class="ch-desc">Tên hiển thị trong danh sách action để dễ nhận biết. Không ảnh hưởng đến việc thực thi. Ví dụ: <i>"Click nút đăng nhập"</i>, <i>"Nhập email"</i>.</p></div>
@@ -313,6 +330,7 @@ const CARD_HELP_DATA = {
         • <b>Click</b> — click the element. Toggles checked state for checkbox/radio.<br>
         • <b>Input</b> — set a value on a text input, textarea, or &lt;select&gt;. Fires <code>input</code> and <code>change</code> events automatically.<br>
         • <b>Hover</b> — simulate mouse hover (fires <code>mouseover</code> / <code>mouseenter</code> / <code>mousemove</code>).<br>
+        • <b>Open Dropdown</b> — open a dropdown via CDP trusted click. Use when a native dropdown does not respond to a regular JS click. Only a selector is needed; no value required.<br>
         • <b>Drag &amp; Drop</b> — drag the source element (Selector above) and drop it onto a target element.<br>
         • <b>Navigate</b> — go to a URL. Waits for <code>status: complete</code> before continuing.<br>
         • <b>Wait (ms)</b> — pause for a fixed number of milliseconds. No selector needed.<br>
@@ -323,7 +341,7 @@ const CARD_HELP_DATA = {
         • <b>Screenshot (Visible)</b> — capture the visible viewport.<br>
         • <b>Screenshot (Full Page)</b> — capture the entire page by scrolling and stitching tiles.<br>
         • <b>Screenshot (Element)</b> — capture a specific element by its selector.<br>
-        • <b>Screenshot → Variable (CSV)</b> — capture a screenshot and store the filename/base64 in a variable (useful for CSV export with images).</p></div>
+        • <b>Screenshot → Variable (CSV)</b> — capture a screenshot and store the filename/base64 in a named variable. Useful in CSV runs so each row gets its own screenshot reference.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Child Condition</span><span class="ch-title">Find child element by condition</span></div><p class="ch-desc">Available for <b>Click</b>, <b>Input</b>, <b>Hover</b>. When filled, the <b>Selector</b> field becomes the <b>parent container</b>, and the extension searches its children for one matching the condition:<br>
         • <b>value equals</b> — matches <code>el.value === "..."</code> (inputs, selects, checkboxes)<br>
         • <b>text contains</b> — matches elements whose text content contains the string (case-insensitive)<br>
@@ -333,7 +351,8 @@ const CARD_HELP_DATA = {
         • <b>Navigate</b>: full URL, e.g. <code>https://example.com/login</code><br>
         • <b>Wait</b>: milliseconds to pause, e.g. <code>2000</code> = 2 s<br>
         • <b>Run JS</b>: JavaScript code (multi-line supported)<br>
-        • <b>Screenshot</b>: optional filename (leave empty to use the default prefix)<br><br>
+        • <b>Screenshot</b>: optional filename (leave empty to use the default prefix)<br>
+        • <b>Screenshot → Variable</b>: variable name to receive the filename, e.g. <code>screenshotFile</code><br><br>
         Supports dynamic variables: <code>\${varName}</code> is replaced with the value from the Variables table at runtime.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">④ Delay</span><span class="ch-title">Post-action delay</span></div><p class="ch-desc">Wait time (ms) <b>after</b> the action completes before moving to the next action. E.g. <code>1000</code> = wait 1 s after clicking Submit to let the page respond. Default = 0 (no wait).</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">⑤ Label</span><span class="ch-title">Label / note</span></div><p class="ch-desc">Display name shown in the action list for easy identification. Does not affect execution. E.g. <i>"Click login button"</i>, <i>"Enter email"</i>.</p></div>
@@ -471,7 +490,8 @@ const CARD_HELP_DATA = {
         • Hỗ trợ dấu phẩy hoặc dấu chấm phẩy làm dấu phân cách<br>
         • Preview hiển thị số dòng sau khi chọn file</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">③ Delay giữa các lần chạy</span><span class="ch-title">Thời gian chờ</span></div><p class="ch-desc">Thời gian chờ giữa mỗi lần chạy (mỗi dòng CSV). Mặc định 1s. Tăng delay nếu website cần thời gian để xử lý mỗi request. Biến từ <b>Variables table</b> được merge với biến CSV — biến CSV có <b>độ ưu tiên cao hơn</b> (override) nếu cùng tên.</p></div>
-      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">▶ Start CSV Run</span><span class="ch-title">Bắt đầu chạy</span></div><p class="ch-desc">Chạy scenario lần lượt cho từng dòng. Thanh trạng thái hiển thị tiến trình <i>"Row X / Y"</i>. Nhấn <b>■ Stop</b> để dừng sau dòng hiện tại hoàn thành. Nếu gặp lỗi ở một dòng, extension tiếp tục dòng kế tiếp (không dừng toàn bộ).</p></div>`,
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">▶ Start CSV Run</span><span class="ch-title">Bắt đầu chạy</span></div><p class="ch-desc">Chạy scenario lần lượt cho từng dòng. Thanh trạng thái hiển thị tiến trình <i>"Row X / Y"</i>. Nhấn <b>■ Stop</b> để dừng sau dòng hiện tại hoàn thành. Nếu gặp lỗi ở một dòng, extension tiếp tục dòng kế tiếp (không dừng toàn bộ).</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Screenshot → Variable (CSV)</span><span class="ch-title">Chụp ảnh trong CSV run</span></div><p class="ch-desc">Dùng action <b>Screenshot → Variable</b> trong scenario để chụp ảnh cho từng dòng dữ liệu. Tên file ảnh được lưu vào biến đã đặt tên (ví dụ: <code>\${screenshotFile}</code>). Khi export kết quả CSV, cột biến đó chứa tên file ảnh tương ứng với từng dòng. Có 3 chế độ chụp: Visible (viewport), Full Page, hoặc Element (theo selector).</p></div>`,
     en: `
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">How it works</span><span class="ch-title">Overview</span></div><p class="ch-desc">Run <b>1 scenario</b> multiple times, each time using data from <b>1 CSV row</b>. Ideal for: bulk form filling, multi-dataset testing, creating multiple accounts, importing data from a spreadsheet…</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">① Select Scenario</span><span class="ch-title">Scenario must use variables</span></div><p class="ch-desc">Select a scenario designed to use <code>\${varName}</code> in selector/value/URL/code. E.g. an Input action with value = <code>\${email}</code>, or a Navigate action with URL = <code>https://example.com/user/\${userId}</code>.</p></div>
@@ -484,11 +504,12 @@ const CARD_HELP_DATA = {
         • Supports comma or semicolon as delimiter<br>
         • A preview shows the row count after selecting a file</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">③ Delay between runs</span><span class="ch-title">Wait time</span></div><p class="ch-desc">Wait time between each run (each CSV row). Default is 1s. Increase if the website needs time to process each request. Variables from the <b>Variables table</b> are merged with CSV variables — CSV variables have <b>higher priority</b> (override) if names conflict.</p></div>
-      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">▶ Start CSV Run</span><span class="ch-title">Start</span></div><p class="ch-desc">Runs the scenario for each row in order. The status bar shows progress <i>"Row X / Y"</i>. Click <b>■ Stop</b> to stop after the current row completes. If a row fails, the extension continues with the next row (does not abort the entire run).</p></div>`
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">▶ Start CSV Run</span><span class="ch-title">Start</span></div><p class="ch-desc">Runs the scenario for each row in order. The status bar shows progress <i>"Row X / Y"</i>. Click <b>■ Stop</b> to stop after the current row completes. If a row fails, the extension continues with the next row (does not abort the entire run).</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">Screenshot → Variable (CSV)</span><span class="ch-title">Per-row screenshots</span></div><p class="ch-desc">Add a <b>Screenshot → Variable</b> action in your scenario to capture a screenshot for each CSV row. The filename is saved to the named variable (e.g. <code>\${screenshotFile}</code>). When you export the CSV results, that variable column holds the screenshot filename for each row. Three capture modes are available: Visible (viewport), Full Page, or Element (by selector).</p></div>`
   }
 };
 
-let _cardHelpLang = 'vi';
+let _cardHelpLang = 'en';
 let _cardHelpKey = null;
 
 function _renderCardHelp() {
@@ -531,7 +552,7 @@ function openCardHelp(cardKey) {
   if (!data) return;
   _cardHelpKey = cardKey;
   chrome.storage.local.get('cardHelpLang', ({ cardHelpLang }) => {
-    _cardHelpLang = cardHelpLang || 'vi';
+    _cardHelpLang = cardHelpLang || 'en';
     _renderCardHelp();
   });
   _openModal('cardHelpModal', '#cardHelpClose');
@@ -766,8 +787,6 @@ let connectionRetryCount = 0;
 const MAX_CONNECTION_RETRIES = 5;
 let connectionCheckInterval = null;
 
-// Check content script connection
-
 /* === Switch Case Builder === */
 let _switchCases = []; // [{ value, scenarioId, scenarioName }]
 
@@ -807,7 +826,7 @@ function renderSwitchCaseList(editingIdx = -1) {
         if (!grouped[fid]) grouped[fid] = [];
         grouped[fid].push({ id, name: s.name });
       });
-      // XSS-NEW-1: escape all user-controlled data inserted into innerHTML
+      // Scenario IDs and names come from user-authored storage — escape before innerHTML insertion.
       let optionsHtml = "";
       (grouped[""] || []).sort((a, b) => a.name.localeCompare(b.name)).forEach(s => {
         const sel = s.id === c.scenarioId ? " selected" : "";
@@ -862,7 +881,7 @@ function renderSwitchCaseList(editingIdx = -1) {
     } else {
       // ── View mode ──
       row.className = "sw-case-row-view";
-      // XSS-NEW-1: c.value and c.scenarioName are user-authored — escape before inserting into innerHTML
+      // c.value and c.scenarioName are user-authored — escape before inserting into innerHTML.
       const label = c.value === "__default__" ? "⬡ default" : `"${escHtml(c.value)}"`;
       row.innerHTML = `
         <span class="sw-case-label">${label}</span>
@@ -1019,7 +1038,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
-// Fix #6: notify user when an action fails during playback
+// Show an inline error toast whenever a playback action fails so the user knows
+// which step and why it failed without having to open DevTools.
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== "ACTION_FAILED") return;
   const label = msg.action?.type ? `[${msg.action.type}]` : "";
@@ -1033,7 +1053,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   showToast(`🔀 Switch [${msg.caseLabel}] → "${msg.scenarioName}"`, "success");
 });
 
-// Fix #10: notify user on storage warnings / errors
+// Surface storage quota warnings/errors as toasts so users know to export old
+// scenarios before the extension starts failing silently on writes.
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "STORAGE_WARNING") {
     const pct = Math.round((msg.bytes / msg.limit) * 100);
@@ -1121,7 +1142,7 @@ if (startRecordCompact) {
     // Query current tab directly to ensure we have the correct tabId
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tab = tabs[0];
-      if (!tab) return;
+      if (!tab) { showToast("Không tìm thấy tab hiện tại", "error"); return; }
 
       const tabId = tab.id;
 
@@ -1131,8 +1152,8 @@ if (startRecordCompact) {
           target: { tabId: tabId },
           files: ["content.js"]
         });
-      } catch (err) {
-        console.log("Content script already injected or error:", err);
+      } catch (_) {
+        // Content script already injected — expected
       }
 
       // Add to activated tabs if not already
@@ -1141,7 +1162,6 @@ if (startRecordCompact) {
         chrome.storage.local.set({ activatedTabs: Array.from(activatedTabs) });
       }
 
-      // Start recording
       chrome.runtime.sendMessage({ type: "START_RECORD", tabId });
       window.close(); // Close popup so recording can proceed
     });
@@ -1549,7 +1569,6 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
 let currentTabId = null;
 let activatedTabs = new Set();
 
-// Load activated tabs from storage
 chrome.storage.local.get(["activatedTabs"], (res) => {
   if (res?.activatedTabs) {
     activatedTabs = new Set(res.activatedTabs);
@@ -1619,7 +1638,6 @@ function checkTabActivation() {
       hideLockOverlay();
       if (compactView) compactView.classList.remove("hidden");
       document.body.dataset.activation = 'active';
-      // Start connection checking
       connectionRetryCount = 0;
       startConnectionCheck();
     } else {
@@ -1632,7 +1650,6 @@ function checkTabActivation() {
       showLockOverlay('data', 'inactive');
       if (compactView) compactView.classList.add("hidden");
       document.body.dataset.activation = 'inactive';
-      // Stop connection checking
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval);
         connectionCheckInterval = null;
@@ -1666,9 +1683,9 @@ if (activateTab) {
         activationStatus.style.color = "var(--success)";
         setTimeout(() => checkTabActivation(), 1500);
       } catch (err) {
-        console.error("Failed to activate:", err);
         activationStatus.textContent = "❌ Activation failed";
         activationStatus.style.color = "var(--danger)";
+        showToast("✗ Kích hoạt tab thất bại", "error");
       }
     });
   });
@@ -1693,11 +1710,9 @@ if (deactivateTab) {
       const tab = tabs[0];
       if (!tab) return;
 
-      // Remove from activated tabs
       activatedTabs.delete(tab.id);
       chrome.storage.local.set({ activatedTabs: Array.from(activatedTabs) });
 
-      // Stop connection checking
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval);
         connectionCheckInterval = null;
@@ -1706,9 +1721,8 @@ if (deactivateTab) {
         connectionStatus.textContent = "";
       }
 
-      // Reload the tab to remove the content script
+      // Reload the tab to unload the content script.
       chrome.tabs.reload(tab.id, () => {
-        // Update UI after reload starts
         checkTabActivation();
       });
     });
@@ -1729,7 +1743,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 startRecord.addEventListener('click', async () => {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     const tab = tabs[0];
-    if (!tab) return;
+    if (!tab) { showToast("Không tìm thấy tab hiện tại", "error"); return; }
 
     const tabId = tab.id;
 
@@ -1738,8 +1752,8 @@ startRecord.addEventListener('click', async () => {
         target: { tabId: tabId },
         files: ["content.js"]
       });
-    } catch (err) {
-      console.log("Content script already injected or error:", err);
+    } catch (_) {
+      // Content script already injected — expected
     }
 
     if (!activatedTabs.has(tabId)) {
@@ -1756,7 +1770,7 @@ startRecord.addEventListener('click', async () => {
 stopRecord.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: "STOP_RECORD" }, (res) => {
     if (chrome.runtime.lastError) {
-      console.error("STOP_RECORD:", chrome.runtime.lastError.message);
+      showToast("✗ Không thể dừng ghi: " + chrome.runtime.lastError.message, "error");
       return;
     }
     if (res?.scenarioId && scenarioList) {
@@ -1922,6 +1936,8 @@ function createActionListItem(a, i, scenarioId) {
 function previewActions() {
   const scenarioId = scenarioList.value || null;
   const savedScroll = actionsEl.scrollTop;
+  // Increment before the async call; if another call starts before this response
+  // arrives, currentRequestId will be stale and we discard the late response.
   const currentRequestId = ++previewRequestId;
 
   actionsEl.innerHTML = '<li class="action-loading">Loading…</li>';
@@ -2219,7 +2235,6 @@ pickElement.addEventListener('click', () => {
 
     const type = pickerMode ? "START_PICK_MODE" : "STOP_PICK_MODE";
 
-    // Send to content script
     safeSendTabMessage(tab.id, { type });
 
     // Notify background to update badge for this tab
@@ -2268,7 +2283,7 @@ function autoCreateMissingVariables(action) {
     newVars.forEach(n => { merged[n] = ''; });
     chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: merged }, () => {
       newVars.forEach(n => addVariableRow(n, ''));
-      showToast(`Đã tự động tạo variable: ${newVars.join(', ')}`, 'success');
+      showToast(`Auto-created variables: ${newVars.join(', ')}`, 'success');
     });
   });
 }
@@ -2905,7 +2920,6 @@ function restoreDraft(draft) {
 // Save draft continuously (debounced) so Chrome popup close doesn't lose async writes
 const debouncedSaveDraft = debounce(saveDraft, 600);
 
-// Attach to all manual form inputs
 [
   "manualActionType", "selectorType", "manualSelector",
   "manualValue", "manualDelayPreset", "manualDelay", "manualLabel",
@@ -2946,10 +2960,12 @@ saveFlow.addEventListener('click', () => {
   );
   const originalCreatedAt = existing ? existing[1].createdAt : undefined;
 
-  chrome.runtime.sendMessage({ type: "SAVE_SCENARIO", name, folderId, originalCreatedAt }, () => {
+  chrome.runtime.sendMessage({ type: "SAVE_SCENARIO", name, folderId, originalCreatedAt }, (res) => {
     scenarioName.value = "";
     scenarioFolder.value = "";
     loadScenarios();
+    if (res?.success) showToast("✓ Đã lưu scenario", "success");
+    else showToast("✗ Lưu scenario thất bại", "error");
   });
 });
 
@@ -3029,7 +3045,6 @@ function renderScenarioOptions() {
     grouped[key].push(item);
   });
 
-  // Render grouped scenarios for scenarioList
   const folderKeys = Object.keys(grouped).sort((a, b) => {
     if (a === "__none__") return 1;
     if (b === "__none__") return -1;
@@ -3042,7 +3057,6 @@ function renderScenarioOptions() {
     const items = grouped[folderId];
     const folderName = folderId === "__none__" ? "No Folder" : foldersCache[folderId]?.name || "Unknown";
 
-    // Add folder header (optgroup)
     const optgroup = document.createElement("optgroup");
     optgroup.label = folderName;
     scenarioList.appendChild(optgroup);
@@ -3107,7 +3121,6 @@ function renderSequenceScenarioList() {
     grouped[key].push(item);
   });
 
-  // Render filtered scenarios with folder grouping
   const folderKeys = Object.keys(grouped).sort((a, b) => {
     if (a === "__none__") return 1;
     if (b === "__none__") return -1;
@@ -3361,6 +3374,7 @@ function renderFoldersManagementUI() {
         }
         chrome.runtime.sendMessage({ type: "RENAME_FOLDER", folderId: currentFolderId, name: newName }, () => {
           loadScenarios(); // Refresh caches and all folder-dependent UI immediately
+          showToast("✓ Đã đổi tên thư mục", "success");
         });
       } else {
         // Edit mode
@@ -3386,6 +3400,7 @@ function renderFoldersManagementUI() {
       showConfirm(`Delete folder "${folder.name}"? Scenarios will be moved to "No Folder"`, () => {
         chrome.runtime.sendMessage({ type: "DELETE_FOLDER", folderId }, () => {
           loadScenarios(); // Refresh caches after delete so lists update instantly
+          showToast("✓ Đã xóa thư mục", "success");
         });
       }, { title: 'Delete Folder', danger: true });
     };
@@ -3409,6 +3424,7 @@ if (createFolderAction) {
     chrome.runtime.sendMessage({ type: "CREATE_FOLDER", name }, () => {
       newFolderInput.value = "";
       loadScenarios(); // Reload to reflect new folder everywhere without reopening popup
+      showToast("✓ Đã tạo thư mục", "success");
     });
   };
 }
@@ -3512,8 +3528,10 @@ if (duplicateScenarioBtn) {
   duplicateScenarioBtn.onclick = () => {
     const scenarioId = scenarioList.value;
     if (!scenarioId) return;
-    chrome.runtime.sendMessage({ type: "DUPLICATE_SCENARIO", scenarioId }, () => {
+    chrome.runtime.sendMessage({ type: "DUPLICATE_SCENARIO", scenarioId }, (res) => {
       loadScenarios();
+      if (res?.success) showToast("✓ Đã nhân bản scenario", "success");
+      else showToast("✗ Nhân bản thất bại", "error");
     });
   };
 }
@@ -3527,6 +3545,7 @@ deleteScenario.onclick = () => {
   showConfirm("Delete this scenario?", () => {
     chrome.runtime.sendMessage({ type: "DELETE_SCENARIO", scenarioId }, () => {
       actionsEl.innerHTML = "";
+      showToast("✓ Đã xóa scenario", "success");
       // If the deleted scenario was the last selected scenario, remove persisted selection
       chrome.storage.local.get(["lastSelectedScenario"], (res) => {
         if (res?.lastSelectedScenario === scenarioId) {
@@ -3563,7 +3582,7 @@ exportScenario.onclick = () => {
   if (!scenarioId) return;
 
   chrome.runtime.sendMessage({ type: "EXPORT_SCENARIO", scenarioId }, (res) => {
-    if (!res?.scenario) return;
+    if (!res?.scenario) { showToast("✗ Xuất scenario thất bại", "error"); return; }
 
     const blob = new Blob([JSON.stringify(res.scenario, null, 2)], {
       type: "application/json",
@@ -3575,6 +3594,7 @@ exportScenario.onclick = () => {
     a.download = `${res.scenario.name}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    showToast(`✓ Đã xuất "${res.scenario.name}"`, "success");
   });
 };
 
@@ -3586,7 +3606,7 @@ if (exportFolder) {
 
     chrome.runtime.sendMessage({ type: 'EXPORT_FOLDER', folderId }, (res) => {
       const folderData = res?.folder;
-      if (!folderData) return;
+      if (!folderData) { showToast("✗ Xuất thư mục thất bại", "error"); return; }
       const nameSafe = (folderData.name || 'folder').replace(/\s+/g, '-');
       const blob = new Blob([JSON.stringify(folderData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -3595,6 +3615,7 @@ if (exportFolder) {
       a.download = `folder-${nameSafe}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      showToast(`✓ Đã xuất thư mục "${folderData.name}"`, "success");
     });
   };
 }
@@ -3629,7 +3650,7 @@ importScenario.onclick = () => {
   reader.readAsText(file);
 };
 
-/* === BACKUP / RESTORE ALL DATA (Fix #12) === */
+/* === BACKUP / RESTORE ALL DATA === */
 
 const backupAllBtn = document.getElementById("backupAll");
 const restoreAllBtn = document.getElementById("restoreAll");
@@ -3894,11 +3915,13 @@ saveSequenceAsScenario.onclick = () => {
       name,
       runList: runList,
     },
-    () => {
+    (res) => {
       sequenceName.value = "";
       runList = [];
       updateRunListDisplay();
       loadScenarios();
+      if (res?.success) showToast("✓ Đã lưu thành scenario", "success");
+      else showToast("✗ Lưu thất bại", "error");
     }
   );
 };
@@ -4313,6 +4336,9 @@ function _startCsvCountdown(delayMs) {
   }, 1000);
 
   if (cdBar) {
+    // Reset to full-width with no transition first, then apply the transition on the
+    // next two rAF ticks so the browser has committed the reset paint before the
+    // shrink animation begins. A single rAF is not always enough on Chrome.
     cdBar.style.transition = "none";
     cdBar.style.width = "100%";
     requestAnimationFrame(() => requestAnimationFrame(() => {

@@ -1,16 +1,29 @@
 /**
- * variables.js — Variables table management & random generator
+ * variables.js — Variables table management and random-value generator.
+ *
+ * Random variables are stored with the sentinel value `{random:type:len}` (e.g.
+ * `{random:alphanumeric:8}`). The background service resolves this token at
+ * playback time via `resolveRandomVars`, so a fresh random value is generated
+ * for each run rather than being fixed at save time.
+ *
  * Exports: addVariableRow, loadVariables, getVariablesFromTable, findEmptyRow, initVariables
  */
 
 import { showToast, lockScroll, unlockScroll } from './utils.js';
 
-/* === Table Helpers === */
-
 function getTableBody() {
   return document.getElementById('variablesTableBody');
 }
 
+/**
+ * Append a key/value row to the variables table.
+ * If the table already has a completely empty row and both `key` and `value`
+ * are provided, that row is reused instead of adding a new one — prevents
+ * duplicate blank rows when loading an initial empty state.
+ *
+ * Row HTML is built via the DOM API (not innerHTML) to prevent XSS from
+ * untrusted key/value strings loaded from storage.
+ */
 export function addVariableRow(key = '', value = '') {
   const tbody = getTableBody();
   if (!tbody) return;
@@ -59,6 +72,7 @@ export function addVariableRow(key = '', value = '') {
   tbody.appendChild(row);
 }
 
+/** Return the first table row whose key and value inputs are both blank, or null. */
 export function findEmptyRow() {
   const tbody = getTableBody();
   if (!tbody) return null;
@@ -70,6 +84,7 @@ export function findEmptyRow() {
   return null;
 }
 
+/** Read all non-empty key/value pairs from the table into a plain object. */
 export function getVariablesFromTable() {
   const tbody = getTableBody();
   const result = {};
@@ -82,6 +97,7 @@ export function getVariablesFromTable() {
   return result;
 }
 
+/** Fetch variables from the background and repopulate the table. */
 export function loadVariables() {
   chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, (res) => {
     const tbody = getTableBody();
@@ -93,12 +109,15 @@ export function loadVariables() {
   });
 }
 
-/* === Modal helpers === */
-
 let _editingRow  = null;
 let _focusTimer  = null;
 let _triggerEl   = null;
 
+/**
+ * Open the random-variable generator modal.
+ * When `editRow` is a table row, the modal pre-fills from that row and saves
+ * back to it on confirm. When null, the modal creates a new row.
+ */
 function _openModal(editRow = null) {
   _triggerEl = document.activeElement;
   const modal      = document.getElementById('randomModal');
@@ -132,6 +151,9 @@ function _openModal(editRow = null) {
   modal?.classList.add('show');
   lockScroll();
   clearTimeout(_focusTimer);
+  // Defer focus by one rAF-equivalent tick so the modal's CSS transition has
+  // started and the element is visible before focus is applied; some browsers
+  // silently ignore focus() on an element whose display is still 'none'.
   _focusTimer = setTimeout(() => {
     _focusTimer = null;
     if (!document.getElementById('randomModal')?.classList.contains('show')) return;
@@ -155,8 +177,7 @@ function _closeModal() {
   unlockScroll();
 }
 
-/* === Init === */
-
+/** Attach all variable-panel event listeners and load initial data from storage. */
 export function initVariables() {
   const addBtn       = document.getElementById('addVariableRow');
   const addRandomBtn = document.getElementById('addRandomVariable');
@@ -193,7 +214,9 @@ export function initVariables() {
 
   saveBtn?.addEventListener('click', () => {
     const vars = getVariablesFromTable();
-    chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: vars });
+    chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: vars }, () => {
+      showToast('✓ Variables saved', 'success');
+    });
   });
 
   reloadBtn?.addEventListener('click', () => loadVariables());

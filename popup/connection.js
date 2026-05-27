@@ -1,19 +1,26 @@
-/** connection.js — Content script connection check & status indicator */
+/**
+ * connection.js — Content script connectivity check and popup status indicator.
+ *
+ * Responsibilities:
+ *  - PING the content script on the active tab and auto-reinject on failure.
+ *  - Drive the "Now Playing" bar, mini panel, and progress bar based on
+ *    background playback/recording state polled via GET_EXTENSION_STATUS.
+ *  - Throttle the poll rate: 150 ms while active, 2 000 ms when idle.
+ */
 
 import { safeSendTabMessage, isEligibleTab } from './utils.js';
 import { state } from './state.js';
 
-/* === Constants === */
-
 const MAX_CONNECTION_RETRIES = 5;
-
-/* === Module-level Variables === */
 
 let _lastActiveState = false;
 let statusInterval = null;
 
-/* === Connection Check === */
-
+/**
+ * PING the content script on the current tab and update the connection badge.
+ * On failure, re-injects content.js up to MAX_CONNECTION_RETRIES times before
+ * marking the tab as disconnected and removing it from activatedTabs.
+ */
 export function checkContentScriptConnection() {
   const connectionStatus = document.getElementById('connectionStatus');
   const activateTab = document.getElementById('activateTab');
@@ -59,8 +66,7 @@ export function checkContentScriptConnection() {
   });
 }
 
-/* === Start Connection Polling === */
-
+/** Start (or restart) the 2 s connection health-check interval. */
 export function startConnectionCheck() {
   if (state.connectionCheckInterval) clearInterval(state.connectionCheckInterval);
   state.connectionRetryCount = 0;
@@ -68,9 +74,9 @@ export function startConnectionCheck() {
   state.connectionCheckInterval = setInterval(checkContentScriptConnection, 2000);
 }
 
-/* === Now Playing bar + mini panel (private) === */
-
 let _panelOpen = false;
+// Guards the "done" bar hold period: while true, the idle branch of
+// updateStatusIndicator must not call _setNowPlaying(false) and clear the bar.
 let _csvDoneActive = false;
 let _csvDoneTimeout = null;
 
@@ -148,8 +154,13 @@ function _setProgress(show, current, total) {
   }
 }
 
-/* === Adaptive Polling (private) === */
-
+/**
+ * Switch the status-poll interval based on whether the extension is active.
+ * 150 ms while recording/playing keeps the progress bar and step counter
+ * visually smooth. 2 000 ms when idle avoids unnecessary background CPU usage.
+ * Rate changes are applied only when the state actually transitions so we don't
+ * reset a running interval on every poll tick.
+ */
 function _scheduleNextPoll(isActive) {
   if (isActive === _lastActiveState) return;
   _lastActiveState = isActive;
@@ -157,8 +168,11 @@ function _scheduleNextPoll(isActive) {
   statusInterval = setInterval(updateStatusIndicator, isActive ? 150 : 2000);
 }
 
-/* === Status Indicator === */
-
+/**
+ * Poll GET_EXTENSION_STATUS once and sync all UI elements to the response:
+ * status dot, text badge, "Now Playing" bar, detail panel, and progress bar.
+ * Called on a recurring interval managed by `_scheduleNextPoll`.
+ */
 export function updateStatusIndicator() {
   const statusDot = document.getElementById('statusDot');
   const statusIndicator = document.getElementById('statusIndicator');
@@ -274,8 +288,18 @@ export function updateStatusIndicator() {
   });
 }
 
-/* === CSV done bar hold (3 min) === */
-
+/**
+ * Show the "CSV run complete" bar and hold it for 3 minutes.
+ *
+ * The 3-minute hold gives users time to read the summary, click into the
+ * results panel, or copy data before the bar auto-dismisses. It is intentionally
+ * longer than the active-playback poll interval (150 ms) — without the
+ * `_csvDoneActive` flag the idle branch of `updateStatusIndicator` would clear
+ * the bar on the very next poll tick.
+ *
+ * @param {string} scenarioName - Scenario label shown in the bar.
+ * @param {string} summary      - Short result string (e.g. "12 ok · 1 fail").
+ */
 export function setCsvDoneBar(scenarioName, summary) {
   _csvDoneActive = true;
   clearTimeout(_csvDoneTimeout);
@@ -292,6 +316,7 @@ export function setCsvDoneBar(scenarioName, summary) {
   }, 3 * 60 * 1000);
 }
 
+/** Imperatively dismiss the CSV done bar (e.g. when a new run starts). */
 export function clearCsvDoneBar() {
   _csvDoneActive = false;
   clearTimeout(_csvDoneTimeout);
@@ -302,8 +327,9 @@ export function clearCsvDoneBar() {
 
 export function openPbPanel() { _setPanelOpen(true); }
 
-/* === Init === */
-
+// Bootstrap: run an immediate poll and start the idle (2 s) interval.
+// The interval is later tightened to 150 ms by _scheduleNextPoll when playback
+// or recording is detected.
 const _statusIndicator = document.getElementById('statusIndicator');
 if (_statusIndicator) {
   updateStatusIndicator();

@@ -141,7 +141,7 @@ javascript:(async () => {
     // Step 1: navigate
     window.location.href = "https://example.com/login";
     ...
-  } catch (err) { alert('Lỗi: ' + err.message); }
+  } catch (err) { alert('Error: ' + err.message); }
 })();
 ```
 
@@ -415,3 +415,30 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 3. **Graceful degradation** — Failed actions are logged, not fatal; playback continues
 4. **Non-destructive** — Undo/redo for all edits; export before import
 5. **Explicit over magic** — No implicit retries or hidden variable scopes
+
+---
+
+## Code Quality Standards
+
+All source files follow a uniform comment policy enforced across the codebase:
+
+| Rule | Standard |
+|---|---|
+| **Language** | English only in all comments, JSDoc, and non-bilingual strings. Exception: the `{ vi, en }` bilingual data objects in `popup/main.js` help content. |
+| **Content** | Comments explain **WHY** — business rules, edge cases, workarounds, performance constraints, API limits, magic numbers. Never restate what the code already says. |
+| **JSDoc** | Required for all exported functions and non-trivial module-level functions (`@param`, `@returns`). |
+| **No audit refs** | No `// Fix #N`, `P0-E fix`, or `XSS-NEW-N` codes — replaced with descriptive context. |
+| **No dead code** | Commented-out code is deleted; use git history instead. |
+
+### Key Technical Constraints (WHY knowledge)
+
+These non-obvious system constraints are documented in source comments and should not be removed:
+
+- **CDP session serialization** — All CDP captures for the same tab are serialized through `_queueScreenshot` to prevent "Another debugger is already attached" errors from concurrent attach calls.
+- **`captureTabDouble` 80ms delay** — Discarding the first frame and waiting ~80ms lets the compositor finish before the stable second frame is captured.
+- **4000px CDP clip limit** — `Page.captureScreenshot` silently corrupts output beyond 4000px per dimension. Full-page captures tile in 4000px bands.
+- **Tile-via-CSS-transform** — Full-page stitching uses CSS transforms to position content (not `window.scroll`), avoiding fixed/sticky element repositioning artifacts.
+- **16384px OOM guard** — `OffscreenCanvas` allocations are capped at 16384px per side to stay within GPU driver limits.
+- **`_csvDoneActive` flag** — Guards the idle polling branch from clearing the 3-minute CSV done bar on the next poll tick after a CSV run completes.
+- **Double rAF** — CSS transition initialization requires two `requestAnimationFrame` ticks so the browser commits the reset paint before the shrink animation begins.
+- **`previewRequestId` guard** — Stale preview responses are discarded by comparing the request ID incremented before the async call against the module-level counter.

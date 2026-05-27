@@ -7,8 +7,6 @@
 
 import { showToast } from './utils.js';
 
-/* === Constants === */
-
 const DEFAULT_HOTKEYS = {
   startRecord:       'Alt+R',
   stopRecord:        'Alt+S',
@@ -22,10 +20,14 @@ const DEFAULT_HOTKEYS = {
   screenshotElement: 'Alt+E',
 };
 
-let capturingHotkey = null; // { id, btn }
+// Non-null while a hotkey "Set" button is active and awaiting a keydown.
+// Acts as a mutex: starting a new capture implicitly cancels any prior one.
+let capturingHotkey = null; // { id: string, btn: HTMLElement }
 
-/* === Range Fill === */
-
+/**
+ * Sync the `--pct` CSS custom property on a range slider so the track fill
+ * gradient can be styled in CSS as `linear-gradient(--pct, filled, empty)`.
+ */
 export function updateRangeFill(slider) {
   const min = parseFloat(slider.min) || 0;
   const max = parseFloat(slider.max) || 100;
@@ -33,8 +35,7 @@ export function updateRangeFill(slider) {
   slider.style.setProperty('--pct', pct.toFixed(2) + '%');
 }
 
-/* === Screenshot Settings === */
-
+/** Load screenshot and watermark settings from storage and populate the form. */
 export function loadScreenshotSettings() {
   chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
     const cb  = document.getElementById('screenshotCountdownEnabled');
@@ -77,8 +78,11 @@ export function loadScreenshotSettings() {
   });
 }
 
-/* === Hotkey Settings === */
-
+/**
+ * Convert a KeyboardEvent into a human-readable combo string (e.g. "Alt+Shift+P").
+ * Modifier-only keypresses (e.g. pressing just Alt) return an empty string because
+ * `parts` will contain only modifiers and no non-modifier key is pushed.
+ */
 export function formatKeyEvent(e) {
   const parts = [];
   if (e.ctrlKey)  parts.push('Ctrl');
@@ -92,6 +96,7 @@ export function formatKeyEvent(e) {
   return parts.join('+');
 }
 
+/** Load saved hotkeys from storage and update the display labels. */
 export function loadHotkeySettings() {
   chrome.storage.sync.get(['hotkeys'], (res) => {
     const h = { ...DEFAULT_HOTKEYS, ...(res.hotkeys || {}) };
@@ -108,6 +113,7 @@ export function loadHotkeySettings() {
   });
 }
 
+/** Abort an in-progress hotkey capture and restore the button to its idle state. */
 export function cancelHotkeyCapture() {
   if (!capturingHotkey) return;
   capturingHotkey.btn.textContent = 'Set';
@@ -115,8 +121,7 @@ export function cancelHotkeyCapture() {
   capturingHotkey = null;
 }
 
-/* === Notification Setting === */
-
+/** Load the "notify on complete" toggle and wire its change handler. */
 export function loadNotificationSetting() {
   chrome.storage.sync.get(['notifyOnComplete'], (res) => {
     const cb = document.getElementById('notifyOnComplete');
@@ -128,8 +133,7 @@ export function loadNotificationSetting() {
   });
 }
 
-/* === Init === */
-
+/** Wire all settings-panel event listeners and load initial values from storage. */
 export function initSettings() {
   /* --- Slider ↔ number sync --- */
   const sliderV  = document.getElementById('segScrollSpeedV');
@@ -220,8 +224,7 @@ export function initSettings() {
   loadNotificationSetting();
 }
 
-/* === Reload Settings from Storage === */
-
+/** Re-read all settings from storage and refresh the form (called after tab switch). */
 export function reloadSettings() {
   loadScreenshotSettings();
   loadHotkeySettings();

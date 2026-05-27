@@ -1,5 +1,11 @@
 /**
- * screenshots.js — Screenshot capture, segment capture, element picker, image diff
+ * screenshots.js — Screenshot button wiring, segment capture, element picker, image diff.
+ *
+ * This module is purely UI-side: it delegates all actual capture work to the
+ * background service worker via chrome.runtime.sendMessage. The popup closes
+ * itself (window.close) before long-running captures so Chrome doesn't suspend
+ * the popup context mid-flight.
+ *
  * Exports: initScreenshots
  */
 
@@ -8,6 +14,12 @@ import { updateRangeFill } from './settings.js';
 
 /* === Screenshot Capture === */
 
+/**
+ * Dispatch a screenshot capture message for the active tab.
+ * For the visible screenshot type, checks whether a countdown overlay should
+ * be shown in the page first (content script handles the timer, then triggers
+ * the actual capture via its own message after the countdown).
+ */
 function takeScreenshotWithCrop(msgType, crop = false) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tabId = tabs[0]?.id;
@@ -63,6 +75,12 @@ function startSegmentCapture(dir, crop = false) {
 
 /* === Element Screenshot Pick === */
 
+/**
+ * Enter element-pick mode so the user can click an element in the page.
+ * Sets a pending flag in local storage so the background can resume after the
+ * popup window is closed; sends both a content-script message (to show the
+ * pick overlay) and a background message (to register intent).
+ */
 function startElemShotPick(crop) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const tab = tabs[0];
@@ -129,8 +147,7 @@ function initDiff() {
   });
 }
 
-/* === Init === */
-
+/** Attach all screenshot button listeners and initialise the image-diff modal. */
 export function initScreenshots() {
   /* Screenshot buttons */
   document.getElementById('screenshotVisible') ?.addEventListener('click', () => takeScreenshotWithCrop('TAKE_SCREENSHOT'));

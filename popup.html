@@ -767,17 +767,17 @@
       <p class="settings-section-title" style="margin-top:12px;">Visible Screenshot — Countdown</p>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
         <input type="checkbox" id="screenshotCountdownEnabled" style="width:auto; margin:0; cursor:pointer;" />
-        Countdown before capture (để chụp được dropdown đang mở)
+        Countdown before capture (to keep dropdown open)
       </label>
       <div id="screenshotCountdownRow" style="display:none; align-items:center; gap:8px; margin-top:6px;">
-        <span style="font-size:12px; color:var(--muted); white-space:nowrap;">Đếm ngược</span>
+        <span style="font-size:12px; color:var(--muted); white-space:nowrap;">Seconds</span>
         <select id="screenshotCountdownSeconds" style="width:auto; margin:0; font-size:13px;">
-          <option value="3">3 giây</option>
-          <option value="5">5 giây</option>
-          <option value="10">10 giây</option>
+          <option value="3">3 seconds</option>
+          <option value="5">5 seconds</option>
+          <option value="10">10 seconds</option>
         </select>
       </div>
-      <span class="helper-text">Bật: nhấn hotkey/nút → đếm ngược → mở dropdown → tự chụp. Tắt: chụp ngay (mặc định).</span>
+      <span class="helper-text">On: press hotkey/button → countdown → open dropdown → auto capture. Off: capture immediately (default).</span>
 
       <p class="settings-section-title" style="margin-top:12px;">Watermark</p>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
@@ -971,8 +971,6 @@
             <div class="export-bm-header-sub" id="exportBmSub">scenario.js · 0 steps</div>
           </div>
           <div class="export-bm-header-actions">
-            <button class="export-bm-icon-btn" id="exportBmCopyHeader" title="Copy code">📋</button>
-            <button class="export-bm-icon-btn" id="exportBmDownloadHeader" title="Download">⬇</button>
             <button class="export-bm-icon-btn export-bm-icon-btn-danger" id="exportBmClose" aria-label="Close">✕</button>
           </div>
         </div>
@@ -981,6 +979,7 @@
       <div class="export-bm-tabs" role="tablist">
         <button class="export-bm-tab active" data-tab="preview" role="tab" aria-selected="true">Code</button>
         <button class="export-bm-tab" data-tab="variables" role="tab" aria-selected="false">Variables <span class="export-bm-tab-count" id="exportBmVarCount">0</span></button>
+        <button class="export-bm-tab" data-tab="actions" role="tab" aria-selected="false">Actions <span class="export-bm-tab-count" id="exportBmActCount">0</span></button>
         <button class="export-bm-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
       </div>
 
@@ -1005,6 +1004,12 @@
       <div id="exportBmTabVariables" class="export-bm-tab-panel" hidden>
         <div id="exportBmNoVars" class="export-bm-no-vars">No variables defined</div>
         <div id="exportBmVarList"></div>
+      </div>
+
+      <!-- Tab: Actions Review -->
+      <div id="exportBmTabActions" class="export-bm-tab-panel" hidden>
+        <div class="export-bm-act-summary" id="exportBmActSummary"></div>
+        <div id="exportBmActList"></div>
       </div>
 
       <!-- Tab: Settings -->
@@ -1032,7 +1037,8 @@
       <div class="export-bm-stats-row">
         <div class="export-bm-stat-pill"><span class="export-bm-dot dot-blue"></span><span id="exportBmStatSteps">0 steps</span></div>
         <div class="export-bm-stat-pill"><span class="export-bm-dot dot-green"></span><span id="exportBmStatVars">0 variables</span></div>
-        <div class="export-bm-stat-pill" id="exportBmStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportBmStatSkipped">0 skipped</span></div>
+        <div class="export-bm-stat-pill" id="exportBmStatWarnPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportBmStatWarn">0 verify</span></div>
+        <div class="export-bm-stat-pill" id="exportBmStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-red"></span><span id="exportBmStatSkipped">0 skipped</span></div>
       </div>
 
       <div class="export-bm-footer">
@@ -1060,8 +1066,6 @@
             <div class="export-bm-header-sub" id="exportSeleniumSub">scenario.py · 0 steps</div>
           </div>
           <div class="export-bm-header-actions">
-            <button class="export-bm-icon-btn" id="exportSeleniumCopyHeader" title="Copy code">📋</button>
-            <button class="export-bm-icon-btn" id="exportSeleniumDownloadHeader" title="Download">⬇</button>
             <button class="export-bm-icon-btn export-bm-icon-btn-danger" id="exportSeleniumClose" aria-label="Close">✕</button>
           </div>
         </div>
@@ -1070,6 +1074,7 @@
       <div class="export-bm-tabs" role="tablist">
         <button class="export-py-tab active" data-tab="preview" role="tab" aria-selected="true">Code</button>
         <button class="export-py-tab" data-tab="variables" role="tab" aria-selected="false">Variables <span class="export-bm-tab-count" id="exportSeleniumVarCount">0</span></button>
+        <button class="export-py-tab" data-tab="actions" role="tab" aria-selected="false">Actions <span class="export-bm-tab-count" id="exportSeleniumActCount">0</span></button>
         <button class="export-py-tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
       </div>
 
@@ -1096,6 +1101,12 @@
         <div id="exportSeleniumVarList"></div>
       </div>
 
+      <!-- Tab: Actions Review -->
+      <div id="exportSeleniumTabActions" class="export-bm-tab-panel" hidden>
+        <div class="export-bm-act-summary" id="exportSeleniumActSummary"></div>
+        <div id="exportSeleniumActList"></div>
+      </div>
+
       <!-- Tab: Settings -->
       <div id="exportSeleniumTabSettings" class="export-bm-tab-panel" hidden>
         <div class="export-bm-setting-row">
@@ -1103,9 +1114,10 @@
             Starting URL
             <small>Initial page to navigate to</small>
           </div>
-          <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;">
+          <div style="display:flex;gap:5px;align-items:center;flex-shrink:0;">
+            <span class="export-bm-url-from-tab" id="exportSeleniumUrlFromTab" style="display:none;">📍 Current tab</span>
             <input type="url" id="exportSeleniumStartUrl" class="export-bm-setting-input" placeholder="https://…" style="width:130px;" />
-            <button id="exportSeleniumGetUrl" class="export-bm-icon-btn" title="Lấy URL tab hiện tại" style="font-size:11px;">⊕</button>
+            <button id="exportSeleniumGetUrl" class="export-bm-icon-btn" title="Get URL from current tab" style="font-size:11px;">🔄</button>
           </div>
         </div>
         <div class="export-bm-setting-row">
@@ -1140,7 +1152,8 @@
       <div class="export-bm-stats-row">
         <div class="export-bm-stat-pill"><span class="export-bm-dot dot-blue"></span><span id="exportSeleniumStatSteps">0 steps</span></div>
         <div class="export-bm-stat-pill"><span class="export-bm-dot dot-green"></span><span id="exportSeleniumStatVars">0 variables</span></div>
-        <div class="export-bm-stat-pill" id="exportSeleniumStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportSeleniumStatSkipped">0 skipped</span></div>
+        <div class="export-bm-stat-pill" id="exportSeleniumStatWarnPill" style="display:none;"><span class="export-bm-dot dot-orange"></span><span id="exportSeleniumStatWarn">0 verify</span></div>
+        <div class="export-bm-stat-pill" id="exportSeleniumStatSkippedPill" style="display:none;"><span class="export-bm-dot dot-red"></span><span id="exportSeleniumStatSkipped">0 skipped</span></div>
       </div>
 
       <div class="export-bm-footer">

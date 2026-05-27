@@ -1,6 +1,11 @@
 /**
- * init.js — Main entry point for popup UI
- * Imports all modules and orchestrates initialization
+ * init.js — Popup bootstrap: imports all feature modules and runs their init functions.
+ *
+ * Execution order matters:
+ *  1. initHeaderSpacer / initTabs — structural layout must be ready before content renders.
+ *  2. initTheme — applies before any elements render to avoid flash of wrong theme.
+ *  3. Feature modules (screenshots, variables, settings, main, exports) — order is independent.
+ *  4. startConnectionCheck — starts the PING interval after UI is ready.
  */
 
 import { applyTheme, initTheme } from './theme.js';
@@ -12,8 +17,12 @@ import { initMain } from './main.js';
 import { initExportBookmarklet } from './export-bookmarklet.js';
 import { initExportSelenium } from './export-selenium.js';
 
-/* === Header Spacer Sync === */
-
+/**
+ * Keep a spacer div below the sticky header the same height as the header.
+ * The sticky header changes height when recording/playback badges appear, so
+ * a MutationObserver re-measures on every structural or style change to prevent
+ * content from being obscured behind the header.
+ */
 function initHeaderSpacer() {
   const header = document.querySelector('.sticky-header');
   const spacer = document.getElementById('headerSpacer');
@@ -26,8 +35,6 @@ function initHeaderSpacer() {
   });
   window.addEventListener('resize', sync);
 }
-
-/* === Tab Navigation === */
 
 function initTabs() {
   const tabNav = document.getElementById('tabNav');
@@ -106,8 +113,6 @@ function initTabs() {
     switchTab(target);
   });
 }
-
-/* === Bootstrap === */
 
 initHeaderSpacer();
 initTabs();

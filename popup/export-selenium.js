@@ -1,5 +1,15 @@
 /**
- * export-selenium.js — Convert a Scenario to standalone Selenium Python code
+ * export-selenium.js — Convert a recorded scenario into standalone Selenium Python code.
+ *
+ * Generates a complete, runnable `.py` file using `selenium`, `WebDriverWait`,
+ * and `expected_conditions`. Each action type is mapped to its most idiomatic
+ * Selenium equivalent; `switch` actions are skipped with a comment because they
+ * require extension-level scenario routing.
+ *
+ * Variable handling mirrors the bookmarklet generator: static variables become
+ * `str` assignments; `{random:type:len}` variables expand to `random.choices()`
+ * calls; `readdom` variables are declared as empty strings and filled at run time.
+ *
  * Exports: generateSeleniumPy, initExportSelenium
  */
 
@@ -335,8 +345,17 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 }
 
 /**
- * generateSeleniumPy(scenarioName, actions, variables, opts)
- * Returns { code: string, stats: object }
+ * Generate a complete Selenium Python script for the given scenario.
+ *
+ * @param {string}   scenarioName      - Human-readable name used in comments/print.
+ * @param {object[]} actions           - Scenario action array; disabled actions are skipped.
+ * @param {object}   variables         - Key/value pairs; random specs expand at run time.
+ * @param {object}   opts
+ * @param {number}   opts.stepDelay    - Default inter-step `time.sleep()` in ms (default 500).
+ * @param {number}   opts.elTimeout    - `WebDriverWait` timeout in ms (default 10000).
+ * @param {string}   opts.driverType   - Selenium driver class name, e.g. "Chrome" (default).
+ * @param {string}   opts.startUrl     - Initial `driver.get()` URL when first action is not navigate.
+ * @returns {{ code: string, stats: { total, supported, skipped, hasScript, hasScreenshot } }}
  */
 export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 500, elTimeout = 10000, driverType = 'Chrome', startUrl = '' } = opts;
@@ -460,6 +479,7 @@ let _currentActions      = [];
 let _currentVariables    = {};
 let _releaseFocus        = null;
 
+/** Wire the export-Selenium modal trigger and all modal-internal buttons. */
 export function initExportSelenium() {
   const triggerBtn = document.getElementById('exportSelenium');
   if (!triggerBtn) return;
@@ -468,9 +488,7 @@ export function initExportSelenium() {
   document.getElementById('exportSeleniumClose')?.addEventListener('click', _close);
   document.getElementById('exportSeleniumCancel')?.addEventListener('click', _close);
   document.getElementById('exportSeleniumCopy')?.addEventListener('click', _copy);
-  document.getElementById('exportSeleniumCopyHeader')?.addEventListener('click', _copy);
   document.getElementById('exportSeleniumDownload')?.addEventListener('click', _download);
-  document.getElementById('exportSeleniumDownloadHeader')?.addEventListener('click', _download);
   document.getElementById('exportSeleniumRegenerate')?.addEventListener('click', _regenerate);
   document.getElementById('exportSeleniumGetUrl')?.addEventListener('click', _fillCurrentUrl);
 
@@ -501,7 +519,7 @@ export function initExportSelenium() {
 function _onTrigger() {
   const sel        = document.getElementById('exportCodeSelect');
   const scenarioId = sel?.value;
-  if (!scenarioId) { showToast('Chọn một scenario trước', 'error'); return; }
+  if (!scenarioId) { showToast('Please select a scenario first', 'error'); return; }
 
   _currentScenarioName = sel.options[sel.selectedIndex]?.text || 'Scenario';
 
@@ -532,6 +550,20 @@ function _openModal(scenarioName, actions, variables) {
   const modal = document.getElementById('exportSeleniumModal');
   if (!modal) return;
 
+  // Auto-fill Starting URL from current tab (if input is still empty)
+  const urlInput = document.getElementById('exportSeleniumStartUrl');
+  if (urlInput && !urlInput.value.trim()) {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const url = tabs?.[0]?.url || '';
+      if (url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://')) {
+        urlInput.value = url;
+        urlInput.dispatchEvent(new Event('input'));
+        const badge = document.getElementById('exportSeleniumUrlFromTab');
+        if (badge) badge.style.display = '';
+      }
+    });
+  }
+
   const result  = generateSeleniumPy(scenarioName, actions, variables, _getOpts());
   _currentCode  = result.code;
 
@@ -560,8 +592,8 @@ function _renderModal(scenarioName, result, variables) {
   const warning = document.getElementById('exportSeleniumWarning');
   const skipMsg  = document.getElementById('exportSeleniumSkipMsg');
   const msgs = [];
-  if (result.stats.skipped > 0)  msgs.push(`${result.stats.skipped} action bị bỏ qua (switch)`);
-  if (result.stats.hasScript)    msgs.push('script → driver.execute_script() — hãy kiểm tra lại');
+  if (result.stats.skipped > 0)  msgs.push(`${result.stats.skipped} action(s) skipped (switch)`);
+  if (result.stats.hasScript)    msgs.push('script → driver.execute_script() — please review');
   if (msgs.length > 0) {
     skipMsg.textContent  = msgs.join(' · ');
     warning.style.display = '';
@@ -599,11 +631,22 @@ function _renderModal(scenarioName, result, variables) {
     }
   }
 
+  // Actions review tab
+  const actStats = _renderActionsTab(_currentActions);
+
   // Stats pills
   const { supported, skipped } = result.stats;
   document.getElementById('exportSeleniumStatSteps').textContent = `${supported} steps`;
   document.getElementById('exportSeleniumStatVars').textContent  = `${vars.length} variables`;
+
+  const warnPill    = document.getElementById('exportSeleniumStatWarnPill');
   const skippedPill = document.getElementById('exportSeleniumStatSkippedPill');
+  if (actStats.warnCount > 0) {
+    document.getElementById('exportSeleniumStatWarn').textContent = `${actStats.warnCount} verify`;
+    warnPill.style.display = '';
+  } else {
+    warnPill.style.display = 'none';
+  }
   if (skipped > 0) {
     document.getElementById('exportSeleniumStatSkipped').textContent = `${skipped} skipped`;
     skippedPill.style.display = '';
@@ -628,6 +671,7 @@ function _switchTab(tab) {
   });
   document.getElementById('exportSeleniumTabPreview').hidden   = tab !== 'preview';
   document.getElementById('exportSeleniumTabVariables').hidden = tab !== 'variables';
+  document.getElementById('exportSeleniumTabActions').hidden   = tab !== 'actions';
   document.getElementById('exportSeleniumTabSettings').hidden  = tab !== 'settings';
 }
 
@@ -635,16 +679,15 @@ async function _copy() {
   if (!_currentCode) return;
   try {
     await navigator.clipboard.writeText(_currentCode);
-    for (const id of ['exportSeleniumCopy', 'exportSeleniumCopyHeader']) {
-      const btn = document.getElementById(id);
-      if (!btn) continue;
+    const btn = document.getElementById('exportSeleniumCopy');
+    if (btn) {
       const orig = btn.textContent;
       btn.textContent = '✓ Copied!';
       btn.classList.add('copied');
       setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
     }
   } catch {
-    showToast('Clipboard không khả dụng', 'error');
+    showToast('Clipboard not available', 'error');
   }
 }
 
@@ -663,20 +706,114 @@ function _regenerate() {
   _currentCode = result.code;
   _renderModal(_currentScenarioName, result, _currentVariables);
   _switchTab('preview');
-  showToast('Code đã được tạo lại');
+  showToast('Code regenerated');
 }
 
 function _fillCurrentUrl() {
   chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
     const url = tabs?.[0]?.url || '';
     if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) {
-      showToast('Không lấy được URL từ tab này', 'error');
+      showToast('Could not get URL from this tab', 'error');
       return;
     }
     const input = document.getElementById('exportSeleniumStartUrl');
     if (input) {
       input.value = url;
       input.dispatchEvent(new Event('input'));
+      const badge = document.getElementById('exportSeleniumUrlFromTab');
+      if (badge) badge.style.display = '';
     }
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIONS REVIEW TAB
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _ACT_TYPE_INFO = {
+  navigate:           { icon: '🌐', label: 'navigate',   cls: 'nav' },
+  click:              { icon: '👆', label: 'click',      cls: 'click' },
+  input:              { icon: '⌨',  label: 'input',      cls: 'input' },
+  hover:              { icon: '🖱',  label: 'hover',      cls: 'hover' },
+  dropdown:           { icon: '▼',  label: 'dropdown',   cls: 'click' },
+  dragdrop:           { icon: '↔',  label: 'dragdrop',   cls: 'dragdrop' },
+  wait:               { icon: '⏱',  label: 'wait',       cls: 'wait' },
+  script:             { icon: '📜', label: 'script',     cls: 'script' },
+  condition:          { icon: '🔀', label: 'condition',  cls: 'condition' },
+  screenshot:         { icon: '📷', label: 'screenshot', cls: 'screenshot' },
+  screenshot_full:    { icon: '📷', label: 'scr-full',   cls: 'screenshot' },
+  screenshot_element: { icon: '📷', label: 'scr-elem',   cls: 'screenshot' },
+  screenshot_tovar:   { icon: '📷', label: 'scr-var',    cls: 'screenshot' },
+  readdom:            { icon: '📖', label: 'readdom',    cls: 'readdom' },
+  switch:             { icon: '🔄', label: 'switch',     cls: 'wait' },
+};
+
+function _actionDesc(a) {
+  const sel = (a.selectors?.css
+    || (a.selectors?.id ? '#' + a.selectors.id : '')
+    || a.selector
+    || '').slice(0, 40);
+  switch (a.type) {
+    case 'navigate':  return (a.value || a.url || '').slice(0, 50);
+    case 'wait':      return `${a.delay ?? a.value ?? 1000} ms`;
+    case 'script':    return 'custom JS code';
+    case 'condition': return a.conditionType || 'condition';
+    case 'switch':    return `→ ${(a.scenario || a.value || '')}`.slice(0, 40);
+    case 'readdom':   return `${sel} → \${${a.varName || 'var'}}`;
+    case 'screenshot':
+    case 'screenshot_full':    return 'viewport';
+    case 'screenshot_element': return sel || 'element';
+    case 'screenshot_tovar':   return `→ \${${a.varName || 'screenshot'}}`;
+    case 'input': {
+      const v = a.value ? ` = "${String(a.value).slice(0, 15)}"` : '';
+      return `${sel}${v}`;
+    }
+    default: return sel;
+  }
+}
+
+function _renderActionsTab(actions) {
+  const listEl    = document.getElementById('exportSeleniumActList');
+  const summaryEl = document.getElementById('exportSeleniumActSummary');
+  if (!listEl || !summaryEl) return { okCount: 0, warnCount: 0, skipCount: 0 };
+
+  let okCount = 0, skipCount = 0, warnCount = 0;
+  let html = '';
+
+  // Selenium: only 'switch' is skipped; 'script' needs manual verification
+  const enabled = (actions || []).filter(a => !a.disabled);
+  enabled.forEach((a, i) => {
+    const info = _ACT_TYPE_INFO[a.type] || { icon: '●', label: a.type, cls: 'wait' };
+    const desc = _actionDesc(a);
+    let status, statusLabel, rowCls;
+    if (a.type === 'switch') {
+      status = 'skip'; statusLabel = '— Skip'; rowCls = 'row-skip'; skipCount++;
+    } else if (a.type === 'script') {
+      status = 'warn'; statusLabel = '⚠ Verify'; rowCls = 'row-warn'; warnCount++;
+    } else {
+      status = 'ok'; statusLabel = '✓ OK'; rowCls = ''; okCount++;
+    }
+    html += `<div class="export-bm-action-row ${rowCls}">
+      <span class="export-bm-action-step">${i + 1}</span>
+      <span class="export-bm-action-type abt-${info.cls}">${info.icon} ${info.label}</span>
+      <span class="export-bm-action-desc">${escHtml(desc)}</span>
+      <span class="export-bm-action-status ast-${status}">${statusLabel}</span>
+    </div>`;
+  });
+  listEl.innerHTML = html;
+
+  let sumHtml = '<span class="export-bm-act-sum-label">Will export:</span>';
+  sumHtml += `<span class="export-bm-act-sum-pill act-sum-ok">✓ ${okCount} OK</span>`;
+  if (warnCount) sumHtml += `<span class="export-bm-act-sum-pill act-sum-warn">⚠ ${warnCount} needs review</span>`;
+  if (skipCount) sumHtml += `<span class="export-bm-act-sum-pill act-sum-skip">— ${skipCount} skipped</span>`;
+  summaryEl.innerHTML = sumHtml;
+
+  const badge = document.getElementById('exportSeleniumActCount');
+  if (badge) {
+    const warnTotal = skipCount + warnCount;
+    badge.textContent = warnTotal > 0 ? `${warnTotal} ⚠` : String(enabled.length);
+    badge.className   = 'export-bm-tab-count' + (warnTotal > 0 ? ' warn' : '');
+  }
+
+  return { okCount, warnCount, skipCount };
 }

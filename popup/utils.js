@@ -1,6 +1,5 @@
 /**
- * utils.js
- * Common utility functions used across popup modules.
+ * utils.js — Common utility functions shared across popup modules.
  * Exports: escHtml, ACTION_ICONS, getActionIcon, showToast, lockScroll, unlockScroll,
  *          showConfirm, showAlert, validateNumberInput, safeSendTabMessage, isEligibleTab, debounce
  */
@@ -31,7 +30,8 @@ let _toastTimer = null;
 export function showToast(msg, type = 'success') {
   const toast = document.getElementById('toast');
   if (!toast) return;
-  // Errors should interrupt AT; success/info should not.
+  // Errors use aria-live="assertive" to interrupt screen reader announcements;
+  // success/info use "polite" so they don't cut off what the user is reading.
   toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
   toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
   toast.textContent = msg;
@@ -44,6 +44,8 @@ export function showToast(msg, type = 'success') {
 
 let _savedScrollY = 0;
 
+// Prevent the page from scrolling while a modal is open by positioning the
+// body at a negative top offset equal to the current scroll position.
 export function lockScroll() {
   _savedScrollY = document.body.scrollTop || window.scrollY || 0;
   document.body.style.top = `-${_savedScrollY}px`;
@@ -59,10 +61,18 @@ export function unlockScroll() {
   window.scrollTo(0, _savedScrollY);
 }
 
-/* === Focus Trap (for modal dialogs) === */
+/* === Focus Trap === */
 
+// Matches all interactive elements that can receive keyboard focus.
+// tabindex="-1" is deliberately excluded — those elements are not in the
+// natural tab order and should not be cycled through by the trap.
 const FOCUSABLE_SEL = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * Trap keyboard focus inside a modal element.
+ * Returns a cleanup function that removes the listener and restores focus to
+ * the element that was active before the trap was applied.
+ */
 export function trapFocus(modalEl) {
   const prevActive = document.activeElement;
   const getFocusable = () => Array.from(modalEl.querySelectorAll(FOCUSABLE_SEL))
@@ -108,6 +118,10 @@ function _closeModal(modal, releaseFocus, extra) {
   unlockScroll();
 }
 
+/**
+ * Show a confirm dialog backed by the shared #confirmModal element.
+ * Reuses a single DOM node to avoid stacking multiple overlays.
+ */
 export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel = '' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
@@ -126,6 +140,7 @@ export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false,
   okBtn.onclick = () => { close(); onConfirm(); };
 }
 
+/** Show an alert dialog (single OK button, no cancel). */
 export function showAlert(msg, { title = 'Notice' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
@@ -146,6 +161,7 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
 
 /* === Validation === */
 
+/** Validate a numeric input and visually flag it if invalid. */
 export function validateNumberInput(input, min = 0) {
   const value = parseInt(input.value, 10);
   if (input.value && (isNaN(value) || value < min)) {
@@ -161,6 +177,7 @@ export function validateNumberInput(input, min = 0) {
 
 /* === Tab Messaging === */
 
+/** Fire-and-forget message to a content script; swallows "no receiver" errors. */
 export function safeSendTabMessage(tabId, payload) {
   chrome.tabs.sendMessage(tabId, payload, () => {
     if (chrome.runtime.lastError) {
@@ -169,6 +186,11 @@ export function safeSendTabMessage(tabId, payload) {
   });
 }
 
+/**
+ * Returns true for tabs where the content script can run.
+ * chrome:// and chrome-extension:// URLs are restricted by Chrome's CSP and
+ * cannot receive scripting.executeScript or sendMessage calls.
+ */
 export function isEligibleTab(tab) {
   if (!tab?.url) return false;
   const url = tab.url;
@@ -192,11 +214,12 @@ export function debounce(fn, delay = 200) {
   };
 }
 
-/* === Variable usage scanning === */
+/* === Variable Usage Scanning === */
 
 /**
- * Returns the set of variable names (without ${}) that are actually referenced
- * in the given actions' string fields.
+ * Returns the set of variable names (without ${} delimiters) that are
+ * referenced in the given actions' string fields.
+ * Used to filter the variable table to only exported/used keys.
  */
 export function getUsedVarNames(actions) {
   const used = new Set();

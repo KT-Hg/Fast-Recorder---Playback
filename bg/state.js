@@ -4,7 +4,7 @@
  * Recording and CSV playback state is persisted to chrome.storage.session so it
  * survives SW suspend/restart within the same browser session.
  * CSV rows are stored in chrome.storage.local (not session) to avoid the 10 MB
- * session-storage quota on large CSVs.
+ * session-storage quota on large CSV files.
  */
 
 export const state = {
@@ -17,9 +17,9 @@ export const state = {
   undoStack: [],
   redoStack: [],
 
-  // Set at SW startup when a CSV run was interrupted mid-session.
-  // Exposed via GET_EXTENSION_STATUS so the popup can offer resume even if it
-  // was not open at the moment the SW restarted.
+  // Populated at SW startup when a CSV run was interrupted mid-session.
+  // Exposed via GET_EXTENSION_STATUS so the popup can offer resume even if
+  // it was not open when the SW restarted.
   csvInterrupted: null,
 
   playback: {
@@ -27,7 +27,7 @@ export const state = {
     tabId: null,
     scenarioId: null,
     scenarioName: null,
-    originalScenarioName: null,
+    originalScenarioName: null, // tracks pre-switch name for UI breadcrumb
     actionIndex: 0,
     totalActions: 0,
   },
@@ -48,7 +48,11 @@ export const state = {
 
 /* === CSV Rows Storage === */
 
-/** Save the full rows array to local storage so restoreCsvState can reload them after SW restart. */
+/**
+ * Persist the full rows array to local storage so restoreCsvState() can
+ * reload it after an SW restart.  Stored separately from the lightweight
+ * session checkpoint because large CSVs would exceed the 10 MB session quota.
+ */
 export function saveCsvRows(rows) {
   return new Promise((resolve) => {
     chrome.storage.local.set({ _csvRows: rows }, () => {
@@ -63,8 +67,9 @@ export function saveCsvRows(rows) {
 /* === CSV Playback State Persistence === */
 
 /**
- * Persist a lightweight CSV checkpoint (row index only — rows live in local storage).
- * Called before run starts, after each row, and on stop.
+ * Persist a lightweight CSV checkpoint (row index only — rows live in local
+ * storage).  Called before run starts, after each row, and on stop so an
+ * interrupted run can always be resumed from the last completed row.
  */
 export async function persistCsvState(scenarioId, currentRow, delayBetween, exportFormat) {
   if (!chrome.storage?.session) return;
@@ -75,7 +80,7 @@ export async function persistCsvState(scenarioId, currentRow, delayBetween, expo
   } catch (_) {}
 }
 
-/** Clear both the session checkpoint and the local-stored rows. */
+/** Remove both the session checkpoint and the locally-stored rows. */
 export async function clearCsvState() {
   const tasks = [];
   if (chrome.storage?.session) {
@@ -86,9 +91,13 @@ export async function clearCsvState() {
 }
 
 /**
- * Restore a CSV run from a previous SW session.
- * Returns null if no valid checkpoint exists, if rows are missing, or if the
- * checkpoint is older than 30 minutes (stale).
+ * Attempt to restore a CSV run from a previous SW session.
+ *
+ * Returns null if:
+ *  - No session storage available (< Chrome 102)
+ *  - No checkpoint exists
+ *  - Checkpoint is older than 30 minutes (stale — user likely closed the browser)
+ *  - Row data is missing from local storage
  */
 export async function restoreCsvState() {
   if (!chrome.storage?.session) return null;
@@ -113,6 +122,10 @@ export async function restoreCsvState() {
 
 /* === Recording State Persistence === */
 
+/**
+ * Snapshot current recording state to session storage so in-progress
+ * recordings survive the SW being suspended between user interactions.
+ */
 export async function persistRecordingState() {
   if (!chrome.storage?.session) return;
   try {
@@ -125,6 +138,11 @@ export async function persistRecordingState() {
   } catch (_) {}
 }
 
+/**
+ * Restore a recording session from the previous SW lifecycle.
+ * Notifies the popup via RECORDING_RESTORED so it can re-render the action list.
+ * Snapshots older than 30 minutes are silently discarded.
+ */
 export async function restoreRecordingState() {
   if (!chrome.storage?.session) return;
   try {
