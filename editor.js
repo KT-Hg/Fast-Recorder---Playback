@@ -159,7 +159,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   recalcFit();
 
   let zoomLevel = 1.0;
-  const MIN_ZOOM = 1.0, MAX_ZOOM = 12;
+  const MIN_ZOOM = 1.0, MAX_ZOOM = 50; // 5000% max zoom
 
   function es()      { return fitScale * zoomLevel; }
   function zoomedW() { return Math.round(workCanvas.width  * es()); }
