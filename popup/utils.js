@@ -37,7 +37,7 @@ export function showToast(msg, type = 'success') {
   toast.textContent = msg;
   toast.className = `toast toast-${type} show`;
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
+  _toastTimer = setTimeout(() => toast.classList.remove('show'), 5000);
 }
 
 /* === Scroll Lock === */

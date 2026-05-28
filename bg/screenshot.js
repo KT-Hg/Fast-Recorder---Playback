@@ -401,22 +401,9 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
   }
 
   const dims = await tabMsg(tabId, { type: 'GET_PAGE_DIMENSIONS' });
-  if (!dims) return { error: 'Could not get page dimensions' };
+  if (!dims || dims.failed) return { error: 'Could not get page dimensions' };
 
-  const { fullWidth, fullHeight, viewportWidth, viewportHeight, scrollX, scrollY, devicePixelRatio: dpr } = dims;
-
-  // OOM guard — most GPU drivers cap OffscreenCanvas at 16 384 px per side.
-  const _MAX_CANVAS_DIM = 16_384;
-  const _targetW = segmentClip ? segmentClip.width  : (scrollDir === 'full' ? fullWidth  : fullWidth  - scrollX);
-  const _targetH = segmentClip ? segmentClip.height : (scrollDir === 'full' ? fullHeight : fullHeight - scrollY);
-  const _physW   = Math.round(_targetW * dpr);
-  const _physH   = Math.round(_targetH * dpr);
-  if (_physW > _MAX_CANVAS_DIM || _physH > _MAX_CANVAS_DIM) {
-    return {
-      error: `Page is too large to capture in one shot (${_physW}×${_physH} px at DPR ${dpr}). ` +
-             `Try a viewport or region capture instead, or reduce browser zoom.`,
-    };
-  }
+  const { fullWidth, fullHeight, viewportWidth, viewportHeight, scrollX, scrollY, devicePixelRatio: dpr = 1 } = dims;
 
   try {
     // Always detach before attaching — Chrome rejects a second attach with
@@ -672,7 +659,7 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
   if (!rect0 || rect0.error) return { error: rect0?.error || 'Could not get element rect' };
 
   const dims = await tabMsg(tabId, { type: 'GET_PAGE_DIMENSIONS' });
-  if (!dims) return { error: 'Could not get page dimensions' };
+  if (!dims || dims.failed) return { error: 'Could not get page dimensions' };
   const { viewportHeight, scrollX: origScrollX = 0, scrollY: origScrollY = 0 } = dims;
 
   // Non-1 browser zoom scales the viewport layout, which shifts getBoundingClientRect

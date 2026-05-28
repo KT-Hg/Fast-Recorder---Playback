@@ -149,6 +149,51 @@ function condExprPy(action, selPy) {
   }
 }
 
+// Builds Python lines to locate a child element matching action.conditions.
+// Emits a for-loop over parent.find_elements(By.XPATH, './/*') and breaks on match.
+function _buildChildCondPy(conditions, elVar, tout, selPy, stepNum) {
+  const cond     = conditions;
+  const matchMode = cond.matchMode || 'any';
+  const ccVar    = `_cc${stepNum}`;
+  const lines    = [];
+
+  lines.push(`${elVar}_p = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
+  lines.push(`${elVar} = None`);
+  lines.push(`for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
+
+  const checks = [];
+  if (cond.valueEquals  != null && cond.valueEquals  !== '')
+    checks.push(`(${ccVar}.get_attribute("value") or "") == ${JSON.stringify(String(cond.valueEquals))}`);
+  if (cond.textContains != null && cond.textContains !== '') {
+    const needle = JSON.stringify(cond.textContains.trim().toLowerCase());
+    checks.push(`${needle} in (${ccVar}.text or "").strip().lower()`);
+  }
+  if (cond.idContains   != null && cond.idContains   !== '') {
+    const n = JSON.stringify(cond.idContains.trim().toLowerCase());
+    checks.push(`${n} in (${ccVar}.get_attribute("id") or "").lower()`);
+  }
+  if (cond.classContains != null && cond.classContains !== '') {
+    const n = JSON.stringify(cond.classContains.trim().toLowerCase());
+    checks.push(`${n} in (${ccVar}.get_attribute("class") or "").lower()`);
+  }
+  if (cond.typeEquals   != null && cond.typeEquals   !== '')
+    checks.push(`(${ccVar}.get_attribute("type") or "") == ${JSON.stringify(cond.typeEquals)}`);
+
+  if (checks.length === 0) {
+    lines.push(`    pass  # no child condition criteria defined`);
+  } else {
+    const joiner  = matchMode === 'all' ? ' \\\n        and ' : ' \\\n        or ';
+    const condExpr = checks.length === 1 ? checks[0] : `(${checks.join(joiner)})`;
+    lines.push(`    if ${condExpr}:`);
+    lines.push(`        ${elVar} = ${ccVar}`);
+    lines.push(`        break`);
+  }
+
+  lines.push(`if ${elVar} is None:`);
+  lines.push(`    raise Exception("Child condition not matched (step ${stepNum})")`);
+  return lines;
+}
+
 // Generates Python lines for a single non-condition action
 function actionLines(action, stepNum, stepDelay, elTimeout) {
   const lbl    = action.label ? ` — ${action.label}` : '';
@@ -162,7 +207,11 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
   switch (action.type) {
     case 'click':
       out.push(`# Step ${stepNum}: click${lbl}`);
-      out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.element_to_be_clickable((${selPy})))`);
+      if (action.conditions) {
+        out.push(..._buildChildCondPy(action.conditions, elVar, tout, selPy, stepNum));
+      } else {
+        out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.element_to_be_clickable((${selPy})))`);
+      }
       out.push(`${elVar}.click()`);
       if (delay > 0) out.push(`time.sleep(${delay})`);
       break;
@@ -170,7 +219,11 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
     case 'input': {
       const val = valueToPy(action.value);
       out.push(`# Step ${stepNum}: input${lbl}`);
-      out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
+      if (action.conditions) {
+        out.push(..._buildChildCondPy(action.conditions, elVar, tout, selPy, stepNum));
+      } else {
+        out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
+      }
       out.push(`if ${elVar}.tag_name == 'select':`);
       out.push(`    try:`);
       out.push(`        Select(${elVar}).select_by_value(${val})`);
@@ -185,7 +238,11 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
 
     case 'hover':
       out.push(`# Step ${stepNum}: hover${lbl}`);
-      out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
+      if (action.conditions) {
+        out.push(..._buildChildCondPy(action.conditions, elVar, tout, selPy, stepNum));
+      } else {
+        out.push(`${elVar} = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
+      }
       out.push(`ActionChains(driver).move_to_element(${elVar}).perform()`);
       if (delay > 0) out.push(`time.sleep(${delay})`);
       break;

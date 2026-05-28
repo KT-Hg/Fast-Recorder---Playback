@@ -84,9 +84,9 @@ export async function playActionsOnTab(
 
       state.playback.actionIndex = i;
 
-      // Persist a checkpoint every 5 actions so the popup can offer resume
+      // Persist a checkpoint after every action so the popup can offer resume
       // if the tab reloads mid-playback (e.g. from a navigate action).
-      if (state.playback.scenarioId && i % 5 === 0) {
+      if (state.playback.scenarioId) {
         chrome.storage.local.set({
           playbackCheckpoint: {
             scenarioId: state.playback.scenarioId,
@@ -104,6 +104,11 @@ export async function playActionsOnTab(
         if (action.type === 'navigate') {
           let navSuccess = true;
           const targetUrl = action.value || action.url;
+          let initialTabUrl = null;
+          try {
+            const t = await new Promise(r => chrome.tabs.get(tabId, r));
+            initialTabUrl = t?.url || null;
+          } catch (_) {}
           await new Promise((resolve) => {
             let resolved = false;
             const done = (success = true) => {
@@ -137,7 +142,7 @@ export async function playActionsOnTab(
               if (resolved) { clearInterval(spaPoller); return; }
               try {
                 const tab = await new Promise(r => chrome.tabs.get(tabId, r));
-                if (tab?.url && targetUrl && (
+                if (tab?.url && targetUrl && tab.url !== initialTabUrl && (
                   tab.url === targetUrl ||
                   tab.url.startsWith(targetUrl)
                 )) done(true);
@@ -237,7 +242,7 @@ export async function playActionsOnTab(
 
         /* ── Read DOM value → variable ── */
         if (action.type === 'readdom') {
-          const rdResult = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, 10_000, action.frameId);
+          const rdResult = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, Math.max(10_000, (action.timeout || 0) + 2_000), action.frameId);
           if (rdResult?.value !== undefined && action.varName) {
             resolvedVars[action.varName] = rdResult.value;
           } else if (rdResult?.failed) {
@@ -313,7 +318,7 @@ export async function playActionsOnTab(
         const _isClickLike  = action.type === 'click' || action.type === 'select';
         const preActionUrl  = _isClickLike ? await getTabUrl(tabId).catch(() => null) : null;
 
-        const result = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, 10_000, action.frameId);
+        const result = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, Math.max(10_000, (action.timeout || 0) + 2_000), action.frameId);
 
         // If a click/select caused an immediate navigation, the content script may
         // have become unreachable before it could send a response.  Detect this by

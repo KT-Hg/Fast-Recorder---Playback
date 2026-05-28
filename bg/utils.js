@@ -101,7 +101,7 @@ export function interpolateAction(action, vars) {
   if (a.selector)      a.selector      = applyVars(a.selector, vars);
   if (a.value)         a.value         = applyVars(a.value, vars);
   if (a.url)           a.url           = applyVars(a.url, vars);
-  if (a.code)          a.code          = _applyVarsToCode(a.code, vars);
+  if (a.code)          a.code          = applyVars(a.code, vars);
   if (a.expectedValue) a.expectedValue = applyVars(a.expectedValue, vars);
   if (a.switchVar)     a.switchVar     = applyVars(a.switchVar, vars);
   if (a.conditions && typeof a.conditions === 'object') {
@@ -352,7 +352,9 @@ export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
       settle({ failed: true, _noContentScript: true, error: 'tabMsg timeout' });
     }, timeout);
 
-    const opts = (frameId != null) ? { frameId } : {};
+    // Default to main frame (0) when no frameId specified — prevents sub-frame
+    // content scripts (all_frames: true) from racing to respond before the main frame.
+    const opts = { frameId: frameId ?? 0 };
 
     chrome.tabs.sendMessage(tabId, msg, opts, (res) => {
       if (chrome.runtime.lastError) {

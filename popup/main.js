@@ -1114,6 +1114,15 @@ document.getElementById("resumeDismissBtn")?.addEventListener("click", () => {
   _resumeCheckpoint = null;
 });
 
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'PLAYBACK_ALREADY_RUNNING') {
+    showToast('Playback is already running — stop it before starting a new one', 'error');
+  } else if (msg.type === 'PLAYBACK_NO_TAB') {
+    showToast('No active tab found — open a tab and try again', 'error');
+  } else if (msg.type === 'PLAYBACK_TAB_CLOSED') {
+    showToast('Tab was closed — playback stopped', 'error');
+  }
+});
 
 /* === Compact Mode (legacy stubs) === */
 function applyAdvancedMode() {
@@ -2301,6 +2310,12 @@ function validateActionForm(type, selector, delayVal) {
   if (!selector && !TYPES_NO_SELECTOR_REQUIRED.has(type)) {
     return { valid: false, el: manualSelector, msg: "Selector is required for this action type" };
   }
+  if (type === "navigate") {
+    const urlValue = manualValue?.value?.trim();
+    if (!urlValue) {
+      return { valid: false, el: manualValue, msg: "URL is required for Navigate action" };
+    }
+  }
   if (type === "wait") {
     const d = parseInt(delayVal, 10);
     if (!delayVal || isNaN(d) || d <= 0) {
@@ -2448,6 +2463,7 @@ addManualAction.addEventListener('click', () => {
 });
 
 function startEdit(index, action) {
+  clearEditState();
   manualSelector.value = action.selector || "";
   manualActionType.value = action.type || "";
 

@@ -65,15 +65,15 @@ function getBestSel(action) {
 }
 
 // Returns a JS expression string representing the value.
-// Escapes all injection vectors in template literals.
+// ${varName} references are intentionally left unescaped so they interpolate
+// the declared JS variables (static consts or random generators) at run time.
 function valueToJS(val) {
   if (val == null) return "''";
   const s = String(val);
   if (/\$\{/.test(s)) {
     const escaped = s
       .replace(/\\/g, '\\\\')   // backslash first
-      .replace(/`/g, '\\`')     // backtick
-      .replace(/\$\{/g, '\\${'); // ${...} → \${...} (no interpolation)
+      .replace(/`/g, '\\`');    // backtick — ${varName} is kept to reference declared vars
     return '`' + escaped + '`';
   }
   return JSON.stringify(s);
@@ -127,21 +127,39 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
   switch (action.type) {
     case 'click':
       out.push(`// Step ${stepNum}: click${lbl}`);
-      out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      if (action.conditions) {
+        out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
+      } else {
+        out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      }
       out.push(`${v}.click();`);
       if (delay > 0) out.push(`await sleep(${delay});`);
       break;
 
     case 'input':
       out.push(`// Step ${stepNum}: input${lbl}`);
-      out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      if (action.conditions) {
+        out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
+      } else {
+        out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      }
       out.push(`setInput(${v}, ${valueToJS(action.value)});`);
       if (delay > 0) out.push(`await sleep(${delay});`);
       break;
 
     case 'hover':
       out.push(`// Step ${stepNum}: hover${lbl}`);
-      out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      if (action.conditions) {
+        out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
+      } else {
+        out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
+      }
       out.push(`${v}.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));`);
       out.push(`${v}.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));`);
       if (delay > 0) out.push(`await sleep(${delay});`);
@@ -324,6 +342,23 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('    if (nv) nv.call(el, value); else el.value = value;');
   out.push("    el.dispatchEvent(new Event('input', { bubbles: true }));");
   out.push("    el.dispatchEvent(new Event('change', { bubbles: true }));");
+  out.push('  };');
+  out.push('');
+  out.push('  const _findChild = (parent, cond) => {');
+  out.push("    const mode = cond.matchMode || 'any';");
+  out.push("    const norm = s => (s == null ? '' : String(s).trim().toLowerCase());");
+  out.push('    const checks = [];');
+  out.push("    if (cond.valueEquals   != null && cond.valueEquals   !== '') checks.push(el => el.value !== undefined && String(el.value) === String(cond.valueEquals));");
+  out.push("    if (cond.textContains  != null && cond.textContains  !== '') { const n = norm(cond.textContains);  checks.push(el => norm(el.textContent).includes(n)); }");
+  out.push("    if (cond.idContains    != null && cond.idContains    !== '') { const n = norm(cond.idContains);    checks.push(el => norm(el.id).includes(n)); }");
+  out.push("    if (cond.classContains != null && cond.classContains !== '') { const n = norm(cond.classContains); checks.push(el => norm(el.className).includes(n)); }");
+  out.push("    if (cond.typeEquals    != null && cond.typeEquals    !== '') checks.push(el => el.type === cond.typeEquals);");
+  out.push("    if (!checks.length) return null;");
+  out.push("    const test = mode === 'all' ? el => checks.every(fn => fn(el)) : el => checks.some(fn => fn(el));");
+  out.push('    const walker = document.createTreeWalker(parent, NodeFilter.SHOW_ELEMENT);');
+  out.push('    let node = walker.nextNode();');
+  out.push('    while (node) { if (test(node)) return node; node = walker.nextNode(); }');
+  out.push('    return null;');
   out.push('  };');
 
   if (Object.keys(randomSpecs).length > 0) {

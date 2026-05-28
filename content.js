@@ -45,12 +45,8 @@ try {
 ───────────────────────────────────────────────────────────────────────────── */
 
 const _DYNAMIC_ID_RE = new RegExp([
-  /^[:]/,                              // React fiber IDs (":r0:", ":ra:")
-  /\d{5,}/,                            // 5+ consecutive digits — excludes Tailwind
-                                       // utility numbers (600, 500) which are < 5 digits
-  /^[a-f0-9]{8}-[a-f0-9]{4}-/,        // UUID v4 prefix
-  /^(ember|ng-|mat-|uid-|id-)\d/,     // common framework ID prefixes
-  /^[a-z0-9]{20,}$/,                  // long opaque hashes (e.g. crypto.randomUUID output)
+  /^[:]./,                             // React fiber IDs (":r0:", ":ra:") — start with colon
+  /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i, // full UUID v4
 ].map(r => r.source).join('|'), 'i');
 
 function _isDynamicId(id) {
@@ -214,15 +210,17 @@ function findElementWithFallback(selectors, timeout = 5000) {
   return new Promise((resolve, reject) => {
     if (typeof selectors === 'string') selectors = { css: selectors };
 
-    // Strategy order: most stable selector type first so a reliable match
-    // is used whenever possible; fragile selectors (full XPath) only as last resort.
+    // Priority: fullXpath first (absolute position — most precise for recorded actions),
+    // then id (unique by spec), xpath (id-anchored), css, shadow DOM pierce,
+    // testId/dataId, name, text (most ambiguous).
     const strategies = [];
+    if (selectors.fullXpath) strategies.push({ type: 'fullXpath', fn: () => document.evaluate(selectors.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
     if (selectors.id)       strategies.push({ type: 'id',       fn: () => document.getElementById(selectors.id) });
-    if (selectors.testId)   strategies.push({ type: 'testId',   fn: () => document.querySelector(`[data-testid="${CSS.escape(selectors.testId)}"]`) });
-    if (selectors.dataId)   strategies.push({ type: 'dataId',   fn: () => document.querySelector(`[data-id="${CSS.escape(selectors.dataId)}"]`) });
     if (selectors.xpath)    strategies.push({ type: 'xpath',    fn: () => document.evaluate(selectors.xpath,    document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
     if (selectors.css)      strategies.push({ type: 'css',      fn: () => document.querySelector(selectors.css) });
-    if (selectors.css)      strategies.push({ type: 'cssShadow', fn: () => querySelectorDeep(selectors.css) }); // fall through to shadow DOM pierce
+    if (selectors.css)      strategies.push({ type: 'cssShadow', fn: () => querySelectorDeep(selectors.css) });
+    if (selectors.testId)   strategies.push({ type: 'testId',   fn: () => document.querySelector(`[data-testid="${CSS.escape(selectors.testId)}"]`) });
+    if (selectors.dataId)   strategies.push({ type: 'dataId',   fn: () => document.querySelector(`[data-id="${CSS.escape(selectors.dataId)}"]`) });
     if (selectors.name)     strategies.push({ type: 'name',     fn: () => document.querySelector(`[name="${CSS.escape(selectors.name)}"]`) });
     if (selectors.text && selectors.textTag) {
       strategies.push({
@@ -230,7 +228,6 @@ function findElementWithFallback(selectors, timeout = 5000) {
         fn: () => [...document.querySelectorAll(selectors.textTag)].find(el => el.textContent.trim() === selectors.text),
       });
     }
-    if (selectors.fullXpath) strategies.push({ type: 'fullXpath', fn: () => document.evaluate(selectors.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue });
 
     const tryStrategies = () => {
       for (const strategy of strategies) {
@@ -404,7 +401,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   (async () => {
     const action = msg.action;
-    log('PLAY_ACTION', action);
 
     /* ── readdom ── */
     if (action.type === 'readdom') {
@@ -474,7 +470,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (action.selectors && typeof action.selectors === 'object') {
       try {
         const requeried = await findElementWithFallback(action.selectors, 500);
-        if (requeried) target = requeried;
+        if (requeried) {
+          if (action.conditions) {
+            const rechild = findElementByCondition(requeried, action.conditions);
+            if (rechild) target = rechild;
+          } else {
+            target = requeried;
+          }
+        }
       } catch (_) { /* keep original target */ }
     }
     target.focus();
@@ -755,105 +758,105 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'CHECK_CONDITION') {
     const { conditionType, selector, selectors: selectorMap, expectedValue } = msg;
 
-    (async () => {
-      let result = false;
-      try {
-        const getEl = async () => {
-          if (selectorMap && typeof selectorMap === 'object') {
-            return findElementWithFallback(selectorMap, 2000).catch(() => null);
-          }
-          if (selector) {
-            return findElementWithFallback({ css: selector }, 2000).catch(() => null);
-          }
-          return null;
-        };
-
-        switch (conditionType) {
-          case 'elementExists': {
-            const el = await getEl();
-            result = !!el;
-            break;
-          }
-          case 'elementNotExists': {
-            const el = await getEl();
-            result = !el;
-            break;
-          }
-          case 'elementVisible': {
-            const el = await getEl();
-            if (el) {
-              const style = getComputedStyle(el);
-              const rect  = el.getBoundingClientRect();
-              result = style.display !== 'none' && style.visibility !== 'hidden' &&
-                       style.opacity !== '0' && rect.width > 0 && rect.height > 0;
-            }
-            break;
-          }
-          case 'elementHidden': {
-            const el = await getEl();
-            if (!el) {
-              result = true;
-            } else {
-              const style = getComputedStyle(el);
-              const rect  = el.getBoundingClientRect();
-              result = style.display === 'none' || style.visibility === 'hidden' ||
-                       style.opacity === '0' || rect.width === 0 || rect.height === 0;
-            }
-            break;
-          }
-          case 'textContains': {
-            const el = await getEl();
-            if (el) result = el.textContent.includes(expectedValue);
-            break;
-          }
-          case 'textEquals': {
-            const el = await getEl();
-            if (el) result = el.textContent.trim() === (expectedValue || '').trim();
-            break;
-          }
-          case 'valueEquals': {
-            const el = await getEl();
-            if (el && 'value' in el) result = el.value === expectedValue;
-            break;
-          }
-          case 'valueContains': {
-            const el = await getEl();
-            if (el && 'value' in el) result = el.value.includes(expectedValue);
-            break;
-          }
-          case 'urlContains': result = window.location.href.includes(expectedValue); break;
-          case 'urlEquals':   result = window.location.href === expectedValue; break;
-          case 'hasClass': {
-            const el = await getEl();
-            if (el) result = el.classList.contains(expectedValue);
-            break;
-          }
-          case 'hasAttribute': {
-            const el = await getEl();
-            if (el) {
-              if ((expectedValue || '').includes('=')) {
-                const eqIdx  = expectedValue.indexOf('=');
-                const attrName = expectedValue.slice(0, eqIdx);
-                const attrVal  = expectedValue.slice(eqIdx + 1);
-                result = el.hasAttribute(attrName) && el.getAttribute(attrName) === attrVal;
-              } else {
-                result = el.hasAttribute(expectedValue);
-              }
-            }
-            break;
-          }
-          default:
-            // Unknown condition type — pass rather than block so new types
-            // added in the editor don't silently freeze an existing scenario.
-            result = true;
-        }
-      } catch (e) {
-        console.error('[CONTENT] CHECK_CONDITION error:', e);
-        result = false; // error → false; broken conditions should not silently pass playback
+    // Synchronous element lookup matching 22/05 behaviour — conditions evaluate
+    // the DOM at the current moment, no waiting. Uses full selector map when
+    // available (fullXpath → id → xpath → css) for accuracy.
+    const getEl = () => {
+      const s = selectorMap;
+      if (s && typeof s === 'object') {
+        let el = null;
+        try { if (s.fullXpath) el = document.evaluate(s.fullXpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch(_) {}
+        if (!el && s.id) el = document.getElementById(s.id);
+        try { if (!el && s.xpath) el = document.evaluate(s.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch(_) {}
+        if (!el && s.css) { try { el = document.querySelector(s.css); } catch(_) {} }
+        return el || null;
       }
-      sendResponse({ result });
-    })();
-    return true; // async
+      if (selector) { try { return document.querySelector(selector); } catch(_) {} }
+      return null;
+    };
+
+    let result = false;
+    try {
+      switch (conditionType) {
+        case 'elementExists': {
+          result = !!getEl();
+          break;
+        }
+        case 'elementNotExists': {
+          result = !getEl();
+          break;
+        }
+        case 'elementVisible': {
+          const el = getEl();
+          if (el) {
+            const style = getComputedStyle(el);
+            const rect  = el.getBoundingClientRect();
+            result = style.display !== 'none' && style.visibility !== 'hidden' &&
+                     style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+          }
+          break;
+        }
+        case 'elementHidden': {
+          const el = getEl();
+          if (!el) {
+            result = true;
+          } else {
+            const style = getComputedStyle(el);
+            const rect  = el.getBoundingClientRect();
+            result = style.display === 'none' || style.visibility === 'hidden' ||
+                     style.opacity === '0' || rect.width === 0 || rect.height === 0;
+          }
+          break;
+        }
+        case 'textContains': {
+          const el = getEl();
+          if (el) result = el.textContent.includes(expectedValue);
+          break;
+        }
+        case 'textEquals': {
+          const el = getEl();
+          if (el) result = el.textContent.trim() === (expectedValue || '').trim();
+          break;
+        }
+        case 'valueEquals': {
+          const el = getEl();
+          if (el && 'value' in el) result = el.value === expectedValue;
+          break;
+        }
+        case 'valueContains': {
+          const el = getEl();
+          if (el && 'value' in el) result = el.value.includes(expectedValue);
+          break;
+        }
+        case 'urlContains': result = window.location.href.includes(expectedValue); break;
+        case 'urlEquals':   result = window.location.href === expectedValue; break;
+        case 'hasClass': {
+          const el = getEl();
+          if (el) result = el.classList.contains(expectedValue);
+          break;
+        }
+        case 'hasAttribute': {
+          const el = getEl();
+          if (el) {
+            if ((expectedValue || '').includes('=')) {
+              const eqIdx    = expectedValue.indexOf('=');
+              const attrName = expectedValue.slice(0, eqIdx);
+              const attrVal  = expectedValue.slice(eqIdx + 1);
+              result = el.hasAttribute(attrName) && el.getAttribute(attrName) === attrVal;
+            } else {
+              result = el.hasAttribute(expectedValue);
+            }
+          }
+          break;
+        }
+        default:
+          result = true; // unknown type → pass
+      }
+    } catch (e) {
+      console.error('[CONTENT] CHECK_CONDITION error:', e);
+      result = true; // error → pass (match 22/05 behaviour)
+    }
+    sendResponse({ result });
   }
 });
 

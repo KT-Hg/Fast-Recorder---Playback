@@ -1429,6 +1429,8 @@ body.modal-open {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* === Toast Notification === */
@@ -1438,10 +1440,14 @@ body.modal-open {
   left: 50%;
   transform: translateX(-50%) translateY(12px);
   padding: 7px 18px;
-  border-radius: 20px;
+  border-radius: 10px;
   font-size: 12px;
   font-weight: 500;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
+  text-align: center;
   opacity: 0;
   pointer-events: none;
   z-index: 9999;
