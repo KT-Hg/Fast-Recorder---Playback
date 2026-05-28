@@ -17,7 +17,7 @@ import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlay
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
 } from './bg/screenshot.js';
-import { ssReadAll, ssClear, csvResultReadAll } from './bg/idb-screenshots.js';
+import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -90,6 +90,14 @@ restoreCsvState().then((csvPending) => {
 }).catch(() => {});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'playback-keepalive') {
+    // Renew the keep-alive alarm if any playback is still running.
+    // This prevents Chrome from terminating the Service Worker mid-playback.
+    if (state.playback.active || state.sequencePlayback.active || state.csvPlayback.active) {
+      chrome.alarms.create('playback-keepalive', { when: Date.now() + 20_000 });
+    }
+    return;
+  }
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   const id = alarm.name.slice(ALARM_PREFIX.length);
   chrome.storage.local.get(["schedules"], (res) => {
@@ -137,7 +145,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.storage.local.get(["playbackCheckpoint"], ({ playbackCheckpoint: cp }) => {
       // If a playback checkpoint exists for this tab and is less than 60 s old,
       // the page likely reloaded mid-playback — offer to resume from the last step.
-      if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000) {
+      // Do NOT offer single-scenario resume when a CSV run is active: CSV has its
+      // own resume mechanism and startPlaybackFromCheckpoint would run outside CSV
+      // context (forceAutoSave=false, skipDownload=false), causing screenshot
+      // save-as dialogs and skipping IDB accumulation for the zip.
+      if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000 && !state.csvPlayback.active) {
         chrome.runtime.sendMessage({ type: "OFFER_RESUME", checkpoint: cp }).catch(() => {});
       }
     });
@@ -699,6 +711,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (type === "CLEAR_CSV_SCREENSHOTS") {
     ssClear().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (type === "CLEAR_CSV_RESULTS") {
+    csvResultClear().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
     return true;
   }
 

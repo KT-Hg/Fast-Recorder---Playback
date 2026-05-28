@@ -4851,14 +4851,11 @@ function startCsvPoll(statusEl) {
     chrome.runtime.sendMessage({ type: "GET_CSV_STATUS" }, (res) => {
       if (!res) { clearInterval(poll); return; }
       if (res.active) {
-        chrome.storage.local.get(["csvRunResults"], (stored) => {
-          const results = stored.csvRunResults || [];
-          const failRows = results.filter(r => r.failures?.length > 0).length;
-          _updateCsvBadges(res.currentRow + 1, res.totalRows, failRows, false);
-        });
+        // failRows is kept up-to-date by CSV_ROW_DONE messages; no storage read needed here
+        _updateCsvBadges(res.currentRow + 1, res.totalRows, 0, false);
       } else {
-        chrome.storage.local.get(["csvRunResults"], (stored) => {
-          const results = stored.csvRunResults || [];
+        chrome.runtime.sendMessage({ type: "GET_CSV_RUN_RESULTS" }, (idbData) => {
+          const results  = idbData?.results || [];
           const failRows = results.filter(r => r.failures?.length > 0).length;
           _updateCsvBadges(results.length, results.length, failRows, true);
         });
@@ -4873,8 +4870,8 @@ function _handleCsvStop(label) {
   chrome.runtime.sendMessage({ type: "STOP_CSV_PLAYBACK" }, () => {
     _stopCsvCountdown();
     showToast(`CSV run ${label}`, "info");
-    chrome.storage.local.get(["csvRunResults"], (stored) => {
-      const results = stored.csvRunResults || [];
+    chrome.runtime.sendMessage({ type: "GET_CSV_RUN_RESULTS" }, (idbData) => {
+      const results = idbData?.results || [];
       if (results.length > 0) {
         const failRows = results.filter(r => r.failures?.length > 0).length;
         _updateCsvBadges(results.length, results.length, failRows, true);
@@ -4903,7 +4900,7 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
     "Changing the export format will clear the current run results. You will need to run again.",
     () => {
       chrome.runtime.sendMessage({ type: "CLEAR_CSV_SCREENSHOTS" }, () => {
-        chrome.storage.local.remove("csvRunResults", () => {
+        chrome.runtime.sendMessage({ type: "CLEAR_CSV_RESULTS" }, () => {
           const status = document.getElementById("csvStatus");
           if (status) status.textContent = "";
           _updateCsvBadges(0, 0, 0, false);
@@ -4942,42 +4939,46 @@ chrome.storage.local.get(["csvExportFormat"], (stored) => {
 (function restoreCsvSession() {
   chrome.runtime.sendMessage({ type: "GET_CSV_STATUS" }, (csvStatus) => {
     const isActive = !!csvStatus?.active;
-    chrome.storage.local.get(["csvSessionData", "csvRunResults", "csvExportFormat"], (stored) => {
-      const session    = stored.csvSessionData;
-      const hasResults = (stored.csvRunResults || []).length > 0;
+    chrome.storage.local.get(["csvSessionData", "csvExportFormat"], (stored) => {
+      const session = stored.csvSessionData;
       if (!session) return;
-      if (!isActive && !hasResults) return;
 
-      // Restore in-memory CSV data so download works without reloading file
-      csvParsed = session;
+      // Results live in IDB; query them to decide whether to restore the "done" state.
+      chrome.runtime.sendMessage({ type: "GET_CSV_RUN_RESULTS" }, (idbData) => {
+        const idbResults = idbData?.results || [];
+        const hasResults = idbResults.length > 0;
+        if (!isActive && !hasResults) return;
 
-      if (stored.csvExportFormat) {
-        const sel = document.getElementById("csvExportFormat");
-        if (sel) sel.value = stored.csvExportFormat;
-      }
+        // Restore in-memory CSV data so download works without reloading file
+        csvParsed = session;
 
-      const preview  = document.getElementById("csvPreview");
-      const status   = document.getElementById("csvStatus");
-      const csvCard  = document.getElementById("csvRunCard");
+        if (stored.csvExportFormat) {
+          const sel = document.getElementById("csvExportFormat");
+          if (sel) sel.value = stored.csvExportFormat;
+        }
 
-      if (preview) preview.textContent = `${session.rows.length} rows, columns: ${session.headers.join(", ")} ↩ restored`;
+        const preview  = document.getElementById("csvPreview");
+        const status   = document.getElementById("csvStatus");
+        const csvCard  = document.getElementById("csvRunCard");
 
-      if (csvCard?.classList.contains("collapsed")) {
-        csvCard.classList.remove("collapsed");
-      }
+        if (preview) preview.textContent = `${session.rows.length} rows, columns: ${session.headers.join(", ")} ↩ restored`;
 
-      if (isActive) {
-        if (status) status.textContent = "";
-        _updateCsvBadges(csvStatus.currentRow + 1, csvStatus.totalRows, 0, false);
-        _setCsvState('running');
-        startCsvPoll(status);
-      } else if (hasResults) {
-        const results = stored.csvRunResults;
-        const failRows = results.filter(r => r.failures?.length > 0).length;
-        _updateCsvBadges(results.length, results.length, failRows, true);
-        if (status) status.textContent = "";
-        _setCsvState('done');
-      }
+        if (csvCard?.classList.contains("collapsed")) {
+          csvCard.classList.remove("collapsed");
+        }
+
+        if (isActive) {
+          if (status) status.textContent = "";
+          _updateCsvBadges(csvStatus.currentRow + 1, csvStatus.totalRows, 0, false);
+          _setCsvState('running');
+          startCsvPoll(status);
+        } else if (hasResults) {
+          const failRows = idbResults.filter(r => r.failures?.length > 0).length;
+          _updateCsvBadges(idbResults.length, idbResults.length, failRows, true);
+          if (status) status.textContent = "";
+          _setCsvState('done');
+        }
+      });
     });
   });
 })();

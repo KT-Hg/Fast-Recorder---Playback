@@ -16,6 +16,15 @@ import {
 } from './screenshot.js';
 import { ssWrite, ssClear, csvResultWrite, csvResultClear } from './idb-screenshots.js';
 
+/* ── SW keep-alive ──────────────────────────────────────────────────────────── */
+
+// Prevent Chrome from terminating the Service Worker mid-playback.
+// Each alarm fires every ~20 s and re-schedules itself while any playback is
+// active; background.js handles the renewal inside chrome.alarms.onAlarm.
+const KEEPALIVE_ALARM = 'playback-keepalive';
+const _startKeepalive = () => chrome.alarms.create(KEEPALIVE_ALARM, { when: Date.now() + 20_000 });
+const _stopKeepalive  = () => chrome.alarms.clear(KEEPALIVE_ALARM);
+
 /* ── Concurrency Guard ──────────────────────────────────────────────────────── */
 
 function _isAnyPlaybackActive() {
@@ -370,6 +379,11 @@ export async function playActionsOnTab(
 
 /** Resume a scenario from a saved checkpoint after a tab reload mid-playback. */
 export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) {
+  // Guard: never start a checkpoint resume while CSV (or any other) playback is
+  // active.  CSV has its own per-row resume path; running startPlaybackFromCheckpoint
+  // on top of an active CSV run would bypass forceAutoSave/skipDownload and cause
+  // screenshot save-as dialogs instead of accumulating results for the zip.
+  if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   const scenarios = await getScenarios();
   const scenario  = scenarios[scenarioId];
   if (!scenario) return;
@@ -380,9 +394,11 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
     actionIndex: fromIndex, totalActions: actions.length, loopCurrent: 1, loopTotal: 1,
   };
   updateBadge();
+  _startKeepalive();
   try {
     await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex);
   } finally {
+    _stopKeepalive();
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
@@ -412,6 +428,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
     actionIndex: 0, totalActions: actions.length, loopCurrent: 1, loopTotal: loops,
   };
   updateBadge();
+  _startKeepalive();
 
   try {
     // Pass resolved vars from one loop to the next so readdom variables
@@ -425,6 +442,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
       if (loop < loops - 1 && loopDelay > 0) await new Promise(r => setTimeout(r, loopDelay));
     }
   } finally {
+    _stopKeepalive();
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
@@ -455,6 +473,7 @@ export async function startSequence(runList) {
     if (removedId === tabId) { _seqTabClosed = true; state.sequencePlayback.active = false; }
   };
   chrome.tabs.onRemoved.addListener(_onSeqTabRemoved);
+  _startKeepalive();
 
   try {
     for (let i = 0; i < runList.length; i++) {
@@ -489,6 +508,7 @@ export async function startSequence(runList) {
     console.error('[SEQUENCE] Error during sequence playback:', err);
   } finally {
     chrome.tabs.onRemoved.removeListener(_onSeqTabRemoved);
+    _stopKeepalive();
     state.sequencePlayback.active = false;
     state.playback.active = false;
     updateBadge();
@@ -583,6 +603,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   let completedRows = 0;
   let failedRows    = 0;
 
+  _startKeepalive();
   for (let i = startRowIndex; i < rows.length; i++) {
     if (!state.csvPlayback.active) break;
     state.csvPlayback.currentRow = i;
@@ -631,6 +652,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     }
   }
 
+  _stopKeepalive();
   state.csvPlayback.active = false;
   await clearCsvState();
   updateBadge();

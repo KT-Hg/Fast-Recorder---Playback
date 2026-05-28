@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Fast Recorder & Playback",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "Record & Playback user actions across pages without delay",
 
   "permissions": [
