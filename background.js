@@ -90,9 +90,8 @@ restoreCsvState().then((csvPending) => {
 }).catch(() => {});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  // Renew the playback keep-alive alarm while any playback is still running.
   if (alarm.name === 'playback-keepalive') {
-    // Renew the keep-alive alarm if any playback is still running.
-    // This prevents Chrome from terminating the Service Worker mid-playback.
     if (state.playback.active || state.sequencePlayback.active || state.csvPlayback.active) {
       chrome.alarms.create('playback-keepalive', { when: Date.now() + 20_000 });
     }

@@ -615,8 +615,10 @@ const pickedSelectorsWrap = document.getElementById("pickedSelectorsWrap");
 if (pickedSelectorsWrap && !manualSelector?.value?.trim()) {
   pickedSelectorsWrap.style.display = "none";
 }
-// Clear pick-done badge if set
-chrome.action.setBadgeText({ text: "" });
+// Clear pick-done badge only — do not clobber playback badges (CSV/▶/REC/SEQ)
+chrome.action.getBadgeText({}, (text) => {
+  if (text === "✓") chrome.action.setBadgeText({ text: "" });
+});
 const manualActionType = document.getElementById("manualActionType");
 const manualValue = document.getElementById("manualValue");
 const manualDelay = document.getElementById("manualDelay");
@@ -796,13 +798,15 @@ function populateSwitchScenarioSelect() {
   sel.innerHTML = "";
   const scenarios = scenariosCache || {};
   const folders = foldersCache || {};
-  Object.entries(scenarios).forEach(([id, s]) => {
-    const opt = document.createElement("option");
-    opt.value = id;
-    const folderName = s.folderId && folders[s.folderId] ? `[${folders[s.folderId].name}] ` : "";
-    opt.textContent = folderName + (s.name || id);
-    sel.appendChild(opt);
-  });
+  Object.entries(scenarios)
+    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+    .forEach(([id, s]) => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      const folderName = s.folderId && folders[s.folderId] ? `[${folders[s.folderId].name}] ` : "";
+      opt.textContent = folderName + (s.name || id);
+      sel.appendChild(opt);
+    });
 }
 
 function renderSwitchCaseList(editingIdx = -1) {
@@ -1236,15 +1240,14 @@ function renderCompactScenarioList() {
 
   scenarioListCompact.innerHTML = '<option value="">-- Select scenario --</option>';
 
-  const sortedScenarios = Object.entries(scenariosCache)
-    .sort((a, b) => (b[1].createdAt || 0) - (a[1].createdAt || 0));
-
-  sortedScenarios.forEach(([id, meta]) => {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = meta.name;
-    scenarioListCompact.appendChild(option);
-  });
+  Object.entries(scenariosCache)
+    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+    .forEach(([id, meta]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = meta.name;
+      scenarioListCompact.appendChild(option);
+    });
 }
 
 // Sync compact folder list with main list
@@ -1253,12 +1256,14 @@ function renderCompactFolderList() {
 
   scenarioFolderCompact.innerHTML = '<option value="">(No Folder)</option>';
 
-  Object.entries(foldersCache).forEach(([id, folder]) => {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = folder.name;
-    scenarioFolderCompact.appendChild(option);
-  });
+  Object.entries(foldersCache)
+    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+    .forEach(([id, folder]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = folder.name;
+      scenarioFolderCompact.appendChild(option);
+    });
 }
 
 function _showFieldError(inputEl, message) {
@@ -3146,7 +3151,7 @@ function renderSequenceScenarioList() {
   });
 
   folderKeys.forEach((folderId) => {
-    const items = grouped[folderId];
+    const items = grouped[folderId].sort((a, b) => a.name.localeCompare(b.name));
     const folderName = folderId === "__none__" ? "No Folder" : foldersCache[folderId]?.name || "Unknown";
 
     const optgroup = document.createElement("optgroup");
@@ -3290,7 +3295,7 @@ function renderExportScenarioSelect() {
     optgroup.label = folderName;
     exportScenarioSelect.appendChild(optgroup);
 
-    items.forEach((item) => {
+    items.sort((a, b) => a.name.localeCompare(b.name)).forEach((item) => {
       const o = document.createElement("option");
       o.value = item.id;
       o.textContent = item.name;
@@ -3451,6 +3456,12 @@ if (createFolderAction) {
 // Variables UI is fully managed by popup/variables.js (initVariables called in init.js)
 
 scenarioList.onchange = () => {
+  // If editing an action that belongs to a different scenario, clear the form
+  // to prevent stale edit state from leaking across scenarios.
+  if (editing && editing.scenarioId !== (scenarioList.value || null)) {
+    clearEditState();
+    chrome.storage.local.remove("manualFormDraft");
+  }
   // Enable scenario actions only when a real scenario is selected
   const hasSelection = !!scenarioList.value;
   toggleScenarioActions(hasSelection);
@@ -3952,12 +3963,14 @@ function renderScheduleScenarioSelect() {
   const sel = document.getElementById("scheduleScenarioSelect");
   if (!sel) return;
   sel.innerHTML = '<option value="">-- Select scenario --</option>';
-  Object.entries(scenariosCache).forEach(([id, s]) => {
-    const o = document.createElement("option");
-    o.value = id;
-    o.textContent = s.name;
-    sel.appendChild(o);
-  });
+  Object.entries(scenariosCache)
+    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+    .forEach(([id, s]) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = s.name;
+      sel.appendChild(o);
+    });
 }
 
 let editingScheduleId = null;
@@ -4231,12 +4244,14 @@ function renderCsvScenarioSelect() {
   const sel = document.getElementById("csvScenarioSelect");
   if (!sel) return;
   sel.innerHTML = '<option value="">-- Select scenario --</option>';
-  Object.entries(scenariosCache).forEach(([id, s]) => {
-    const o = document.createElement("option");
-    o.value = id;
-    o.textContent = s.name;
-    sel.appendChild(o);
-  });
+  Object.entries(scenariosCache)
+    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
+    .forEach(([id, s]) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = s.name;
+      sel.appendChild(o);
+    });
 }
 
 function renderExportCodeSelect() {
@@ -4899,6 +4914,7 @@ document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
   showConfirm(
     "Changing the export format will clear the current run results. You will need to run again.",
     () => {
+      clearCsvDoneBar();
       chrome.runtime.sendMessage({ type: "CLEAR_CSV_SCREENSHOTS" }, () => {
         chrome.runtime.sendMessage({ type: "CLEAR_CSV_RESULTS" }, () => {
           const status = document.getElementById("csvStatus");

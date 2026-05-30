@@ -24,6 +24,11 @@ function parseRandomSpec(val) {
   return m ? { type: m[1], length: parseInt(m[2]) } : null;
 }
 
+function parsePickSpec(val) {
+  const m = String(val).match(/^\{pick:(.+)\}$/);
+  return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
+}
+
 function previewRandom(type, length) {
   const c = {
     alpha: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
@@ -150,43 +155,77 @@ function condExprPy(action, selPy) {
 }
 
 // Builds Python lines to locate a child element matching action.conditions.
-// Emits a for-loop over parent.find_elements(By.XPATH, './/*') and breaks on match.
+// Supports {fallback:A|B|C} in condition fields by generating a nested for-loop.
 function _buildChildCondPy(conditions, elVar, tout, selPy, stepNum) {
-  const cond     = conditions;
+  const cond      = conditions;
   const matchMode = cond.matchMode || 'any';
-  const ccVar    = `_cc${stepNum}`;
-  const lines    = [];
+  const ccVar     = `_cc${stepNum}`;
+  const lines     = [];
+
+  const FALLBACK_RE = /^\{fallback:(.+)\}$/;
+
+  // Detect the first condition field with a fallback spec.
+  const FB_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
+  let fbField = null, fbVals = null;
+  for (const f of FB_FIELDS) {
+    const m = cond[f] != null && String(cond[f]).match(FALLBACK_RE);
+    if (m) { fbField = f; fbVals = m[1].split('|').map(s => s.trim()).filter(Boolean); break; }
+  }
 
   lines.push(`${elVar}_p = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
   lines.push(`${elVar} = None`);
-  lines.push(`for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
 
-  const checks = [];
-  if (cond.valueEquals  != null && cond.valueEquals  !== '')
-    checks.push(`(${ccVar}.get_attribute("value") or "") == ${JSON.stringify(String(cond.valueEquals))}`);
-  if (cond.textContains != null && cond.textContains !== '') {
-    const needle = JSON.stringify(cond.textContains.trim().toLowerCase());
-    checks.push(`${needle} in (${ccVar}.text or "").strip().lower()`);
-  }
-  if (cond.idContains   != null && cond.idContains   !== '') {
-    const n = JSON.stringify(cond.idContains.trim().toLowerCase());
-    checks.push(`${n} in (${ccVar}.get_attribute("id") or "").lower()`);
-  }
-  if (cond.classContains != null && cond.classContains !== '') {
-    const n = JSON.stringify(cond.classContains.trim().toLowerCase());
-    checks.push(`${n} in (${ccVar}.get_attribute("class") or "").lower()`);
-  }
-  if (cond.typeEquals   != null && cond.typeEquals   !== '')
-    checks.push(`(${ccVar}.get_attribute("type") or "") == ${JSON.stringify(cond.typeEquals)}`);
+  if (fbField && fbVals) {
+    // Fallback: outer loop over candidate values, inner loop over children.
+    const fvVar = `_fv${stepNum}`;
+    const fbListPy = '[' + fbVals.map(v => JSON.stringify(v)).join(', ') + ']';
+    lines.push(`for ${fvVar} in ${fbListPy}:`);
+    lines.push(`    for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
 
-  if (checks.length === 0) {
-    lines.push(`    pass  # no child condition criteria defined`);
-  } else {
-    const joiner  = matchMode === 'all' ? ' \\\n        and ' : ' \\\n        or ';
-    const condExpr = checks.length === 1 ? checks[0] : `(${checks.join(joiner)})`;
-    lines.push(`    if ${condExpr}:`);
-    lines.push(`        ${elVar} = ${ccVar}`);
+    // Build the single check for the fallback field (other fields stay fixed).
+    let fbCheck;
+    if (fbField === 'valueEquals')  fbCheck = `(${ccVar}.get_attribute("value") or "") == ${fvVar}`;
+    if (fbField === 'textContains') fbCheck = `${fvVar}.lower() in (${ccVar}.text or "").strip().lower()`;
+    if (fbField === 'idContains')   fbCheck = `${fvVar}.lower() in (${ccVar}.get_attribute("id") or "").lower()`;
+    if (fbField === 'classContains') fbCheck = `${fvVar}.lower() in (${ccVar}.get_attribute("class") or "").lower()`;
+    if (fbField === 'typeEquals')   fbCheck = `(${ccVar}.get_attribute("type") or "") == ${fvVar}`;
+
+    lines.push(`        if ${fbCheck}:`);
+    lines.push(`            ${elVar} = ${ccVar}`);
+    lines.push(`            break`);
+    lines.push(`    if ${elVar} is not None:`);
     lines.push(`        break`);
+  } else {
+    // Normal single-value path.
+    lines.push(`for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
+
+    const checks = [];
+    if (cond.valueEquals  != null && cond.valueEquals  !== '')
+      checks.push(`(${ccVar}.get_attribute("value") or "") == ${valueToPy(String(cond.valueEquals))}`);
+    if (cond.textContains != null && cond.textContains !== '') {
+      const needle = valueToPy(String(cond.textContains).trim());
+      checks.push(`${needle}.lower() in (${ccVar}.text or "").strip().lower()`);
+    }
+    if (cond.idContains   != null && cond.idContains   !== '') {
+      const n = valueToPy(String(cond.idContains).trim());
+      checks.push(`${n}.lower() in (${ccVar}.get_attribute("id") or "").lower()`);
+    }
+    if (cond.classContains != null && cond.classContains !== '') {
+      const n = valueToPy(String(cond.classContains).trim());
+      checks.push(`${n}.lower() in (${ccVar}.get_attribute("class") or "").lower()`);
+    }
+    if (cond.typeEquals   != null && cond.typeEquals   !== '')
+      checks.push(`(${ccVar}.get_attribute("type") or "") == ${valueToPy(String(cond.typeEquals))}`);
+
+    if (checks.length === 0) {
+      lines.push(`    pass  # no child condition criteria defined`);
+    } else {
+      const joiner   = matchMode === 'all' ? ' \\\n        and ' : ' \\\n        or ';
+      const condExpr = checks.length === 1 ? checks[0] : `(${checks.join(joiner)})`;
+      lines.push(`    if ${condExpr}:`);
+      lines.push(`        ${elVar} = ${ccVar}`);
+      lines.push(`        break`);
+    }
   }
 
   lines.push(`if ${elVar} is None:`);
@@ -417,11 +456,13 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 500, elTimeout = 10000, driverType = 'Chrome', startUrl = '' } = opts;
 
-  const staticVars = {}, randomSpecs = {}, readdomVars = new Set();
+  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, readdomVars = new Set();
   for (const [k, v] of Object.entries(variables || {})) {
     const spec = parseRandomSpec(v);
-    if (spec) randomSpecs[k] = spec;
-    else staticVars[k] = v;
+    const pick = parsePickSpec(v);
+    if (spec)      randomSpecs[k] = spec;
+    else if (pick) pickSpecs[k]   = pick;
+    else           staticVars[k]  = v;
   }
 
   const enabled = (actions || []).filter(a => !a.disabled);
@@ -440,7 +481,7 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
     if (['screenshot', 'screenshot_full', 'screenshot_element', 'screenshot_tovar'].includes(a.type)) hasScreenshot = true;
   }
 
-  const needsRandom       = Object.keys(randomSpecs).length > 0;
+  const needsRandom       = Object.keys(randomSpecs).length > 0 || Object.keys(pickSpecs).length > 0;
   const needsActionChains = enabled.some(a => ['hover', 'dragdrop'].includes(a.type));
   const needsCondition    = enabled.some(a => a.type === 'condition');
 
@@ -494,6 +535,10 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
           ? 'string.digits'
           : 'string.ascii_letters + string.digits';
       out.push(`${safeVarName(k)} = ''.join(random.choices(${charset}, k=${spec.length}))`);
+    }
+    for (const [k, vals] of Object.entries(pickSpecs)) {
+      const pyList = '[' + vals.map(v => JSON.stringify(v)).join(', ') + ']';
+      out.push(`${safeVarName(k)} = random.choice(${pyList})`);
     }
     for (const k of readdomVars) {
       out.push(`${k} = ''`);
@@ -673,16 +718,27 @@ function _renderModal(scenarioName, result, variables) {
     listEl.innerHTML = '';
     for (const [key, val] of vars) {
       const spec    = parseRandomSpec(val);
+      const pick    = parsePickSpec(val);
       const isRand  = !!spec;
-      const preview = isRand
-        ? previewRandom(spec.type, spec.length)
-        : (val.length > 40 ? val.slice(0, 40) + '…' : val);
+      const isPick  = !!pick;
+      let icon, badgeLabel, badgeCls, preview;
+      if (isRand) {
+        icon = '🎲'; badgeLabel = 'Random'; badgeCls = 'rand';
+        preview = previewRandom(spec.type, spec.length);
+      } else if (isPick) {
+        icon = '⚄'; badgeLabel = `Pick (${pick.length})`; badgeCls = 'rand';
+        preview = pick.join(' | ');
+        if (preview.length > 40) preview = preview.slice(0, 40) + '…';
+      } else {
+        icon = '🔤'; badgeLabel = 'Static'; badgeCls = 'static';
+        preview = val.length > 40 ? val.slice(0, 40) + '…' : val;
+      }
       const row = document.createElement('div');
       row.className = 'export-bm-var-row';
       row.innerHTML = `
-        <div class="export-bm-var-icon ${isRand ? 'rand' : 'static'}">${isRand ? '🎲' : '🔤'}</div>
+        <div class="export-bm-var-icon ${badgeCls}">${icon}</div>
         <span class="export-bm-var-name">\${${escHtml(key)}}</span>
-        <span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span>
+        <span class="export-bm-badge ${badgeCls}">${badgeLabel}</span>
         <span class="export-bm-preview">${escHtml(preview)}</span>`;
       listEl.appendChild(row);
     }

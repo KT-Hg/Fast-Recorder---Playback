@@ -1,159 +1,446 @@
-/**
- * variables.js — Variables table management and random-value generator.
+﻿/**
+ * variables.js — Variables list management (Pure Action Row Mirror design).
  *
- * Random variables are stored with the sentinel value `{random:type:len}` (e.g.
- * `{random:alphanumeric:8}`). The background service resolves this token at
- * playback time via `resolveRandomVars`, so a fresh random value is generated
- * for each run rather than being fixed at save time.
+ * Each variable is an <li class="var-row t-{s|r|p}"> that mirrors the action
+ * list style: fixed-width type column with equal-size icon badge (S/R/P),
+ * key → value display, Edit/Delete buttons.
+ *
+ * Three variable formats stored in li.dataset.value:
+ *   static  — plain string
+ *   rand    — {random:type:len}
+ *   pick    — {pick:val1|val2|val3}
+ *
+ * Editing always goes through the 3-tab modal (Static / Random / Pick).
  *
  * Exports: addVariableRow, loadVariables, getVariablesFromTable, findEmptyRow, initVariables
  */
 
 import { showToast, lockScroll, unlockScroll } from './utils.js';
 
-function getTableBody() {
+/* ── Parsers ─────────────────────────────────────────────────────────────── */
+
+const PICK_RE     = /^\{pick:(.+)\}$/;
+const RANDOM_RE   = /^\{random:(\w+):(\d+)\}$/;
+const FALLBACK_RE = /^\{fallback:(.+)\}$/;
+
+function _parsePick(val) {
+  const m = typeof val === 'string' && val.match(PICK_RE);
+  return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
+}
+
+function _parseRandom(val) {
+  const m = typeof val === 'string' && val.match(RANDOM_RE);
+  return m ? { type: m[1], length: m[2] } : null;
+}
+
+function _parseFallback(val) {
+  const m = typeof val === 'string' && val.match(FALLBACK_RE);
+  return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
+}
+
+/* ── Type helpers ────────────────────────────────────────────────────────── */
+
+// 's' | 'r' | 'p' | 'f'
+function _typeKey(value) {
+  if (_parseFallback(value)) return 'f';
+  if (_parsePick(value))     return 'p';
+  if (_parseRandom(value))   return 'r';
+  return 's';
+}
+
+function _typeLabel(t) {
+  return t === 'f' ? 'Fallback' : t === 'p' ? 'Pick' : t === 'r' ? 'Rand' : 'Static';
+}
+
+// Text shown in the value column for each type
+function _valueText(value, t) {
+  if (t === 'r') {
+    const spec = _parseRandom(value);
+    return spec ? `${spec.type} · ${spec.length}` : value;
+  }
+  if (t === 'p') {
+    const vals = _parsePick(value);
+    return vals ? vals.join(' · ') : value;
+  }
+  if (t === 'f') {
+    const vals = _parseFallback(value);
+    return vals ? vals.join(' → ') : value;
+  }
+  return value || '';
+}
+
+/* ── DOM helpers ─────────────────────────────────────────────────────────── */
+
+function getListEl() {
   return document.getElementById('variablesTableBody');
 }
 
-/**
- * Append a key/value row to the variables table.
- * If the table already has a completely empty row and both `key` and `value`
- * are provided, that row is reused instead of adding a new one — prevents
- * duplicate blank rows when loading an initial empty state.
- *
- * Row HTML is built via the DOM API (not innerHTML) to prevent XSS from
- * untrusted key/value strings loaded from storage.
- */
-export function addVariableRow(key = '', value = '') {
-  const tbody = getTableBody();
-  if (!tbody) return;
-  const emptyRow = findEmptyRow();
-  if (emptyRow && (key || value)) {
-    const keyInput = emptyRow.querySelector('.var-key');
-    const valueInput = emptyRow.querySelector('.var-value');
-    if (keyInput) keyInput.value = key;
-    if (valueInput) valueInput.value = value;
-    return;
-  }
-  // Use DOM API instead of innerHTML to prevent XSS from untrusted key/value data.
-  const row = document.createElement('tr');
-
-  const keyTd = document.createElement('td');
-  const keyInput = document.createElement('input');
-  keyInput.type = 'text'; keyInput.className = 'var-key';
-  keyInput.value = key; keyInput.placeholder = 'key';
-  keyTd.appendChild(keyInput);
-
-  const valTd = document.createElement('td');
-  const valInput = document.createElement('input');
-  valInput.type = 'text'; valInput.className = 'var-value';
-  valInput.value = value; valInput.placeholder = 'value';
-  valTd.appendChild(valInput);
-
-  const actionsTd = document.createElement('td');
-  actionsTd.className = 'var-actions-cell';
-
-  const randBtn = document.createElement('button');
-  randBtn.className = 'var-random-btn secondary';
-  randBtn.title = 'Set as random';
-  randBtn.innerHTML = '&#9860;';
-  randBtn.addEventListener('click', () => _openModal(row));
-
-  const delBtn = document.createElement('button');
-  delBtn.innerHTML = '&#x2715;';
-  delBtn.className = 'delete-row';
-  delBtn.addEventListener('click', () => row.remove());
-
-  actionsTd.appendChild(randBtn);
-  actionsTd.appendChild(delBtn);
-  row.appendChild(keyTd);
-  row.appendChild(valTd);
-  row.appendChild(actionsTd);
-  tbody.appendChild(row);
+function _reindexRows() {
+  const ul = getListEl();
+  if (!ul) return;
+  ul.querySelectorAll('li.var-row').forEach((li, i) => {
+    const idx = li.querySelector('.vr-idx');
+    if (idx) idx.textContent = (i + 1) + '.';
+  });
+  // Show/hide empty state message
+  const empty = ul.querySelector('.var-list-empty');
+  const hasRows = ul.querySelectorAll('li.var-row').length > 0;
+  if (empty) empty.style.display = hasRows ? 'none' : '';
 }
 
-/** Return the first table row whose key and value inputs are both blank, or null. */
+/* ── Row rendering ───────────────────────────────────────────────────────── */
+
+function _buildRow(key, value) {
+  const t = _typeKey(value);
+
+  const li = document.createElement('li');
+  li.className = `var-row t-${t}`;
+  li.dataset.key   = key;
+  li.dataset.value = value;
+
+  // Index
+  const idxSpan = document.createElement('span');
+  idxSpan.className = 'vr-idx';
+  idxSpan.textContent = '1.';
+
+  // Type — fixed-width column with equal-size icon box
+  const typeSpan = document.createElement('span');
+  typeSpan.className = 'vr-type';
+  const iconBox = document.createElement('span');
+  iconBox.className = `vt-i ${t}`;
+  iconBox.textContent = t === 's' ? 'S' : t === 'r' ? 'R' : t === 'p' ? 'P' : 'F';
+  typeSpan.appendChild(iconBox);
+  typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
+
+  // Key
+  const keySpan = document.createElement('span');
+  keySpan.className = 'vr-key';
+  keySpan.title = key;
+  keySpan.textContent = key || '—';
+
+  // Arrow
+  const arrSpan = document.createElement('span');
+  arrSpan.className = 'vr-arr';
+  arrSpan.textContent = '→';
+
+  // Value
+  const valSpan = document.createElement('span');
+  valSpan.className = 'vr-val';
+  valSpan.title = value;
+  valSpan.textContent = _valueText(value, t);
+
+  if (t === 'p') {
+    const sub = document.createElement('span');
+    sub.className = 'vr-sub';
+    const n = _parsePick(value)?.length || 0;
+    sub.textContent = `${n} option${n !== 1 ? 's' : ''} · random per run · CSV overrides`;
+    valSpan.appendChild(sub);
+  } else if (t === 'r') {
+    const sub = document.createElement('span');
+    sub.className = 'vr-sub';
+    sub.textContent = 'new value each run';
+    valSpan.appendChild(sub);
+  } else if (t === 'f') {
+    const sub = document.createElement('span');
+    sub.className = 'vr-sub';
+    const n = _parseFallback(value)?.length || 0;
+    sub.textContent = `${n} values · tries A→B→C in Child Condition · sticky per run`;
+    valSpan.appendChild(sub);
+  }
+
+  // Buttons
+  const btnRow = document.createElement('div');
+  btnRow.className = 'var-btn-row';
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'vr-edit';
+  editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', () => _openModal(li));
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'vr-delete';
+  delBtn.textContent = 'Delete';
+  delBtn.addEventListener('click', () => { li.remove(); _reindexRows(); });
+
+  btnRow.appendChild(editBtn);
+  btnRow.appendChild(delBtn);
+
+  li.appendChild(idxSpan);
+  li.appendChild(typeSpan);
+  li.appendChild(keySpan);
+  li.appendChild(arrSpan);
+  li.appendChild(valSpan);
+  li.appendChild(btnRow);
+
+  return li;
+}
+
+// Refreshes all visual elements of an existing row from its data attributes
+function _refreshRow(li) {
+  const key   = li.dataset.key   || '';
+  const value = li.dataset.value || '';
+  const t     = _typeKey(value);
+
+  li.className = `var-row t-${t}`;
+
+  const typeSpan = li.querySelector('.vr-type');
+  if (typeSpan) {
+    typeSpan.innerHTML = '';
+    const iconBox = document.createElement('span');
+    iconBox.className = `vt-i ${t}`;
+    iconBox.textContent = t === 's' ? 'S' : t === 'r' ? 'R' : 'P';
+    typeSpan.appendChild(iconBox);
+    typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
+  }
+
+  const keySpan = li.querySelector('.vr-key');
+  if (keySpan) { keySpan.textContent = key || '—'; keySpan.title = key; }
+
+  const valSpan = li.querySelector('.vr-val');
+  if (valSpan) {
+    valSpan.title = value;
+    valSpan.textContent = _valueText(value, t);
+    if (t === 'p') {
+      const sub = document.createElement('span');
+      sub.className = 'vr-sub';
+      const n = _parsePick(value)?.length || 0;
+      sub.textContent = `${n} option${n !== 1 ? 's' : ''} · random per run · CSV overrides`;
+      valSpan.appendChild(sub);
+    } else if (t === 'r') {
+      const sub = document.createElement('span');
+      sub.className = 'vr-sub';
+      sub.textContent = 'new value each run';
+      valSpan.appendChild(sub);
+    } else if (t === 'f') {
+      const sub = document.createElement('span');
+      sub.className = 'vr-sub';
+      const n = _parseFallback(value)?.length || 0;
+      sub.textContent = `${n} values · tries A→B→C in Child Condition · sticky per run`;
+      valSpan.appendChild(sub);
+    }
+  }
+}
+
+/* ── Public API ──────────────────────────────────────────────────────────── */
+
+/**
+ * Add a variable row. Called by main.js (auto-create vars, restore draft, etc.)
+ * and by the modal confirm handler for new rows.
+ */
+export function addVariableRow(key = '', value = '') {
+  const ul = getListEl();
+  if (!ul) return;
+
+  // Reuse the first empty row if key+value were given (migration compat)
+  if (key || value) {
+    const empty = findEmptyRow();
+    if (empty) {
+      empty.dataset.key   = key;
+      empty.dataset.value = value;
+      _refreshRow(empty);
+      _reindexRows();
+      return;
+    }
+  }
+
+  const li = _buildRow(key, value);
+  ul.appendChild(li);
+  _reindexRows();
+}
+
+/** Return the first row with no key and no value, or null. */
 export function findEmptyRow() {
-  const tbody = getTableBody();
-  if (!tbody) return null;
-  for (const row of tbody.querySelectorAll('tr')) {
-    const key = row.querySelector('.var-key')?.value.trim();
-    const value = row.querySelector('.var-value')?.value.trim();
-    if (!key && !value) return row;
+  const ul = getListEl();
+  if (!ul) return null;
+  for (const li of ul.querySelectorAll('li.var-row')) {
+    if (!li.dataset.key && !li.dataset.value) return li;
   }
   return null;
 }
 
-/** Read all non-empty key/value pairs from the table into a plain object. */
+/** Read all non-empty key/value pairs from the list. */
 export function getVariablesFromTable() {
-  const tbody = getTableBody();
+  const ul = getListEl();
   const result = {};
-  if (!tbody) return result;
-  tbody.querySelectorAll('tr').forEach((row) => {
-    const key = row.querySelector('.var-key')?.value.trim();
-    const value = row.querySelector('.var-value')?.value.trim();
-    if (key) result[key] = value || '';
+  if (!ul) return result;
+  ul.querySelectorAll('li.var-row').forEach(li => {
+    const key = li.dataset.key?.trim();
+    if (key) result[key] = li.dataset.value || '';
   });
   return result;
 }
 
-/** Fetch variables from the background and repopulate the table. */
+/** Fetch variables from background and repopulate the list. */
 export function loadVariables() {
   chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, (res) => {
-    const tbody = getTableBody();
-    if (!tbody) return;
-    tbody.innerHTML = '';
+    const ul = getListEl();
+    if (!ul) return;
+    ul.innerHTML = '';
+
+    // Empty-state placeholder (hidden when rows exist)
+    const empty = document.createElement('div');
+    empty.className = 'var-list-empty';
+    empty.textContent = 'No variables yet — click + Add Row';
+    ul.appendChild(empty);
+
     const vars = res?.variables || {};
     Object.entries(vars).forEach(([k, v]) => addVariableRow(k, v));
-    if (Object.keys(vars).length === 0) addVariableRow();
+    _reindexRows();
   });
 }
 
-let _editingRow  = null;
-let _focusTimer  = null;
-let _triggerEl   = null;
+/* ── Modal state ─────────────────────────────────────────────────────────── */
 
-/**
- * Open the random-variable generator modal.
- * When `editRow` is a table row, the modal pre-fills from that row and saves
- * back to it on confirm. When null, the modal creates a new row.
- */
+let _editingRow = null;
+let _focusTimer = null;
+let _triggerEl  = null;
+let _rndMode    = 'static'; // 'static' | 'string' | 'pick'
+
+/* ── Pick list helpers ───────────────────────────────────────────────────── */
+
+function _addPickValueRow(value = '') {
+  const list = document.getElementById('pickValuesList');
+  if (!list) return;
+
+  const row = document.createElement('div');
+  row.className = 'pick-value-row';
+
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.placeholder = 'e.g., active'; inp.value = value;
+
+  const del = document.createElement('button');
+  del.className = 'del-pick-btn'; del.type = 'button'; del.textContent = '×';
+  del.title = 'Remove value';
+  del.addEventListener('click', () => {
+    const rows = list.querySelectorAll('.pick-value-row');
+    if (rows.length > 1) row.remove();
+    else showToast('At least one value required', 'error');
+  });
+
+  row.appendChild(inp); row.appendChild(del);
+  list.appendChild(row);
+  inp.focus();
+}
+
+function _getPickValues() {
+  const list = document.getElementById('pickValuesList');
+  if (!list) return [];
+  return [...list.querySelectorAll('.pick-value-row input')]
+    .map(i => i.value.trim()).filter(Boolean);
+}
+
+function _addFallbackValueRow(value = '') {
+  const list = document.getElementById('fallbackValuesList');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'pick-value-row';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.placeholder = 'e.g., active'; inp.value = value;
+  const del = document.createElement('button');
+  del.className = 'del-pick-btn'; del.type = 'button'; del.textContent = '×';
+  del.addEventListener('click', () => {
+    if (list.querySelectorAll('.pick-value-row').length > 1) row.remove();
+    else showToast('At least one fallback value required', 'error');
+  });
+  row.appendChild(inp); row.appendChild(del);
+  list.appendChild(row);
+  inp.focus();
+}
+
+function _getFallbackValues() {
+  const list = document.getElementById('fallbackValuesList');
+  if (!list) return [];
+  return [...list.querySelectorAll('.pick-value-row input')]
+    .map(i => i.value.trim()).filter(Boolean);
+}
+
+/* ── Mode switching ──────────────────────────────────────────────────────── */
+
+function _switchMode(mode) {
+  _rndMode = mode;
+  const sections = { static: 'rndStaticSection', string: 'rndStringSection', pick: 'rndPickSection', fallback: 'rndFallbackSection' };
+  const tabs     = { static: 'rndTabStatic',     string: 'rndTabString',     pick: 'rndTabPick',     fallback: 'rndTabFallback'     };
+  Object.entries(sections).forEach(([m, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = m === mode ? '' : 'none';
+  });
+  Object.entries(tabs).forEach(([m, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle('active', m === mode);
+    el.setAttribute('aria-selected', String(m === mode));
+  });
+}
+
+/* ── Modal open / close ──────────────────────────────────────────────────── */
+
 function _openModal(editRow = null) {
-  _triggerEl = document.activeElement;
+  _triggerEl  = document.activeElement;
+  _editingRow = editRow;
+
   const modal      = document.getElementById('randomModal');
   const varName    = document.getElementById('randomVarName');
   const rndType    = document.getElementById('randomType');
   const rndLen     = document.getElementById('randomLength');
   const title      = document.getElementById('randomModalTitle');
   const confirmBtn = document.getElementById('confirmRandom');
-
-  _editingRow = editRow;
+  const pickList   = document.getElementById('pickValuesList');
 
   if (editRow) {
-    const currentKey   = editRow.querySelector('.var-key')?.value.trim() || '';
-    const currentValue = editRow.querySelector('.var-value')?.value.trim() || '';
-    if (varName) { varName.value = currentKey; varName.readOnly = true; }
-    // Parse existing {random:type:len} if present
-    const match = currentValue.match(/^\{random:(\w+):(\d+)\}$/);
-    if (rndType) rndType.value = match ? match[1] : 'alphanumeric';
-    if (rndLen)  rndLen.value  = match ? match[2] : '8';
-    if (title)      title.textContent      = 'Set Random Variable';
-    if (confirmBtn) confirmBtn.textContent = 'Set Random';
-  } else {
-    if (varName) { varName.value = ''; varName.readOnly = false; }
+    const currentKey   = editRow.dataset.key   || '';
+    const currentValue = editRow.dataset.value  || '';
+    if (varName) { varName.value = currentKey; varName.readOnly = !!currentKey; }
+    if (title)      title.textContent      = 'Edit Variable';
+    if (confirmBtn) confirmBtn.textContent = 'Save';
+
+    // Always reset all panels so stale data from a previous edit never leaks
+    // into a tab the user switches to during this session.
+    if (pickList) { pickList.innerHTML = ''; _addPickValueRow(''); _addPickValueRow(''); }
+    const fbListEl0 = document.getElementById('fallbackValuesList');
+    if (fbListEl0) { fbListEl0.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
     if (rndType) rndType.value = 'alphanumeric';
     if (rndLen)  rndLen.value  = '8';
-    if (title)      title.textContent      = 'Generate Random Variable';
+    const sv0 = document.getElementById('staticValue');
+    if (sv0) sv0.value = '';
+
+    const pickVals    = _parsePick(currentValue);
+    const randSpec    = _parseRandom(currentValue);
+    const fallbackVals = _parseFallback(currentValue);
+
+    if (fallbackVals) {
+      _switchMode('fallback');
+      const fbListEl = document.getElementById('fallbackValuesList');
+      if (fbListEl) { fbListEl.innerHTML = ''; fallbackVals.forEach(v => _addFallbackValueRow(v)); }
+    } else if (pickVals) {
+      _switchMode('pick');
+      if (pickList) { pickList.innerHTML = ''; pickVals.forEach(v => _addPickValueRow(v)); }
+    } else if (randSpec) {
+      _switchMode('string');
+      if (rndType) rndType.value = randSpec.type;
+      if (rndLen)  rndLen.value  = randSpec.length;
+    } else {
+      _switchMode('static');
+      const sv = document.getElementById('staticValue');
+      if (sv) sv.value = currentValue;
+    }
+  } else {
+    if (varName) { varName.value = ''; varName.readOnly = false; }
+    if (title)      title.textContent      = 'Add Variable';
     if (confirmBtn) confirmBtn.textContent = 'Add Variable';
+    _switchMode('static');
+    const sv = document.getElementById('staticValue');
+    if (sv) sv.value = '';
+    if (rndType) rndType.value = 'alphanumeric';
+    if (rndLen)  rndLen.value  = '8';
+    if (pickList) { pickList.innerHTML = ''; _addPickValueRow(''); _addPickValueRow(''); }
+    const fbListElNew = document.getElementById('fallbackValuesList');
+    if (fbListElNew) { fbListElNew.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
   }
 
   modal?.setAttribute('aria-hidden', 'false');
   modal?.classList.add('show');
   lockScroll();
   clearTimeout(_focusTimer);
-  // Defer focus by one rAF-equivalent tick so the modal's CSS transition has
-  // started and the element is visible before focus is applied; some browsers
-  // silently ignore focus() on an element whose display is still 'none'.
   _focusTimer = setTimeout(() => {
     _focusTimer = null;
     if (!document.getElementById('randomModal')?.classList.contains('show')) return;
@@ -165,10 +452,7 @@ function _closeModal() {
   clearTimeout(_focusTimer);
   _focusTimer = null;
   const modal = document.getElementById('randomModal');
-  // Move focus out before aria-hidden="true" to avoid "retained focus" warning
-  if (modal?.contains(document.activeElement)) {
-    document.activeElement.blur();
-  }
+  if (modal?.contains(document.activeElement)) document.activeElement.blur();
   modal?.classList.remove('show');
   modal?.setAttribute('aria-hidden', 'true');
   _triggerEl?.focus();
@@ -177,11 +461,11 @@ function _closeModal() {
   unlockScroll();
 }
 
-/** Attach all variable-panel event listeners and load initial data from storage. */
+/* ── Init ────────────────────────────────────────────────────────────────── */
+
 export function initVariables() {
-  const addBtn       = document.getElementById('addVariableRow');
-  const addRandomBtn = document.getElementById('addRandomVariable');
-  const saveBtn      = document.getElementById('saveVariables');
+  const addBtn  = document.getElementById('addVariableRow');
+  const saveBtn = document.getElementById('saveVariables');
   const reloadBtn    = document.getElementById('reloadVariables');
   const modal        = document.getElementById('randomModal');
   const varName      = document.getElementById('randomVarName');
@@ -190,10 +474,18 @@ export function initVariables() {
   const cancelBtn    = document.getElementById('cancelRandom');
   const confirmBtn   = document.getElementById('confirmRandom');
 
-  addBtn?.addEventListener('click', () => addVariableRow());
-  addRandomBtn?.addEventListener('click', () => _openModal(null));
+  addBtn?.addEventListener('click', () => _openModal(null));
+
   cancelBtn?.addEventListener('click', _closeModal);
   modal?.addEventListener('click', (e) => { if (e.target === modal) _closeModal(); });
+
+  // Mode tab switching
+  document.querySelectorAll('.rnd-mode-tab').forEach(btn => {
+    btn.addEventListener('click', () => _switchMode(btn.dataset.mode));
+  });
+
+  document.getElementById('addPickValue')?.addEventListener('click', () => _addPickValueRow());
+  document.getElementById('addFallbackValue')?.addEventListener('click', () => _addFallbackValueRow());
 
   confirmBtn?.addEventListener('click', () => {
     const name = varName?.value.trim();
@@ -202,10 +494,27 @@ export function initVariables() {
       setTimeout(() => varName?.classList.remove('required-error'), 2000);
       return;
     }
-    const value = `{random:${rndType?.value}:${rndLen?.value}}`;
+
+    let value;
+    if (_rndMode === 'fallback') {
+      const vals = _getFallbackValues();
+      if (vals.length < 2) { showToast('Add at least 2 fallback values', 'error'); return; }
+      value = `{fallback:${vals.join('|')}}`;
+    } else if (_rndMode === 'pick') {
+      const vals = _getPickValues();
+      if (vals.length < 2) { showToast('Add at least 2 values to Pick list', 'error'); return; }
+      value = `{pick:${vals.join('|')}}`;
+    } else if (_rndMode === 'string') {
+      value = `{random:${rndType?.value}:${rndLen?.value}}`;
+    } else {
+      value = document.getElementById('staticValue')?.value || '';
+    }
+
     if (_editingRow) {
-      const valueInput = _editingRow.querySelector('.var-value');
-      if (valueInput) valueInput.value = value;
+      _editingRow.dataset.key   = name;
+      _editingRow.dataset.value = value;
+      _refreshRow(_editingRow);
+      _reindexRows();
     } else {
       addVariableRow(name, value);
     }

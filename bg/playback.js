@@ -18,12 +18,20 @@ import { ssWrite, ssClear, csvResultWrite, csvResultClear } from './idb-screensh
 
 /* ── SW keep-alive ──────────────────────────────────────────────────────────── */
 
-// Prevent Chrome from terminating the Service Worker mid-playback.
-// Each alarm fires every ~20 s and re-schedules itself while any playback is
-// active; background.js handles the renewal inside chrome.alarms.onAlarm.
+// Chrome MV3 terminates idle Service Workers after ~30 s.  A playback that
+// contains a long wait() action would be killed mid-run without this alarm.
+// The alarm fires every 20 s and reschedules itself (via background.js onAlarm)
+// for as long as playback is active.
+
 const KEEPALIVE_ALARM = 'playback-keepalive';
-const _startKeepalive = () => chrome.alarms.create(KEEPALIVE_ALARM, { when: Date.now() + 20_000 });
-const _stopKeepalive  = () => chrome.alarms.clear(KEEPALIVE_ALARM);
+
+function _startKeepalive() {
+  chrome.alarms.create(KEEPALIVE_ALARM, { when: Date.now() + 20_000 });
+}
+
+function _stopKeepalive() {
+  chrome.alarms.clear(KEEPALIVE_ALARM);
+}
 
 /* ── Concurrency Guard ──────────────────────────────────────────────────────── */
 
@@ -329,6 +337,17 @@ export async function playActionsOnTab(
 
         const result = await tabMsg(tabId, { type: 'PLAY_ACTION', action }, Math.max(10_000, (action.timeout || 0) + 2_000), action.frameId);
 
+        // Sticky fallback resolution: if the content script resolved a {fallback:...}
+        // variable, persist the winning value into resolvedVars so every subsequent
+        // action in this run uses the same value (not A→B→C again from scratch).
+        if (result?.resolvedFallbacks && typeof result.resolvedFallbacks === 'object') {
+          for (const [spec, resolvedVal] of Object.entries(result.resolvedFallbacks)) {
+            for (const varName of Object.keys(resolvedVars)) {
+              if (resolvedVars[varName] === spec) resolvedVars[varName] = resolvedVal;
+            }
+          }
+        }
+
         // If a click/select caused an immediate navigation, the content script may
         // have become unreachable before it could send a response.  Detect this by
         // comparing the URL before and after — if it changed, treat the action as
@@ -394,11 +413,13 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
     actionIndex: fromIndex, totalActions: actions.length, loopCurrent: 1, loopTotal: 1,
   };
   updateBadge();
-  _startKeepalive();
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+  await _startKeepalive();
   try {
     await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex);
   } finally {
-    _stopKeepalive();
+    await _stopKeepalive();
+    chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
@@ -428,7 +449,8 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
     actionIndex: 0, totalActions: actions.length, loopCurrent: 1, loopTotal: loops,
   };
   updateBadge();
-  _startKeepalive();
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+  await _startKeepalive();
 
   try {
     // Pass resolved vars from one loop to the next so readdom variables
@@ -442,7 +464,8 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
       if (loop < loops - 1 && loopDelay > 0) await new Promise(r => setTimeout(r, loopDelay));
     }
   } finally {
-    _stopKeepalive();
+    await _stopKeepalive();
+    chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
@@ -473,7 +496,8 @@ export async function startSequence(runList) {
     if (removedId === tabId) { _seqTabClosed = true; state.sequencePlayback.active = false; }
   };
   chrome.tabs.onRemoved.addListener(_onSeqTabRemoved);
-  _startKeepalive();
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+  await _startKeepalive();
 
   try {
     for (let i = 0; i < runList.length; i++) {
@@ -508,7 +532,8 @@ export async function startSequence(runList) {
     console.error('[SEQUENCE] Error during sequence playback:', err);
   } finally {
     chrome.tabs.onRemoved.removeListener(_onSeqTabRemoved);
-    _stopKeepalive();
+    await _stopKeepalive();
+    chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
     state.sequencePlayback.active = false;
     state.playback.active = false;
     updateBadge();
@@ -592,10 +617,12 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   const actions      = scenario.actions || [];
   const relevantKeys = collectRelevantKeys(actions);
 
-  // Clear previous run's results and screenshots before starting — a fresh
-  // run should never show stale data from the prior run.
+  // Clear previous run's results, screenshots, and any stale single-scenario
+  // checkpoint before starting — a fresh run should never show stale data from
+  // the prior run, and leftover checkpoints would trigger false OFFER_RESUME.
   await Promise.all([
     new Promise(r => chrome.storage.local.remove('csvRunResults', r)),
+    new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
     ssClear(),
     csvResultClear(),
   ]);
@@ -603,7 +630,8 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   let completedRows = 0;
   let failedRows    = 0;
 
-  _startKeepalive();
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+  await _startKeepalive();
   for (let i = startRowIndex; i < rows.length; i++) {
     if (!state.csvPlayback.active) break;
     state.csvPlayback.currentRow = i;
@@ -652,9 +680,13 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     }
   }
 
-  _stopKeepalive();
+  await _stopKeepalive();
+  chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
   state.csvPlayback.active = false;
-  await clearCsvState();
+  await Promise.all([
+    clearCsvState(),
+    new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
+  ]);
   updateBadge();
 
   sendCompletionNotification('CSV Run complete', `${completedRows} / ${rows.length} rows for "${scenario.name}"`);

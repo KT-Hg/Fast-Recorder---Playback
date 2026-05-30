@@ -316,13 +316,14 @@ export function setCsvDoneBar(scenarioName, summary) {
   }, 3 * 60 * 1000);
 }
 
-/** Imperatively dismiss the CSV done bar (e.g. when a new run starts). */
+/** Imperatively dismiss the CSV done bar (e.g. when a new run starts or format is changed). */
 export function clearCsvDoneBar() {
   _csvDoneActive = false;
   clearTimeout(_csvDoneTimeout);
   _csvDoneTimeout = null;
   const bar = document.getElementById('nowPlayingBar');
   if (bar) bar.classList.remove('csv-done');
+  _setNowPlaying(false);
 }
 
 export function openPbPanel() { _setPanelOpen(true); }

@@ -514,21 +514,9 @@
     <!-- VARIABLES -->
     <div class="card">
       <h3>Variables</h3>
-      <div class="variables-table-wrapper">
-        <table class="variables-table" id="variablesTable">
-          <thead>
-            <tr>
-              <th style="width: 35%;">Key</th>
-              <th>Value</th>
-              <th style="width: 1%;"></th>
-            </tr>
-          </thead>
-          <tbody id="variablesTableBody"></tbody>
-        </table>
-      </div>
+      <ul class="var-list" id="variablesTableBody"></ul>
       <div class="row">
         <button id="addVariableRow" class="secondary w-auto">+ Add Row</button>
-        <button id="addRandomVariable" class="secondary w-auto">Random</button>
         <button id="saveVariables">Save Variables</button>
         <button id="reloadVariables" class="secondary w-auto">Reload</button>
       </div>
@@ -863,20 +851,61 @@
 
   <!-- ===== MODALS ===== -->
 
-  <!-- Random Variable Modal -->
+  <!-- Variable Modal (Add / Edit) -->
   <div id="randomModal" class="random-modal" role="dialog" aria-modal="true" aria-labelledby="randomModalTitle" aria-hidden="true">
     <div class="random-modal-content">
-      <h4 id="randomModalTitle">Generate Random Variable</h4>
+      <h4 id="randomModalTitle">Add Variable</h4>
       <label>Variable Name:</label>
-      <input id="randomVarName" placeholder="e.g., randomEmail" />
-      <label>Type:</label>
-      <select id="randomType">
-        <option value="alpha">Letters Only (a-z, A-Z)</option>
-        <option value="numeric">Numbers Only (0-9)</option>
-        <option value="alphanumeric">Letters + Numbers</option>
-      </select>
-      <label>Length:</label>
-      <input id="randomLength" type="number" value="8" min="1" max="50" />
+      <input id="randomVarName" placeholder="e.g., username" />
+
+      <!-- Mode tabs: S Static | R Random | P Pick | F Fallback -->
+      <div class="rnd-mode-tabs" role="tablist" aria-label="Variable type">
+        <button class="rnd-mode-tab active" id="rndTabStatic" role="tab" aria-selected="true" data-mode="static">
+          <span class="vt-i s">S</span> Static
+        </button>
+        <button class="rnd-mode-tab" id="rndTabString" role="tab" aria-selected="false" data-mode="string">
+          <span class="vt-i r">R</span> Random
+        </button>
+        <button class="rnd-mode-tab" id="rndTabPick" role="tab" aria-selected="false" data-mode="pick">
+          <span class="vt-i p">P</span> Pick
+        </button>
+        <button class="rnd-mode-tab" id="rndTabFallback" role="tab" aria-selected="false" data-mode="fallback">
+          <span class="vt-i f">F</span> Fallback
+        </button>
+      </div>
+
+      <!-- Static panel -->
+      <div id="rndStaticSection">
+        <label>Value:</label>
+        <input id="staticValue" placeholder="Enter value…" />
+      </div>
+
+      <!-- Random String panel -->
+      <div id="rndStringSection" style="display:none">
+        <label>Type:</label>
+        <select id="randomType">
+          <option value="alpha">Letters Only (a-z, A-Z)</option>
+          <option value="numeric">Numbers Only (0-9)</option>
+          <option value="alphanumeric">Letters + Numbers</option>
+        </select>
+        <label>Length:</label>
+        <input id="randomLength" type="number" value="8" min="1" max="50" />
+      </div>
+
+      <!-- Pick from List panel -->
+      <div id="rndPickSection" style="display:none">
+        <label style="margin-bottom:6px">Values <span style="font-weight:400;color:var(--muted);font-size:11px">(one picked randomly · CSV column overrides)</span>:</label>
+        <div id="pickValuesList"></div>
+        <button id="addPickValue" class="secondary" style="width:100%;margin-top:5px;font-size:12px;padding:5px 0">+ Add Value</button>
+      </div>
+
+      <!-- Fallback List panel -->
+      <div id="rndFallbackSection" style="display:none">
+        <label style="margin-bottom:6px">Fallback order <span style="font-weight:400;color:var(--muted);font-size:11px">(tries A → B → C in Child Condition, stops on first match)</span>:</label>
+        <div id="fallbackValuesList"></div>
+        <button id="addFallbackValue" class="secondary" style="width:100%;margin-top:5px;font-size:12px;padding:5px 0">+ Add Value</button>
+      </div>
+
       <div class="row" style="margin-top: 12px;">
         <button id="cancelRandom" class="secondary">Cancel</button>
         <button id="confirmRandom">Add Variable</button>

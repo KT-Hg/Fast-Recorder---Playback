@@ -282,11 +282,18 @@ function findElementWithFallback(selectors, timeout = 5000) {
    than building a full NodeList with querySelectorAll("*").
 ───────────────────────────────────────────────────────────────────────────── */
 
-function findElementByCondition(root, conditions) {
-  if (!root || !conditions) return null;
-  const { matchMode = 'any', valueEquals, textContains, idContains, classContains, typeEquals } = conditions;
-  const normalize = (s) => (s ?? '').toString().trim().toLowerCase();
+// Detects {fallback:A|B|C} format stored in a condition field value.
+const _FALLBACK_RE = /^\{fallback:(.+)\}$/;
+function _parseFallbackSpec(v) {
+  if (typeof v !== 'string') return null;
+  const m = v.match(_FALLBACK_RE);
+  return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
+}
 
+// Core single-value child search.  Used by findElementByCondition for both the
+// direct path (no fallback) and each iteration of the fallback path.
+function _findElementSingle(root, conditions, normalize) {
+  const { matchMode = 'any', valueEquals, textContains, idContains, classContains, typeEquals } = conditions;
   const checks = [];
   if (valueEquals  !== undefined && valueEquals  !== '') checks.push(el => el.value !== undefined && String(el.value) === String(valueEquals));
   if (textContains != null && textContains !== '') {
@@ -302,19 +309,54 @@ function findElementByCondition(root, conditions) {
   if (classContains != null && classContains !== '') { const n = normalize(classContains); checks.push(el => normalize(el.className).includes(n)); }
   if (typeEquals    != null && typeEquals    !== '') checks.push(el => el.type === typeEquals);
   if (checks.length === 0) return null;
-
-  const test = matchMode === 'all'
-    ? (el) => checks.every(fn => fn(el))
-    : (el) => checks.some(fn => fn(el));
-
-  // TreeWalker with early-exit — avoids building a full NodeList.
+  const test = matchMode === 'all' ? el => checks.every(fn => fn(el)) : el => checks.some(fn => fn(el));
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
   let node = walker.nextNode();
-  while (node) {
-    if (test(node)) return node;
-    node = walker.nextNode();
-  }
+  while (node) { if (test(node)) return node; node = walker.nextNode(); }
   return null;
+}
+
+/**
+ * Search a container's subtree for the first child element matching `conditions`.
+ *
+ * Supports {fallback:A|B|C} in condition string fields:
+ *   Tries value A first; if no child matches, tries B, then C.
+ *   The first value that finds a match is returned along with which spec it came
+ *   from (resolvedFallbacks), so the caller can persist it for sticky resolution.
+ *
+ * Returns { el: Element|null, resolvedFallbacks: { spec: resolvedValue } }.
+ */
+function findElementByCondition(root, conditions) {
+  if (!root || !conditions) return { el: null, resolvedFallbacks: {} };
+
+  const normalize = (s) => (s ?? '').toString().trim().toLowerCase();
+  const resolvedFallbacks = {};
+
+  // Detect the first condition field that contains a fallback spec.
+  const FALLBACK_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
+  let fbField = null, fbVals = null;
+  for (const f of FALLBACK_FIELDS) {
+    const vals = _parseFallbackSpec(conditions[f]);
+    if (vals) { fbField = f; fbVals = vals; break; }
+  }
+
+  if (!fbField) {
+    // No fallback — single-value search.
+    const el = _findElementSingle(root, conditions, normalize);
+    return { el, resolvedFallbacks };
+  }
+
+  // Fallback path: try each value in order, stop on first match.
+  const originalSpec = conditions[fbField];
+  for (const val of fbVals) {
+    const resolved = { ...conditions, [fbField]: val };
+    const el = _findElementSingle(root, resolved, normalize);
+    if (el) {
+      resolvedFallbacks[originalSpec] = val; // record which value succeeded
+      return { el, resolvedFallbacks };
+    }
+  }
+  return { el: null, resolvedFallbacks };
 }
 
 function waitForElement(selector, timeout = 5000) {
@@ -402,6 +444,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     const action = msg.action;
 
+    // Accumulates fallback resolutions from findElementByCondition calls in this
+    // action.  Sent back in every success response so playback.js can persist
+    // sticky values into resolvedVars for the rest of the run.
+    const _rf = {};
+    const _ok = (data = {}) => sendResponse({ ...data, resolvedFallbacks: _rf });
+
     /* ── readdom ── */
     if (action.type === 'readdom') {
       const actionTimeout = (action.timeout && action.timeout > 0) ? action.timeout : 5000;
@@ -416,7 +464,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const value = action.readFrom === 'value' ? (el.value ?? '')
                     : action.readFrom === 'attr'  ? (el.getAttribute(action.attrName || '') ?? '')
                     : (el.textContent?.trim() ?? '');
-        sendResponse({ value });
+        _ok({ value });
       } catch (_) {
         sendResponse({ failed: true });
       }
@@ -432,7 +480,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       } catch (err) {
         console.error('[CONTENT] Script error:', err);
       }
-      sendResponse();
+      _ok();
       return;
     }
 
@@ -446,7 +494,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             ? action.selectors : { css: action.selector },
           actionTimeout,
         );
-        target = parent ? findElementByCondition(parent, action.conditions) : null;
+        if (parent) {
+          const { el, resolvedFallbacks } = findElementByCondition(parent, action.conditions);
+          target = el;
+          Object.assign(_rf, resolvedFallbacks);
+        }
       } else if (action.selectors && typeof action.selectors === 'object') {
         target = await findElementWithFallback(action.selectors, actionTimeout);
       } else if (action.selector) {
@@ -472,8 +524,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const requeried = await findElementWithFallback(action.selectors, 500);
         if (requeried) {
           if (action.conditions) {
-            const rechild = findElementByCondition(requeried, action.conditions);
-            if (rechild) target = rechild;
+            const { el: rechild, resolvedFallbacks: rf2 } = findElementByCondition(requeried, action.conditions);
+            if (rechild) { target = rechild; Object.assign(_rf, rf2); }
           } else {
             target = requeried;
           }
@@ -491,7 +543,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       target.dispatchEvent(new MouseEvent('mouseover',  opts));
       target.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
       target.dispatchEvent(new MouseEvent('mousemove',  opts));
-      sendResponse();
+      _ok();
       return;
     }
 
@@ -518,7 +570,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       fireD(dropEl, 'drop',      dx, dy);
       fireD(target, 'dragend',   dx, dy);
       fireM(target, 'mouseup',   dx, dy);
-      sendResponse();
+      _ok();
       return;
     }
 
@@ -535,14 +587,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       target.dispatchEvent(new MouseEvent('mousedown', opts));
       target.dispatchEvent(new MouseEvent('mouseup',   opts));
       target.click(); // fires 'click' event + follows links/submits forms
-      sendResponse();
+      _ok();
       return;
     }
 
     /* ── DROPDOWN fallback ── */
     if (action.type === 'dropdown') {
       target.click();
-      sendResponse();
+      _ok();
       return;
     }
 
@@ -557,7 +609,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         document.execCommand('insertText', false, action.value ?? '');
         target.dispatchEvent(new Event('input',  { bubbles: true }));
         target.dispatchEvent(new Event('change', { bubbles: true }));
-        sendResponse();
+        _ok();
         return;
       } else if (target.tagName === 'SELECT') {
         target.value = action.value;
@@ -598,15 +650,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         (async () => {
           try { await waitForElement(action.waitForElement, 5000); }
           catch (_) { /* element wait timeout — continue */ }
-          sendResponse();
+          _ok();
         })();
         return;
       }
-      sendResponse();
+      _ok();
       return;
     }
 
-    sendResponse();
+    _ok();
   })();
 
   return true; // async

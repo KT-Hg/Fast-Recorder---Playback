@@ -28,6 +28,11 @@ function parseRandomSpec(val) {
   return m ? { type: m[1], length: parseInt(m[2]) } : null;
 }
 
+function parsePickSpec(val) {
+  const m = String(val).match(/^\{pick:(.+)\}$/);
+  return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
+}
+
 function makeRandomFn(type, length) {
   if (type === 'alpha')
     return `() => Array.from({length:${length}},()=>'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random()*52)]).join('')`;
@@ -83,6 +88,26 @@ function indentLines(lines, spaces) {
   return lines.map(l => (l === '' ? '' : spaces + l));
 }
 
+// Serializes a conditions object into a JS object literal, interpolating
+// ${varName} references via valueToJS(). {fallback:...} specs are passed as
+// JSON string literals — the runtime _findChild handles iteration.
+function _conditionsToJS(cond) {
+  if (!cond) return '{}';
+  const parts = [];
+  if (cond.matchMode) parts.push(`matchMode: ${JSON.stringify(cond.matchMode)}`);
+  const strFields = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
+  const FALLBACK_RE = /^\{fallback:(.+)\}$/;
+  for (const f of strFields) {
+    if (cond[f] != null && cond[f] !== '') {
+      const v = String(cond[f]);
+      // {fallback:...} is passed as a plain string literal — _findChild iterates at runtime.
+      // ${varName} references are interpolated via template literals as usual.
+      parts.push(`${f}: ${FALLBACK_RE.test(v) ? JSON.stringify(v) : valueToJS(v)}`);
+    }
+  }
+  return `{${parts.join(', ')}}`;
+}
+
 // Generates the "if (condExpr) {" header for a condition action
 function condHeader(action, stepNum) {
   const sel = getBestSel(action);
@@ -129,7 +154,7 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       out.push(`// Step ${stepNum}: click${lbl}`);
       if (action.conditions) {
         out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
-        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${_conditionsToJS(action.conditions)});`);
         out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
       } else {
         out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
@@ -142,7 +167,7 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       out.push(`// Step ${stepNum}: input${lbl}`);
       if (action.conditions) {
         out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
-        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${_conditionsToJS(action.conditions)});`);
         out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
       } else {
         out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
@@ -155,7 +180,7 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       out.push(`// Step ${stepNum}: hover${lbl}`);
       if (action.conditions) {
         out.push(`const ${v}_p = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
-        out.push(`const ${v} = _findChild(${v}_p, ${JSON.stringify(action.conditions)});`);
+        out.push(`const ${v} = _findChild(${v}_p, ${_conditionsToJS(action.conditions)});`);
         out.push(`if (!${v}) throw new Error('Child condition not matched (step ${stepNum})');`);
       } else {
         out.push(`const ${v} = await getEl(${JSON.stringify(sel)}, ${elTimeout});`);
@@ -280,12 +305,14 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 export function generateBookmarklet(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 300, elTimeout = 5000 } = opts;
 
-  const staticVars = {}, randomSpecs = {}, readdomVars = new Set();
+  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, readdomVars = new Set();
 
   for (const [k, v] of Object.entries(variables || {})) {
     const spec = parseRandomSpec(v);
-    if (spec) randomSpecs[k] = spec;
-    else staticVars[k] = v;
+    const pick = parsePickSpec(v);
+    if (spec)      randomSpecs[k] = spec;
+    else if (pick) pickSpecs[k]   = pick;
+    else           staticVars[k]  = v;
   }
 
   const enabled = (actions || []).filter(a => !a.disabled);
@@ -344,21 +371,33 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push("    el.dispatchEvent(new Event('change', { bubbles: true }));");
   out.push('  };');
   out.push('');
+  // _findChild supports {fallback:A|B|C} in condition fields — tries each value
+  // in order and returns the first matching child element.
   out.push('  const _findChild = (parent, cond) => {');
-  out.push("    const mode = cond.matchMode || 'any';");
-  out.push("    const norm = s => (s == null ? '' : String(s).trim().toLowerCase());");
-  out.push('    const checks = [];');
-  out.push("    if (cond.valueEquals   != null && cond.valueEquals   !== '') checks.push(el => el.value !== undefined && String(el.value) === String(cond.valueEquals));");
-  out.push("    if (cond.textContains  != null && cond.textContains  !== '') { const n = norm(cond.textContains);  checks.push(el => norm(el.textContent).includes(n)); }");
-  out.push("    if (cond.idContains    != null && cond.idContains    !== '') { const n = norm(cond.idContains);    checks.push(el => norm(el.id).includes(n)); }");
-  out.push("    if (cond.classContains != null && cond.classContains !== '') { const n = norm(cond.classContains); checks.push(el => norm(el.className).includes(n)); }");
-  out.push("    if (cond.typeEquals    != null && cond.typeEquals    !== '') checks.push(el => el.type === cond.typeEquals);");
-  out.push("    if (!checks.length) return null;");
-  out.push("    const test = mode === 'all' ? el => checks.every(fn => fn(el)) : el => checks.some(fn => fn(el));");
-  out.push('    const walker = document.createTreeWalker(parent, NodeFilter.SHOW_ELEMENT);');
-  out.push('    let node = walker.nextNode();');
-  out.push('    while (node) { if (test(node)) return node; node = walker.nextNode(); }');
-  out.push('    return null;');
+  out.push("    const _fbRe = /^\\{fallback:(.+)\\}$/;");
+  out.push("    const _fbField = ['valueEquals','textContains','idContains','classContains','typeEquals'].find(f => cond[f] != null && _fbRe.test(String(cond[f])));");
+  out.push("    const _fbVals  = _fbField ? String(cond[_fbField]).match(_fbRe)[1].split('|').map(s=>s.trim()).filter(Boolean) : null;");
+  out.push("    const _tryFind = (c) => {");
+  out.push("      const mode = c.matchMode || 'any';");
+  out.push("      const norm = s => (s == null ? '' : String(s).trim().toLowerCase());");
+  out.push('      const checks = [];');
+  out.push("      if (c.valueEquals   != null && c.valueEquals   !== '') checks.push(el => el.value !== undefined && String(el.value) === String(c.valueEquals));");
+  out.push("      if (c.textContains  != null && c.textContains  !== '') { const n = norm(c.textContains);  checks.push(el => norm(el.textContent).includes(n)); }");
+  out.push("      if (c.idContains    != null && c.idContains    !== '') { const n = norm(c.idContains);    checks.push(el => norm(el.id).includes(n)); }");
+  out.push("      if (c.classContains != null && c.classContains !== '') { const n = norm(c.classContains); checks.push(el => norm(el.className).includes(n)); }");
+  out.push("      if (c.typeEquals    != null && c.typeEquals    !== '') checks.push(el => el.type === c.typeEquals);");
+  out.push("      if (!checks.length) return null;");
+  out.push("      const test = mode === 'all' ? el => checks.every(fn => fn(el)) : el => checks.some(fn => fn(el));");
+  out.push('      const walker = document.createTreeWalker(parent, NodeFilter.SHOW_ELEMENT);');
+  out.push('      let node = walker.nextNode();');
+  out.push('      while (node) { if (test(node)) return node; node = walker.nextNode(); }');
+  out.push('      return null;');
+  out.push('    };');
+  out.push("    if (_fbField && _fbVals) {");
+  out.push("      for (const _fv of _fbVals) { const el = _tryFind({...cond, [_fbField]: _fv}); if (el) return el; }");
+  out.push("      return null;");
+  out.push("    }");
+  out.push('    return _tryFind(cond);');
   out.push('  };');
 
   if (Object.keys(randomSpecs).length > 0) {
@@ -372,6 +411,7 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
 
   const hasVars = Object.keys(staticVars).length > 0
     || Object.keys(randomSpecs).length > 0
+    || Object.keys(pickSpecs).length > 0
     || readdomVars.size > 0;
 
   if (hasVars) {
@@ -383,6 +423,11 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
     for (const k of Object.keys(randomSpecs)) {
       const safe = _sanitizeVarName(k);
       out.push(`  const ${safe} = _gen_${safe}();`);
+    }
+    for (const [k, vals] of Object.entries(pickSpecs)) {
+      const safe    = _sanitizeVarName(k);
+      const jsArray = '[' + vals.map(v => JSON.stringify(v)).join(', ') + ']';
+      out.push(`  const ${safe} = ${jsArray}[Math.floor(Math.random() * ${vals.length})];`);
     }
     for (const k of readdomVars) {
       out.push(`  let ${k} = '';`);
@@ -545,16 +590,27 @@ function _renderModal(scenarioName, result, variables) {
     listEl.innerHTML = '';
     for (const [key, val] of vars) {
       const spec    = parseRandomSpec(val);
+      const pick    = parsePickSpec(val);
       const isRand  = !!spec;
-      const preview = isRand
-        ? previewRandom(spec.type, spec.length)
-        : (val.length > 40 ? val.slice(0, 40) + '…' : val);
+      const isPick  = !!pick;
+      let icon, badgeLabel, badgeCls, preview;
+      if (isRand) {
+        icon = '🎲'; badgeLabel = 'Random'; badgeCls = 'rand';
+        preview = previewRandom(spec.type, spec.length);
+      } else if (isPick) {
+        icon = '⚄'; badgeLabel = `Pick (${pick.length})`; badgeCls = 'rand';
+        preview = pick.join(' | ');
+        if (preview.length > 40) preview = preview.slice(0, 40) + '…';
+      } else {
+        icon = '🔤'; badgeLabel = 'Static'; badgeCls = 'static';
+        preview = val.length > 40 ? val.slice(0, 40) + '…' : val;
+      }
       const row = document.createElement('div');
       row.className = 'export-bm-var-row';
       row.innerHTML = `
-        <div class="export-bm-var-icon ${isRand ? 'rand' : 'static'}">${isRand ? '🎲' : '🔤'}</div>
+        <div class="export-bm-var-icon ${badgeCls}">${icon}</div>
         <span class="export-bm-var-name">\${${escHtml(key)}}</span>
-        <span class="export-bm-badge ${isRand ? 'rand' : 'static'}">${isRand ? 'Random' : 'Static'}</span>
+        <span class="export-bm-badge ${badgeCls}">${badgeLabel}</span>
         <span class="export-bm-preview">${escHtml(preview)}</span>`;
       listEl.appendChild(row);
     }

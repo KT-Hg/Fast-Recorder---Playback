@@ -50,7 +50,7 @@ const _RANDOM_CHARSETS = {
   alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
 };
 
-/** Resolve {random:type:len} placeholders to generated strings at run start. */
+/** Resolve {random:type:len} and {pick:val1|val2|val3} placeholders at run start. */
 export function resolveRandomVars(vars) {
   const result = {};
   for (const [k, v] of Object.entries(vars)) {
@@ -60,7 +60,16 @@ export function resolveRandomVars(vars) {
       const len = Math.min(parseInt(m[2], 10), 512); // 512-char cap prevents DoS via huge random values
       result[k] = Array.from({ length: len }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
     } else {
-      result[k] = v;
+      // {pick:val1|val2|val3} — randomly pick one value from the pipe-separated list.
+      // In CSV runs, CSV column values override baseVars before resolveRandomVars is called,
+      // so this branch only fires when the CSV file has no column matching this variable name.
+      const pm = typeof v === 'string' && v.match(/^\{pick:(.+)\}$/);
+      if (pm) {
+        const vals = pm[1].split('|').map(s => s.trim()).filter(Boolean);
+        result[k] = vals.length ? vals[Math.floor(Math.random() * vals.length)] : '';
+      } else {
+        result[k] = v;
+      }
     }
   }
   return result;
@@ -138,6 +147,12 @@ export function openDropdownViaCdp(tabId, selector) {
     const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
 
     chrome.tabs.get(tabId, (tab) => {
+      // Do NOT call chrome.windows.update({ focused: true }) here.
+      // Focusing the window would interrupt the user if they are on another tab
+      // while CSV runs in the background.  CDP mousePressed works without focus
+      // for most custom dropdowns; native <select> OS pickers may not open but
+      // the element still receives the trusted click event.
+      void tab; // tab retained for potential future use (e.g. windowId checks)
       const focusAndOpen = () => {
         chrome.debugger.attach({ tabId }, '1.3', () => {
           const alreadyAttached = !!chrome.runtime.lastError;
@@ -209,12 +224,7 @@ export function openDropdownViaCdp(tabId, selector) {
         });
       };
 
-      // Focus the window first so the OS native dropdown renders on-screen.
-      if (tab?.windowId) {
-        chrome.windows.update(tab.windowId, { focused: true }, focusAndOpen);
-      } else {
-        focusAndOpen();
-      }
+      focusAndOpen();
     });
   });
 }
