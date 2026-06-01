@@ -147,6 +147,7 @@
         <option value="screenshot_full">Screenshot (Full Page)</option>
         <option value="screenshot_element">Screenshot (Element)</option>
         <option value="screenshot_tovar">Screenshot → Variable (CSV)</option>
+        <option value="uploadFile">Upload File</option>
       </select>
 
       <!-- SELECTOR SECTION — shown only when selected type needs a selector -->
@@ -226,6 +227,20 @@
           <button id="clearDragdropTargetBtn" class="secondary w-auto" title="Clear picked drop target">✕ Clear</button>
         </div>
         <span class="helper-text">Source = main selector above. Target = where to drop.</span>
+      </div>
+
+      <!-- UPLOAD FILE SETTINGS — shown for uploadFile type -->
+      <div class="hidden-by-default" id="uploadFileWrapper" style="margin-top:6px;">
+        <div class="step-label" id="uploadFileStepLabel">③ File to Upload</div>
+        <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Folder path</label>
+          <input id="uploadFolderPath" placeholder="e.g. C:\Data\Uploads" style="flex:1; margin:0;" />
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">File name</label>
+          <input id="uploadFileName" placeholder="e.g. file_001.pdf  or  ${filename}" style="flex:1; margin:0;" />
+        </div>
+        <span class="helper-text">File name supports <code>${variable}</code> — combine with CSV to upload different files per row.</span>
       </div>
 
       <!-- CONDITION SETTINGS — shown for condition type -->

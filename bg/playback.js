@@ -7,9 +7,9 @@
 import { state, persistCsvState, clearCsvState, saveCsvRows } from './state.js';
 import { getScenarios, getVariables } from './storage.js';
 import {
-  updateBadge, sendCompletionNotification,
+  updateBadge, sendCompletionNotification, sendAlertNotification,
   resolveRandomVars, interpolateAction, runScriptViaCdp, openDropdownViaCdp,
-  getActiveTabId, tabMsg, getTabUrl, waitForTabLoad,
+  getActiveTabId, tabMsg, getTabUrl, waitForTabLoad, setFileInputViaCdp,
 } from './utils.js';
 import {
   takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
@@ -41,6 +41,19 @@ function _isAnyPlaybackActive() {
 
 function _notifyAlreadyRunning() {
   chrome.runtime.sendMessage({ type: 'PLAYBACK_ALREADY_RUNNING' }).catch(() => {});
+  sendAlertNotification('⚠ Already Running', 'Playback is already running — stop it first', 'already_running');
+}
+
+function _notifyActionFailed(index, action, reason) {
+  const r = reason || 'element not found';
+  chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index, action, reason: r }).catch(() => {});
+  if (!state.csvPlayback.active) {
+    const label = action?.label || action?.type || '';
+    sendAlertNotification(
+      `⚠ Action ${index + 1} Failed`,
+      label ? `${label}: ${r}` : r,
+    );
+  }
 }
 
 /* ── Screenshot settings cache ──────────────────────────────────────────────── */
@@ -80,10 +93,7 @@ export async function playActionsOnTab(
   // Guard against infinite switch/nested-scenario recursion.
   if (_depth > 10) {
     console.error('[PLAYBACK] Max switch/nested-scenario depth (10) exceeded — aborting branch');
-    chrome.runtime.sendMessage({
-      type: 'ACTION_FAILED', index: startFromIndex, action: null,
-      reason: 'Max nested scenario depth exceeded (possible infinite loop in switch)',
-    }).catch(() => {});
+    _notifyActionFailed(startFromIndex, null, 'Max nested scenario depth exceeded (possible infinite loop in switch)');
     return vars || {};
   }
 
@@ -100,6 +110,7 @@ export async function playActionsOnTab(
       if (!state.playback.active || _tabClosed) break;
 
       state.playback.actionIndex = i;
+      updateBadge();
 
       // Persist a checkpoint after every action so the popup can offer resume
       // if the tab reloads mid-playback (e.g. from a navigate action).
@@ -170,7 +181,7 @@ export async function playActionsOnTab(
           });
 
           if (!navSuccess) {
-            chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action, reason: 'Navigation timed out or tab was closed' }).catch(() => {});
+            _notifyActionFailed(i, action, 'Navigation timed out or tab was closed');
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: 'Navigation timed out' });
           }
           continue;
@@ -208,8 +219,8 @@ export async function playActionsOnTab(
           const result   = await takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload, action.selectors)
             .catch(e => ({ error: e.message }));
           if (result?.error) {
-            chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action }).catch(() => {});
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '' });
+            _notifyActionFailed(i, action, result.error);
+            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
           }
           continue;
         }
@@ -235,7 +246,7 @@ export async function playActionsOnTab(
             }
           } catch (e) {
             console.error('[PLAYBACK] screenshot_tovar failed:', e);
-            chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action, reason: e.message }).catch(() => {});
+            _notifyActionFailed(i, action, e.message);
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });
           }
           continue;
@@ -251,8 +262,8 @@ export async function playActionsOnTab(
             : takeVisibleScreenshot(tabId, saveMode, prefix, action.value || null, false, false, skipDownload);
           const result = await task.catch(e => ({ error: e.message }));
           if (result?.error) {
-            chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action }).catch(() => {});
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '' });
+            _notifyActionFailed(i, action, result.error);
+            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
           }
           continue;
         }
@@ -263,8 +274,8 @@ export async function playActionsOnTab(
           if (rdResult?.value !== undefined && action.varName) {
             resolvedVars[action.varName] = rdResult.value;
           } else if (rdResult?.failed) {
-            chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action }).catch(() => {});
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '' });
+            _notifyActionFailed(i, action, rdResult.error || null);
+            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: rdResult.error || 'element not found' });
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -308,6 +319,9 @@ export async function playActionsOnTab(
               state.playback.actionIndex   = 0;
               state.playback.totalActions  = targetScenario.actions.length;
               chrome.runtime.sendMessage({ type: 'SWITCH_SCENARIO', scenarioName: switchedName, caseLabel }).catch(() => {});
+              if (!state.csvPlayback.active) {
+                sendAlertNotification('🔀 Scenario Switched', `[${caseLabel}] → "${switchedName}"`);
+              }
               // Pass a copy of vars so the nested scenario cannot mutate the parent's
               // variable map; merge returned vars back after completion.
               const nestedVars = await playActionsOnTab(
@@ -316,16 +330,36 @@ export async function playActionsOnTab(
               );
               Object.assign(resolvedVars, nestedVars);
             } else {
-              chrome.runtime.sendMessage({
-                type: 'ACTION_FAILED', index: i, action,
-                reason: `Switch: scenario "${matched.scenarioName || matched.scenarioId}" not found or has no actions`,
-              }).catch(() => {});
+              _notifyActionFailed(i, action, `Switch: scenario "${matched.scenarioName || matched.scenarioId}" not found or has no actions`);
             }
           } else {
-            chrome.runtime.sendMessage({
-              type: 'ACTION_FAILED', index: i, action,
-              reason: `Switch: no case matched value "${switchVal}" and no default case set`,
-            }).catch(() => {});
+            _notifyActionFailed(i, action, `Switch: no case matched value "${switchVal}" and no default case set`);
+          }
+          if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
+          continue;
+        }
+
+        /* ── Upload File — CDP DOM.setFileInputFiles ── */
+        if (action.type === 'uploadFile') {
+          const cssSel = action.selectors?.css
+            || (action.selectors?.id ? `#${CSS.escape(action.selectors.id)}` : null)
+            || action.selector || '';
+          const folder = (action.folderPath || '').replace(/[/\\]+$/, '');
+          const fname  = action.fileName || '';
+
+          if (!cssSel || !folder || !fname) {
+            const reason = 'uploadFile: missing selector, folderPath, or fileName';
+            _notifyActionFailed(i, action, reason);
+            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
+          } else {
+            const sep      = folder.includes('\\') ? '\\' : '/';
+            const filePath = `${folder}${sep}${fname}`;
+            try {
+              await setFileInputViaCdp(tabId, cssSel, filePath);
+            } catch (e) {
+              _notifyActionFailed(i, action, e.message);
+              if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });
+            }
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -363,7 +397,7 @@ export async function playActionsOnTab(
 
         if (result?.failed) {
           const reason = result._noContentScript ? 'Content script not reachable' : (result.error || 'Action failed');
-          chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action, reason }).catch(() => {});
+          _notifyActionFailed(i, action, reason);
           if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
         }
 
@@ -381,14 +415,15 @@ export async function playActionsOnTab(
         }
       } catch (err) {
         console.error(`[PLAYBACK] Action ${i} failed:`, err);
-        chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action: actions[i] }).catch(() => {});
-        if (failedActions) failedActions.push({ index: i + 1, type: actions[i]?.type || 'unknown', label: actions[i]?.label || '' });
+        _notifyActionFailed(i, actions[i], err?.message || null);
+        if (failedActions) failedActions.push({ index: i + 1, type: actions[i]?.type || 'unknown', label: actions[i]?.label || '', reason: err?.message || 'unknown error' });
       }
     }
   } finally {
     chrome.tabs.onRemoved.removeListener(_onTabRemoved);
     if (_tabClosed) {
       chrome.runtime.sendMessage({ type: 'PLAYBACK_TAB_CLOSED', tabId }).catch(() => {});
+      sendAlertNotification('⚠ Playback Stopped', 'Tab was closed — playback stopped', 'tab_closed');
     }
   }
   return resolvedVars;
@@ -438,6 +473,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
   const tabId = await getActiveTabId();
   if (!tabId) {
     chrome.runtime.sendMessage({ type: 'PLAYBACK_NO_TAB' }).catch(() => {});
+    sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
     return;
   }
 
@@ -460,6 +496,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
       if (!state.playback.active) break;
       state.playback.loopCurrent = loop + 1;
       state.playback.actionIndex = 0;
+      updateBadge();
       loopVars = await playActionsOnTab(tabId, actions, loopVars);
       if (loop < loops - 1 && loopDelay > 0) await new Promise(r => setTimeout(r, loopDelay));
     }
@@ -486,6 +523,7 @@ export async function startSequence(runList) {
     state.sequencePlayback.active = false;
     updateBadge();
     chrome.runtime.sendMessage({ type: 'PLAYBACK_NO_TAB' }).catch(() => {});
+    sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
     return;
   }
 
@@ -499,10 +537,13 @@ export async function startSequence(runList) {
   chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   await _startKeepalive();
 
+  let _seqCompleted = 0, _seqFailed = 0;
+
   try {
     for (let i = 0; i < runList.length; i++) {
       if (!state.sequencePlayback.active || _seqTabClosed) break;
       state.sequencePlayback.currentIndex = i;
+      updateBadge();
 
       const item     = runList[i];
       if (item.disabled) continue;
@@ -516,8 +557,11 @@ export async function startSequence(runList) {
         originalScenarioName: scenario.name || item.id,
         actionIndex: 0, totalActions: actions.length,
       };
-      await playActionsOnTab(tabId, actions);
+      const _seqItemFailed = [];
+      await playActionsOnTab(tabId, actions, null, null, false, false, 0, _seqItemFailed);
       state.playback.active = false;
+      _seqCompleted++;
+      if (_seqItemFailed.length > 0) _seqFailed++;
 
       if (i < runList.length - 1 && item.delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, item.delay));
@@ -525,8 +569,12 @@ export async function startSequence(runList) {
     }
     if (_seqTabClosed) {
       chrome.runtime.sendMessage({ type: 'PLAYBACK_TAB_CLOSED', tabId }).catch(() => {});
+      sendAlertNotification('⚠ Sequence Stopped', 'Tab was closed — sequence playback stopped', 'tab_closed');
     } else {
-      sendCompletionNotification('Sequence complete', `${runList.length} scenario(s) finished`);
+      const _seqMsg = _seqFailed > 0
+        ? `${_seqCompleted - _seqFailed} ✓ · ${_seqFailed} ✗ of ${_seqCompleted} scenarios`
+        : `${_seqCompleted} scenario(s) done`;
+      sendCompletionNotification('Sequence complete', _seqMsg);
     }
   } catch (err) {
     console.error('[SEQUENCE] Error during sequence playback:', err);
@@ -611,6 +659,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
     await clearCsvState();
     updateBadge();
     chrome.runtime.sendMessage({ type: 'PLAYBACK_NO_TAB' }).catch(() => {});
+    sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
     return;
   }
 
@@ -635,6 +684,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   for (let i = startRowIndex; i < rows.length; i++) {
     if (!state.csvPlayback.active) break;
     state.csvPlayback.currentRow = i;
+    updateBadge();
 
     await persistCsvState(scenarioId, i, delayBetween, exportFormat);
 
@@ -689,7 +739,10 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   ]);
   updateBadge();
 
-  sendCompletionNotification('CSV Run complete', `${completedRows} / ${rows.length} rows for "${scenario.name}"`);
+  const _csvMsg = failedRows > 0
+    ? `${completedRows - failedRows} ✓ · ${failedRows} ✗ of ${completedRows} rows — "${scenario.name}"`
+    : `${completedRows} rows done — "${scenario.name}"`;
+  sendCompletionNotification('CSV Run complete', _csvMsg);
   chrome.runtime.sendMessage({
     type: 'CSV_RUN_DONE',
     total: completedRows,

@@ -11,15 +11,41 @@ import { markSessionOpen, markSessionClosed } from './cdp-session.js';
 
 /* ── Badge ─────────────────────────────────────────────────────────────────── */
 
+function _badgeProgress(current, total) {
+  const s = `${current}/${total}`;
+  return s.length <= 4 ? s : `${Math.round(current / total * 100)}%`;
+}
+
 export function updateBadge() {
   let text = '';
   let color = '#6b7280';
 
-  if (state.pickMode)              { text = 'PICK'; color = '#6366f1'; }
-  else if (state.recording)        { text = 'REC';  color = '#ef4444'; }
-  else if (state.csvPlayback.active)      { text = 'CSV';  color = '#3b82f6'; }
-  else if (state.sequencePlayback.active) { text = 'SEQ';  color = '#f97316'; }
-  else if (state.playback.active)  { text = '▶';    color = '#22c55e'; }
+  if (state.pickMode) {
+    text = 'PICK'; color = '#6366f1';
+  } else if (state.recording) {
+    text = 'REC'; color = '#ef4444';
+  } else if (state.csvPlayback.active) {
+    const row   = state.csvPlayback.currentRow ?? 0;
+    const total = state.csvPlayback.rows?.length ?? 0;
+    text  = total > 0 ? _badgeProgress(row + 1, total) : 'CSV';
+    color = '#3b82f6';
+  } else if (state.sequencePlayback.active) {
+    const idx   = state.sequencePlayback.currentIndex ?? 0;
+    const total = state.sequencePlayback.runList?.length ?? 0;
+    text  = total > 0 ? _badgeProgress(idx + 1, total) : 'SEQ';
+    color = '#f97316';
+  } else if (state.playback.active) {
+    const loopTot = state.playback.loopTotal ?? 1;
+    if (loopTot > 1) {
+      const loopCur = state.playback.loopCurrent ?? 1;
+      text = _badgeProgress(loopCur, loopTot);
+    } else {
+      const idx   = state.playback.actionIndex ?? 0;
+      const total = state.playback.totalActions ?? 0;
+      text = total > 0 ? _badgeProgress(idx + 1, total) : '▶';
+    }
+    color = '#22c55e';
+  }
 
   chrome.action.setBadgeText({ text });
   if (text) chrome.action.setBadgeBackgroundColor({ color });
@@ -38,6 +64,14 @@ export async function sendCompletionNotification(title, message) {
   chrome.notifications.create('completion_' + Date.now(), {
     type: 'basic', iconUrl: _NOTIF_ICON,
     title: title || 'Playback complete',
+    message: message || '',
+  }, () => { void chrome.runtime.lastError; });
+}
+
+export function sendAlertNotification(title, message, id) {
+  chrome.notifications.create(id || ('alert_' + Date.now()), {
+    type: 'basic', iconUrl: _NOTIF_ICON,
+    title: title || 'Alert',
     message: message || '',
   }, () => { void chrome.runtime.lastError; });
 }
@@ -113,6 +147,8 @@ export function interpolateAction(action, vars) {
   if (a.code)          a.code          = applyVars(a.code, vars);
   if (a.expectedValue) a.expectedValue = applyVars(a.expectedValue, vars);
   if (a.switchVar)     a.switchVar     = applyVars(a.switchVar, vars);
+  if (a.fileName)      a.fileName      = applyVars(a.fileName,  vars);
+  if (a.folderPath)    a.folderPath    = applyVars(a.folderPath, vars);
   if (a.conditions && typeof a.conditions === 'object') {
     a.conditions = { ...a.conditions };
     if (a.conditions.valueEquals   != null) a.conditions.valueEquals   = applyVars(String(a.conditions.valueEquals),   vars);
@@ -177,6 +213,7 @@ export function openDropdownViaCdp(tabId, selector) {
                 expression: `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null; el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'nearest' }); const r = el.getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width/2, y: r.top + r.height/2, isSelect: el.tagName === 'SELECT' }); })()`,
                 returnByValue: true,
               }, (rectRes) => {
+                void chrome.runtime.lastError;
                 try {
                   let info = null;
                   try { info = JSON.parse(rectRes?.result?.value); } catch (_) {}
@@ -206,7 +243,7 @@ export function openDropdownViaCdp(tabId, selector) {
                         if (chrome.runtime.lastError) { done(); return; }
                         chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent',
                           { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, modifiers: 0 },
-                          () => done(),
+                          () => { void chrome.runtime.lastError; done(); },
                         );
                       },
                     );
@@ -372,6 +409,57 @@ export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
       } else {
         settle(res);
       }
+    });
+  });
+}
+
+/* ── Upload File via CDP ────────────────────────────────────────────────────── */
+
+/**
+ * Inject a local file into an <input type="file"> element using CDP
+ * DOM.setFileInputFiles.  This is the same mechanism Selenium/Playwright use
+ * to automate file uploads without opening the OS file-picker dialog.
+ *
+ * @param {number} tabId
+ * @param {string} selector  CSS selector targeting the file input element
+ * @param {string} filePath  Absolute local path, e.g. "C:\\Data\\file.pdf"
+ */
+export function setFileInputViaCdp(tabId, selector, filePath) {
+  return new Promise((resolve) => {
+    const _safetyTimer = setTimeout(resolve, 15_000);
+    const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
+
+    chrome.debugger.attach({ tabId }, '1.3', () => {
+      const alreadyAttached = !!chrome.runtime.lastError;
+
+      const done = () => {
+        if (!alreadyAttached) {
+          chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
+        }
+        _safeResolve();
+      };
+
+      // Step 1: get document root node
+      chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', {}, (docResult) => {
+        if (chrome.runtime.lastError || !docResult?.root?.nodeId) { done(); return; }
+
+        // Step 2: find the file input by selector
+        chrome.debugger.sendCommand({ tabId }, 'DOM.querySelector', {
+          nodeId: docResult.root.nodeId,
+          selector,
+        }, (queryResult) => {
+          if (chrome.runtime.lastError || !queryResult?.nodeId) { done(); return; }
+
+          // Step 3: set the file — browser fires the change event automatically
+          chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', {
+            files:  [filePath],
+            nodeId: queryResult.nodeId,
+          }, () => {
+            void chrome.runtime.lastError;
+            done();
+          });
+        });
+      });
     });
   });
 }

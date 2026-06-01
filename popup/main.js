@@ -2151,6 +2151,9 @@ manualActionType.onchange = () => {
     if (type === "switch") populateSwitchScenarioSelect();
   }
 
+  const uploadFileWrapper = document.getElementById("uploadFileWrapper");
+  if (uploadFileWrapper) uploadFileWrapper.style.display = type === "uploadFile" ? "block" : "none";
+
   const childConditionWrapper = document.getElementById("childConditionWrapper");
   if (childConditionWrapper) {
     childConditionWrapper.style.display = ["click", "input", "hover"].includes(type) ? "block" : "none";
@@ -2332,6 +2335,12 @@ function validateActionForm(type, selector, delayVal) {
       };
     }
   }
+  if (type === "uploadFile") {
+    const fp = document.getElementById("uploadFolderPath")?.value?.trim();
+    const fn = document.getElementById("uploadFileName")?.value?.trim();
+    if (!fp) return { valid: false, el: document.getElementById("uploadFolderPath"), msg: "Folder path is required for Upload File action" };
+    if (!fn) return { valid: false, el: document.getElementById("uploadFileName"),   msg: "File name is required for Upload File action" };
+  }
   return { valid: true };
 }
 
@@ -2391,6 +2400,11 @@ function buildActionFromForm(type, selector, value, delayVal) {
     action.targetSelector  = target;
     const dtSelectorType   = document.getElementById("dragdropTargetSelectorType")?.value || "css";
     action.targetSelectors = currentPickedDragdropTargetSelectors || { [dtSelectorType]: target };
+  }
+
+  if (type === "uploadFile") {
+    action.folderPath = document.getElementById("uploadFolderPath")?.value?.trim() || "";
+    action.fileName   = document.getElementById("uploadFileName")?.value?.trim()   || "";
   }
 
   if (type === "condition") {
@@ -2551,6 +2565,15 @@ function startEdit(index, action) {
       const pickedDdWrap = document.getElementById("pickedDragdropTargetWrap");
       if (pickedDdWrap) pickedDdWrap.style.display = "none";
     }
+  } else if (action.type === "uploadFile") {
+    if (manualValueWrapper) manualValueWrapper.style.display = "none";
+    if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
+    const uploadFileWrapEl = document.getElementById("uploadFileWrapper");
+    if (uploadFileWrapEl) uploadFileWrapEl.style.display = "block";
+    const uploadFolderPathEl = document.getElementById("uploadFolderPath");
+    const uploadFileNameEl   = document.getElementById("uploadFileName");
+    if (uploadFolderPathEl) uploadFolderPathEl.value = action.folderPath || "";
+    if (uploadFileNameEl)   uploadFileNameEl.value   = action.fileName   || "";
   } else if (action.type === "hover") {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
@@ -2710,6 +2733,14 @@ function clearEditState() {
   const ssTovarTargetClear = document.getElementById("screenshotTovarTarget");
   if (ssTovarTargetClear) ssTovarTargetClear.value = "page";
 
+  // Reset uploadFile fields
+  const uploadFileWrapClear = document.getElementById("uploadFileWrapper");
+  if (uploadFileWrapClear) uploadFileWrapClear.style.display = "none";
+  const uploadFolderPathClear = document.getElementById("uploadFolderPath");
+  if (uploadFolderPathClear) uploadFolderPathClear.value = "";
+  const uploadFileNameClear = document.getElementById("uploadFileName");
+  if (uploadFileNameClear) uploadFileNameClear.value = "";
+
   // Reset switch fields
   _switchCases = [];
   const switchWrapperClear = document.getElementById("switchWrapper");
@@ -2809,6 +2840,10 @@ function saveDraft() {
     // switch
     switchVar:   document.getElementById("switchVar")?.value?.trim() || "",
     switchCases: _switchCases ? [..._switchCases] : [],
+
+    // uploadFile
+    uploadFolderPath: document.getElementById("uploadFolderPath")?.value?.trim() || "",
+    uploadFileName:   document.getElementById("uploadFileName")?.value?.trim()   || "",
 
     // editing state
     editing: editing ? { scenarioId: editing.scenarioId, index: editing.index } : null,
@@ -2929,6 +2964,14 @@ function restoreDraft(draft) {
     renderSwitchCaseList?.();
   }
 
+  // UploadFile
+  if (draft.actionType === "uploadFile") {
+    const fpEl = document.getElementById("uploadFolderPath");
+    const fnEl = document.getElementById("uploadFileName");
+    if (fpEl) fpEl.value = draft.uploadFolderPath || "";
+    if (fnEl) fnEl.value = draft.uploadFileName   || "";
+  }
+
   _updateStepLabels?.();
 
   // Open card
@@ -2951,6 +2994,7 @@ const debouncedSaveDraft = debounce(saveDraft, 600);
   "readdomVarName", "readdomReadFrom", "readdomAttrName",
   "screenshotTovarVarName", "screenshotTovarTarget",
   "switchVar",
+  "uploadFolderPath", "uploadFileName",
 ].forEach(id => {
   const el = document.getElementById(id);
   if (el) {
