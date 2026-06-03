@@ -56,7 +56,8 @@ function _typeLabel(t) {
 function _valueText(value, t) {
   if (t === 'r') {
     const spec = _parseRandom(value);
-    return spec ? `${spec.type} · ${spec.length}` : value;
+    if (!spec) return value;
+    return spec.type === 'datetime' ? 'YYYY-MM-DD_HH-MM-SS' : `${spec.type} · ${spec.length}`;
   }
   if (t === 'p') {
     const vals = _parsePick(value);
@@ -354,6 +355,13 @@ function _getFallbackValues() {
     .map(i => i.value.trim()).filter(Boolean);
 }
 
+/* ── Length row visibility ───────────────────────────────────────────────── */
+
+function _updateLengthRow(type) {
+  const row = document.getElementById('rndLengthRow');
+  if (row) row.style.display = type === 'datetime' ? 'none' : '';
+}
+
 /* ── Mode switching ──────────────────────────────────────────────────────── */
 
 function _switchMode(mode) {
@@ -389,7 +397,7 @@ function _openModal(editRow = null) {
   if (editRow) {
     const currentKey   = editRow.dataset.key   || '';
     const currentValue = editRow.dataset.value  || '';
-    if (varName) { varName.value = currentKey; varName.readOnly = !!currentKey; }
+    if (varName) { varName.value = currentKey; varName.readOnly = false; }
     if (title)      title.textContent      = 'Edit Variable';
     if (confirmBtn) confirmBtn.textContent = 'Save';
 
@@ -400,6 +408,7 @@ function _openModal(editRow = null) {
     if (fbListEl0) { fbListEl0.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
     if (rndType) rndType.value = 'alphanumeric';
     if (rndLen)  rndLen.value  = '8';
+    _updateLengthRow('alphanumeric');
     const sv0 = document.getElementById('staticValue');
     if (sv0) sv0.value = '';
 
@@ -418,6 +427,7 @@ function _openModal(editRow = null) {
       _switchMode('string');
       if (rndType) rndType.value = randSpec.type;
       if (rndLen)  rndLen.value  = randSpec.length;
+      _updateLengthRow(randSpec.type);
     } else {
       _switchMode('static');
       const sv = document.getElementById('staticValue');
@@ -432,6 +442,7 @@ function _openModal(editRow = null) {
     if (sv) sv.value = '';
     if (rndType) rndType.value = 'alphanumeric';
     if (rndLen)  rndLen.value  = '8';
+    _updateLengthRow('alphanumeric');
     if (pickList) { pickList.innerHTML = ''; _addPickValueRow(''); _addPickValueRow(''); }
     const fbListElNew = document.getElementById('fallbackValuesList');
     if (fbListElNew) { fbListElNew.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
@@ -483,6 +494,9 @@ export function initVariables() {
   document.querySelectorAll('.rnd-mode-tab').forEach(btn => {
     btn.addEventListener('click', () => _switchMode(btn.dataset.mode));
   });
+
+  // Hide length field when datetime is selected
+  rndType?.addEventListener('change', () => _updateLengthRow(rndType.value));
 
   document.getElementById('addPickValue')?.addEventListener('click', () => _addPickValueRow());
   document.getElementById('addFallbackValue')?.addEventListener('click', () => _addFallbackValueRow());

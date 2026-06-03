@@ -9,7 +9,7 @@ import { getScenarios, getVariables } from './storage.js';
 import {
   updateBadge, sendCompletionNotification, sendAlertNotification,
   resolveRandomVars, interpolateAction, runScriptViaCdp, openDropdownViaCdp,
-  getActiveTabId, tabMsg, getTabUrl, waitForTabLoad, setFileInputViaCdp,
+  getActiveTabId, tabMsg, getTabUrl, waitForTabLoad, setFileInputViaCdp, setFileDropZoneViaCdp,
 } from './utils.js';
 import {
   takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
@@ -345,17 +345,24 @@ export async function playActionsOnTab(
             || (action.selectors?.id ? `#${CSS.escape(action.selectors.id)}` : null)
             || action.selector || '';
           const folder = (action.folderPath || '').replace(/[/\\]+$/, '');
-          const fname  = action.fileName || '';
+          // backward-compat: old actions store a single fileName string
+          const rawNames = Array.isArray(action.fileNames) && action.fileNames.length
+            ? action.fileNames
+            : action.fileName ? [action.fileName] : [];
 
-          if (!cssSel || !folder || !fname) {
-            const reason = 'uploadFile: missing selector, folderPath, or fileName';
+          if (!cssSel || !folder || !rawNames.length) {
+            const reason = 'uploadFile: missing selector, folderPath, or file name(s)';
             _notifyActionFailed(i, action, reason);
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
           } else {
-            const sep      = folder.includes('\\') ? '\\' : '/';
-            const filePath = `${folder}${sep}${fname}`;
+            const sep       = folder.includes('\\') ? '\\' : '/';
+            const filePaths = rawNames.map(n => `${folder}${sep}${n}`);
             try {
-              await setFileInputViaCdp(tabId, cssSel, filePath);
+              if (action.uploadMode === 'dropzone') {
+                await setFileDropZoneViaCdp(tabId, cssSel, filePaths);
+              } else {
+                await setFileInputViaCdp(tabId, cssSel, filePaths);
+              }
             } catch (e) {
               _notifyActionFailed(i, action, e.message);
               if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });

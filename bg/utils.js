@@ -90,9 +90,15 @@ export function resolveRandomVars(vars) {
   for (const [k, v] of Object.entries(vars)) {
     const m = typeof v === 'string' && v.match(/^\{random:(\w+):(\d+)\}$/);
     if (m) {
-      const charset = _RANDOM_CHARSETS[m[1]] || _RANDOM_CHARSETS.alphanumeric;
-      const len = Math.min(parseInt(m[2], 10), 512); // 512-char cap prevents DoS via huge random values
-      result[k] = Array.from({ length: len }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
+      if (m[1] === 'datetime') {
+        const d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        result[k] = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+      } else {
+        const charset = _RANDOM_CHARSETS[m[1]] || _RANDOM_CHARSETS.alphanumeric;
+        const len = Math.min(parseInt(m[2], 10), 512);
+        result[k] = Array.from({ length: len }, () => charset[Math.floor(Math.random() * charset.length)]).join('');
+      }
     } else {
       // {pick:val1|val2|val3} — randomly pick one value from the pipe-separated list.
       // In CSV runs, CSV column values override baseVars before resolveRandomVars is called,
@@ -147,8 +153,9 @@ export function interpolateAction(action, vars) {
   if (a.code)          a.code          = applyVars(a.code, vars);
   if (a.expectedValue) a.expectedValue = applyVars(a.expectedValue, vars);
   if (a.switchVar)     a.switchVar     = applyVars(a.switchVar, vars);
-  if (a.fileName)      a.fileName      = applyVars(a.fileName,  vars);
-  if (a.folderPath)    a.folderPath    = applyVars(a.folderPath, vars);
+  if (a.fileName)               a.fileName   = applyVars(a.fileName,   vars);
+  if (a.folderPath)             a.folderPath = applyVars(a.folderPath, vars);
+  if (Array.isArray(a.fileNames)) a.fileNames = a.fileNames.map(n => applyVars(n, vars));
   if (a.conditions && typeof a.conditions === 'object') {
     a.conditions = { ...a.conditions };
     if (a.conditions.valueEquals   != null) a.conditions.valueEquals   = applyVars(String(a.conditions.valueEquals),   vars);
@@ -157,6 +164,105 @@ export function interpolateAction(action, vars) {
     if (a.conditions.classContains != null) a.conditions.classContains = applyVars(String(a.conditions.classContains), vars);
   }
   return a;
+}
+
+export function setFileDropZoneViaCdp(tabId, dropSelector, filePaths) {
+  return new Promise((resolve, reject) => {
+    const _safetyTimer = setTimeout(() => reject(new Error('dropzone upload: timed out after 20 s')), 20_000);
+    const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
+    const _safeReject  = (msg) => { clearTimeout(_safetyTimer); reject(new Error(msg)); };
+
+    chrome.debugger.attach({ tabId }, '1.3', () => {
+      const alreadyAttached = !!chrome.runtime.lastError;
+
+      const detach = () => {
+        if (!alreadyAttached) {
+          chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
+        }
+      };
+      const done = ()    => { detach(); _safeResolve(); };
+      const fail = (msg) => { detach(); _safeReject(msg); };
+
+      chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+        expression: `(function(){
+          const inp = document.createElement('input');
+          inp.type = 'file';
+          inp.multiple = true;
+          inp.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+          inp.setAttribute('data-cdp-dz-bridge','1');
+          document.documentElement.appendChild(inp);
+          return 'ok';
+        })()`,
+        returnByValue: true,
+      }, (injectRes) => {
+        if (chrome.runtime.lastError || injectRes?.result?.value !== 'ok') {
+          fail('dropzone: failed to inject bridge input — ' + (chrome.runtime.lastError?.message || 'unknown'));
+          return;
+        }
+
+        chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', {}, (docResult) => {
+          if (chrome.runtime.lastError || !docResult?.root?.nodeId) {
+            fail('dropzone: DOM.getDocument failed');
+            return;
+          }
+
+          chrome.debugger.sendCommand({ tabId }, 'DOM.querySelector', {
+            nodeId: docResult.root.nodeId,
+            selector: 'input[data-cdp-dz-bridge="1"]',
+          }, (bridgeRes) => {
+            if (chrome.runtime.lastError || !bridgeRes?.nodeId) {
+              fail('dropzone: could not find bridge input after injection');
+              return;
+            }
+
+            chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', {
+              files:  filePaths,
+              nodeId: bridgeRes.nodeId,
+            }, () => {
+              if (chrome.runtime.lastError) {
+                fail('dropzone: DOM.setFileInputFiles on bridge failed — ' + chrome.runtime.lastError.message);
+                return;
+              }
+
+              const sel = JSON.stringify(dropSelector);
+              chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+                expression: `(function(){
+                  try {
+                    const inp = document.querySelector('input[data-cdp-dz-bridge="1"]');
+                    const dz  = document.querySelector(${sel});
+                    if (!inp)              return 'no bridge input';
+                    if (!dz)               return 'dropzone element not found for selector: '+${sel};
+                    if (!inp.files.length) return 'no files loaded in bridge';
+                    const dt = new DataTransfer();
+                    Array.from(inp.files).forEach(f => dt.items.add(f));
+                    ['dragenter','dragover','drop'].forEach(t =>
+                      dz.dispatchEvent(new DragEvent(t,{bubbles:true,cancelable:true,dataTransfer:dt}))
+                    );
+                    inp.remove();
+                    return 'ok';
+                  } catch(e) {
+                    return 'error:'+e.message;
+                  }
+                })()`,
+                returnByValue: true,
+              }, (dropRes) => {
+                if (chrome.runtime.lastError) {
+                  fail('dropzone: drop simulation CDP error — ' + chrome.runtime.lastError.message);
+                  return;
+                }
+                const val = dropRes?.result?.value;
+                if (val !== 'ok') {
+                  fail('dropzone: drop simulation failed — ' + (val || 'unknown'));
+                } else {
+                  done();
+                }
+              });
+            });
+          });
+        });
+      });
+    });
+  });
 }
 
 /* ── CDP Script Execution ───────────────────────────────────────────────────── */
@@ -424,38 +530,50 @@ export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
  * @param {string} selector  CSS selector targeting the file input element
  * @param {string} filePath  Absolute local path, e.g. "C:\\Data\\file.pdf"
  */
-export function setFileInputViaCdp(tabId, selector, filePath) {
-  return new Promise((resolve) => {
-    const _safetyTimer = setTimeout(resolve, 15_000);
+export function setFileInputViaCdp(tabId, selector, filePaths) {
+  return new Promise((resolve, reject) => {
+    const _safetyTimer = setTimeout(() => reject(new Error('uploadFile: timed out after 15 s')), 15_000);
     const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
+    const _safeReject  = (msg) => { clearTimeout(_safetyTimer); reject(new Error(msg)); };
 
     chrome.debugger.attach({ tabId }, '1.3', () => {
       const alreadyAttached = !!chrome.runtime.lastError;
 
-      const done = () => {
+      const detach = () => {
         if (!alreadyAttached) {
           chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
         }
-        _safeResolve();
       };
+      const done = ()    => { detach(); _safeResolve(); };
+      const fail = (msg) => { detach(); _safeReject(msg); };
 
       // Step 1: get document root node
       chrome.debugger.sendCommand({ tabId }, 'DOM.getDocument', {}, (docResult) => {
-        if (chrome.runtime.lastError || !docResult?.root?.nodeId) { done(); return; }
+        if (chrome.runtime.lastError || !docResult?.root?.nodeId) {
+          fail('uploadFile: DOM.getDocument failed — ' + (chrome.runtime.lastError?.message || 'no root node'));
+          return;
+        }
 
         // Step 2: find the file input by selector
         chrome.debugger.sendCommand({ tabId }, 'DOM.querySelector', {
           nodeId: docResult.root.nodeId,
           selector,
         }, (queryResult) => {
-          if (chrome.runtime.lastError || !queryResult?.nodeId) { done(); return; }
+          if (chrome.runtime.lastError || !queryResult?.nodeId) {
+            fail('uploadFile: selector not found — ' + selector);
+            return;
+          }
 
-          // Step 3: set the file — browser fires the change event automatically
+          // Step 3: set the files — browser fires the change event automatically
           chrome.debugger.sendCommand({ tabId }, 'DOM.setFileInputFiles', {
-            files:  [filePath],
+            files:  filePaths,
             nodeId: queryResult.nodeId,
           }, () => {
-            void chrome.runtime.lastError;
+            if (chrome.runtime.lastError) {
+              fail('uploadFile: DOM.setFileInputFiles failed — ' + chrome.runtime.lastError.message +
+                   ' (selector is not a file input? Try DropZone mode)');
+              return;
+            }
             done();
           });
         });

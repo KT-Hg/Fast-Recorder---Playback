@@ -233,14 +233,21 @@
       <div class="hidden-by-default" id="uploadFileWrapper" style="margin-top:6px;">
         <div class="step-label" id="uploadFileStepLabel">③ File to Upload</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
+          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Upload mode</label>
+          <select id="uploadMode" style="flex:1; margin:0;">
+            <option value="input">File Input (&lt;input type="file"&gt;)</option>
+            <option value="dropzone">DropZone (drag-and-drop area)</option>
+          </select>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Folder path</label>
           <input id="uploadFolderPath" placeholder="e.g. C:\Data\Uploads" style="flex:1; margin:0;" />
         </div>
-        <div style="display:flex; gap:6px; align-items:center;">
-          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">File name</label>
-          <input id="uploadFileName" placeholder="e.g. file_001.pdf  or  ${filename}" style="flex:1; margin:0;" />
+        <div style="display:flex; gap:6px; align-items:flex-start;">
+          <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px; padding-top:4px;">File name(s)</label>
+          <textarea id="uploadFileNames" rows="3" placeholder="invoice_001.pdf&#10;report_${date}.xlsx&#10;${filename}" style="flex:1; margin:0; resize:vertical; font-family:inherit; font-size:inherit;"></textarea>
         </div>
-        <span class="helper-text">File name supports <code>${variable}</code> — combine with CSV to upload different files per row.</span>
+        <span class="helper-text">One file name per line. Each name supports <code>${variable}</code>. Combine with CSV to upload different files per row.</span>
       </div>
 
       <!-- CONDITION SETTINGS — shown for condition type -->
@@ -902,9 +909,12 @@
           <option value="alpha">Letters Only (a-z, A-Z)</option>
           <option value="numeric">Numbers Only (0-9)</option>
           <option value="alphanumeric">Letters + Numbers</option>
+          <option value="datetime">Datetime (YYYY-MM-DD_HH-MM-SS)</option>
         </select>
-        <label>Length:</label>
-        <input id="randomLength" type="number" value="8" min="1" max="50" />
+        <span id="rndLengthRow">
+          <label>Length:</label>
+          <input id="randomLength" type="number" value="8" min="1" max="50" />
+        </span>
       </div>
 
       <!-- Pick from List panel -->

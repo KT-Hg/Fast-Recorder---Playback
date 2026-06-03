@@ -2283,6 +2283,9 @@ function extractVarNames(action) {
   scan(action.code);
   scan(action.expectedValue);
   scan(action.switchVar);
+  scan(action.folderPath);
+  scan(action.fileName);
+  if (Array.isArray(action.fileNames)) action.fileNames.forEach(n => scan(n));
   if (action.conditions && typeof action.conditions === 'object') {
     Object.values(action.conditions).forEach(v => scan(String(v)));
   }
@@ -2337,9 +2340,10 @@ function validateActionForm(type, selector, delayVal) {
   }
   if (type === "uploadFile") {
     const fp = document.getElementById("uploadFolderPath")?.value?.trim();
-    const fn = document.getElementById("uploadFileName")?.value?.trim();
-    if (!fp) return { valid: false, el: document.getElementById("uploadFolderPath"), msg: "Folder path is required for Upload File action" };
-    if (!fn) return { valid: false, el: document.getElementById("uploadFileName"),   msg: "File name is required for Upload File action" };
+    const fns = (document.getElementById("uploadFileNames")?.value || "")
+      .split("\n").map(s => s.trim()).filter(Boolean);
+    if (!fp)        return { valid: false, el: document.getElementById("uploadFolderPath"), msg: "Folder path is required for Upload File action" };
+    if (!fns.length) return { valid: false, el: document.getElementById("uploadFileNames"),  msg: "At least one file name is required for Upload File action" };
   }
   return { valid: true };
 }
@@ -2403,8 +2407,10 @@ function buildActionFromForm(type, selector, value, delayVal) {
   }
 
   if (type === "uploadFile") {
+    action.uploadMode = document.getElementById("uploadMode")?.value || "input";
     action.folderPath = document.getElementById("uploadFolderPath")?.value?.trim() || "";
-    action.fileName   = document.getElementById("uploadFileName")?.value?.trim()   || "";
+    action.fileNames  = (document.getElementById("uploadFileNames")?.value || "")
+      .split("\n").map(s => s.trim()).filter(Boolean);
   }
 
   if (type === "condition") {
@@ -2570,10 +2576,18 @@ function startEdit(index, action) {
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
     const uploadFileWrapEl = document.getElementById("uploadFileWrapper");
     if (uploadFileWrapEl) uploadFileWrapEl.style.display = "block";
+    const uploadModeEl       = document.getElementById("uploadMode");
     const uploadFolderPathEl = document.getElementById("uploadFolderPath");
-    const uploadFileNameEl   = document.getElementById("uploadFileName");
+    const uploadFileNamesEl  = document.getElementById("uploadFileNames");
+    if (uploadModeEl)       uploadModeEl.value       = action.uploadMode || "input";
     if (uploadFolderPathEl) uploadFolderPathEl.value = action.folderPath || "";
-    if (uploadFileNameEl)   uploadFileNameEl.value   = action.fileName   || "";
+    if (uploadFileNamesEl) {
+      // backward compat: old actions have fileName (string), new have fileNames (array)
+      const names = Array.isArray(action.fileNames) && action.fileNames.length
+        ? action.fileNames
+        : action.fileName ? [action.fileName] : [];
+      uploadFileNamesEl.value = names.join("\n");
+    }
   } else if (action.type === "hover") {
     if (manualValueWrapper) manualValueWrapper.style.display = "none";
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
@@ -2736,10 +2750,12 @@ function clearEditState() {
   // Reset uploadFile fields
   const uploadFileWrapClear = document.getElementById("uploadFileWrapper");
   if (uploadFileWrapClear) uploadFileWrapClear.style.display = "none";
+  const uploadModeClear = document.getElementById("uploadMode");
+  if (uploadModeClear) uploadModeClear.value = "input";
   const uploadFolderPathClear = document.getElementById("uploadFolderPath");
   if (uploadFolderPathClear) uploadFolderPathClear.value = "";
-  const uploadFileNameClear = document.getElementById("uploadFileName");
-  if (uploadFileNameClear) uploadFileNameClear.value = "";
+  const uploadFileNamesClear = document.getElementById("uploadFileNames");
+  if (uploadFileNamesClear) uploadFileNamesClear.value = "";
 
   // Reset switch fields
   _switchCases = [];
@@ -2841,9 +2857,9 @@ function saveDraft() {
     switchVar:   document.getElementById("switchVar")?.value?.trim() || "",
     switchCases: _switchCases ? [..._switchCases] : [],
 
-    // uploadFile
+    uploadMode:       document.getElementById("uploadMode")?.value               || "input",
     uploadFolderPath: document.getElementById("uploadFolderPath")?.value?.trim() || "",
-    uploadFileName:   document.getElementById("uploadFileName")?.value?.trim()   || "",
+    uploadFileNames:  document.getElementById("uploadFileNames")?.value          || "",
 
     // editing state
     editing: editing ? { scenarioId: editing.scenarioId, index: editing.index } : null,
@@ -2966,10 +2982,13 @@ function restoreDraft(draft) {
 
   // UploadFile
   if (draft.actionType === "uploadFile") {
-    const fpEl = document.getElementById("uploadFolderPath");
-    const fnEl = document.getElementById("uploadFileName");
-    if (fpEl) fpEl.value = draft.uploadFolderPath || "";
-    if (fnEl) fnEl.value = draft.uploadFileName   || "";
+    const modeEl = document.getElementById("uploadMode");
+    const fpEl   = document.getElementById("uploadFolderPath");
+    const fnsEl  = document.getElementById("uploadFileNames");
+    if (modeEl) modeEl.value = draft.uploadMode || "input";
+    if (fpEl)   fpEl.value   = draft.uploadFolderPath || "";
+    if (fnsEl)  fnsEl.value  = draft.uploadFileNames
+      ?? (draft.uploadFileName ?? ""); // uploadFileName = legacy field name
   }
 
   _updateStepLabels?.();
@@ -2994,7 +3013,7 @@ const debouncedSaveDraft = debounce(saveDraft, 600);
   "readdomVarName", "readdomReadFrom", "readdomAttrName",
   "screenshotTovarVarName", "screenshotTovarTarget",
   "switchVar",
-  "uploadFolderPath", "uploadFileName",
+  "uploadMode", "uploadFolderPath", "uploadFileNames",
 ].forEach(id => {
   const el = document.getElementById(id);
   if (el) {
