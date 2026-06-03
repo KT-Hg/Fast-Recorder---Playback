@@ -10,8 +10,9 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 |---|---|
 | **Recording** | Click, input, hover, drag & drop, navigate, scroll events |
 | **Playback** | Single scenario, sequence, loop N×, scheduled (daily), CSV data-driven |
-| **Actions** | 14 action types including conditions, switch branching, readDOM, JS script |
-| **Variables** | Global `${varName}` substitution across selectors, values, URLs, and scripts |
+| **Actions** | 15 action types including upload file, conditions, switch branching, readDOM, JS script |
+| **Variables** | 4 types: Static, Random (alpha/numeric/alphanumeric/datetime), Pick, Fallback — `${varName}` substitution across selectors, values, URLs, and scripts |
+| **Upload File** | Inject local files into `<input type="file">` or drag-and-drop zones; supports multiple files and `${variable}` filenames |
 | **Screenshot** | Visible, full page, scroll (V/H), segment, element — with crop editor and watermark |
 | **CSV Run** | Run a scenario once per row; export results to XLSX/CSV/HTML with screenshots |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
@@ -48,7 +49,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 
 ### Record & Play
 - Start/stop recording, undo/redo recorded actions
-- Add manual actions (all 14 types)
+- Add manual actions (all 15 types)
 - Save and manage scenarios (rename, duplicate, move to folder, delete)
 - Playback controls: loop count, loop delay
 - Sequence playback (run multiple scenarios in order)
@@ -102,7 +103,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 
 **Condition types:** `elementExists`, `elementNotExists`, `elementVisible`, `elementHidden`, `textContains`, `textEquals`, `valueEquals`, `valueContains`, `urlContains`, `urlEquals`, `hasClass`, `hasAttribute`
 
-### Data & Screenshot
+### Data, Screenshot & File
 | Type | Description |
 |---|---|
 | `readdom` | Extract text/value/attribute → store as `${varName}` |
@@ -110,6 +111,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 | `screenshot_full` | Full page via CDP |
 | `screenshot_element` | Specific element via CDP clip |
 | `screenshot_tovar` | Any mode → store filename/base64 in variable for CSV export |
+| `uploadFile` | Inject local file(s) into `<input type="file">` (CDP) or drag-and-drop zone (DataTransfer bridge); supports multiple files and `${variable}` filenames |
 
 ---
 
@@ -216,7 +218,16 @@ Priority (highest → lowest):
   3. chrome.storage.local  — global persistent variables
 ```
 
-**Token syntax:** `${varName}` — applied to: selector, value, URL, JS code, expected value, switchVar
+**Token syntax:** `${varName}` — applied to: selector, value, URL, JS code, expected value, switchVar, folderPath, fileNames
+
+**Variable types:**
+
+| Type | Storage format | Resolved at run start |
+|---|---|---|
+| Static | Plain string | Used as-is |
+| Random | `{random:alpha\|numeric\|alphanumeric\|datetime:len}` | Generated fresh each run; `datetime` → `YYYY-MM-DD_HH-MM-SS` |
+| Pick | `{pick:val1\|val2\|val3}` | One value chosen randomly per run; CSV column overrides |
+| Fallback | `{fallback:A\|B\|C}` | Tries A→B→C in order with Child Condition; sticky per run |
 
 **Scope:** one loop iteration — built fresh at start, cleared at loop start, never persisted.
 
