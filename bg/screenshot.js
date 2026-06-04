@@ -220,7 +220,7 @@ const _hideScrollbarFn = () => {
   if (document.getElementById('__ext_no_scroll')) return;
   const s = document.createElement('style');
   s.id = '__ext_no_scroll';
-  s.textContent = '::-webkit-scrollbar{display:none!important}*{scrollbar-width:none!important}';
+  s.textContent = '::-webkit-scrollbar{display:none!important}*:not(textarea):not(input):not(select){scrollbar-width:none!important}';
   document.documentElement.appendChild(s);
 };
 
@@ -255,7 +255,7 @@ const CDP_HIDE_SCROLLBAR = `(function(){
   if(!document.getElementById('__ext_no_scroll')){
     const s=document.createElement('style');
     s.id='__ext_no_scroll';
-    s.textContent='::-webkit-scrollbar{display:none!important}*{scrollbar-width:none!important}';
+    s.textContent='::-webkit-scrollbar{display:none!important}*:not(textarea):not(input):not(select){scrollbar-width:none!important}';
     document.documentElement.appendChild(s);
   }
 })()`;

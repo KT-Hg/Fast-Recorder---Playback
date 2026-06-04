@@ -465,7 +465,7 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
-    sendCompletionNotification('Playback complete', `"${scenario.name}" resumed & finished`);
+    await sendCompletionNotification('Playback complete', `"${scenario.name}" resumed & finished`);
   }
 }
 
@@ -513,7 +513,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
-    sendCompletionNotification('Playback complete', `"${scenario.name}" finished${loops > 1 ? ` (${loops} loops)` : ''}`);
+    await sendCompletionNotification('Playback complete', `"${scenario.name}" finished${loops > 1 ? ` (${loops} loops)` : ''}`);
   }
 }
 
@@ -581,7 +581,7 @@ export async function startSequence(runList) {
       const _seqMsg = _seqFailed > 0
         ? `${_seqCompleted - _seqFailed} ✓ · ${_seqFailed} ✗ of ${_seqCompleted} scenarios`
         : `${_seqCompleted} scenario(s) done`;
-      sendCompletionNotification('Sequence complete', _seqMsg);
+      await sendCompletionNotification('Sequence complete', _seqMsg);
     }
   } catch (err) {
     console.error('[SEQUENCE] Error during sequence playback:', err);
@@ -749,7 +749,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   const _csvMsg = failedRows > 0
     ? `${completedRows - failedRows} ✓ · ${failedRows} ✗ of ${completedRows} rows — "${scenario.name}"`
     : `${completedRows} rows done — "${scenario.name}"`;
-  sendCompletionNotification('CSV Run complete', _csvMsg);
+  await sendCompletionNotification('CSV Run complete', _csvMsg);
   chrome.runtime.sendMessage({
     type: 'CSV_RUN_DONE',
     total: completedRows,

@@ -23,13 +23,25 @@ const SKIPPED_TYPES = new Set([
   'screenshot', 'screenshot_full', 'screenshot_element', 'screenshot_tovar', 'switch'
 ]);
 
+function _activeVal(v) {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object' && 'activeType' in v) {
+    const t = v.activeType || 's';
+    if (t === 'r' && v.r) return `{random:${v.r.type}:${v.r.length}}`;
+    if (t === 'p') { const vals = (v.p || []).filter(Boolean); return vals.length ? `{pick:${vals.join('|')}}` : ''; }
+    if (t === 'f') { const vals = (v.f || []).filter(Boolean); return vals.length ? `{fallback:${vals.join('|')}}` : ''; }
+    return v.s || '';
+  }
+  return '';
+}
+
 function parseRandomSpec(val) {
-  const m = String(val).match(/^\{random:(\w+):(\d+)\}$/);
+  const m = _activeVal(val).match(/^\{random:(\w+):(\d+)\}$/);
   return m ? { type: m[1], length: parseInt(m[2]) } : null;
 }
 
 function parsePickSpec(val) {
-  const m = String(val).match(/^\{pick:(.+)\}$/);
+  const m = _activeVal(val).match(/^\{pick:(.+)\}$/);
   return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
 }
 
@@ -308,11 +320,12 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   const staticVars = {}, randomSpecs = {}, pickSpecs = {}, readdomVars = new Set();
 
   for (const [k, v] of Object.entries(variables || {})) {
-    const spec = parseRandomSpec(v);
-    const pick = parsePickSpec(v);
+    const str  = _activeVal(v);
+    const spec = parseRandomSpec(str);
+    const pick = parsePickSpec(str);
     if (spec)      randomSpecs[k] = spec;
     else if (pick) pickSpecs[k]   = pick;
-    else           staticVars[k]  = v;
+    else           staticVars[k]  = str;
   }
 
   const enabled = (actions || []).filter(a => !a.disabled);
@@ -588,7 +601,8 @@ function _renderModal(scenarioName, result, variables) {
   } else {
     noVarsEl.style.display = 'none';
     listEl.innerHTML = '';
-    for (const [key, val] of vars) {
+    for (const [key, rawVal] of vars) {
+      const val     = _activeVal(rawVal);
       const spec    = parseRandomSpec(val);
       const pick    = parsePickSpec(val);
       const isRand  = !!spec;

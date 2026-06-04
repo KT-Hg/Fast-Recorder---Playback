@@ -433,8 +433,8 @@
       <select id="scenarioList"></select>
 
       <div class="row" style="margin-top: 6px; gap: 4px;">
-        <button id="playScenario" class="primary-gradient" style="flex: 1; font-size: 12px; padding: 6px 8px;">▶ Play</button>
-        <button id="stopPlay" class="secondary" style="flex: 0 0 auto; width: auto; padding: 6px 12px; font-size: 13px;" title="Stop playback">■</button>
+        <button id="playScenario" class="primary-gradient" style="flex: 1;">▶ Play</button>
+        <button id="stopPlay" class="secondary" style="flex: 1;" title="Stop playback">■ Stop</button>
       </div>
       <div class="loop-controls-row">
         <div class="loop-chip">
@@ -537,11 +537,7 @@
     <div class="card">
       <h3>Variables</h3>
       <ul class="var-list" id="variablesTableBody"></ul>
-      <div class="row">
-        <button id="addVariableRow" class="secondary w-auto">+ Add Row</button>
-        <button id="saveVariables">Save Variables</button>
-        <button id="reloadVariables" class="secondary w-auto">Reload</button>
-      </div>
+      <button id="addVariableRow">+ Add Row</button>
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Use ${var} in selector/value/url/code. Saved per extension.</p>
     </div>
 

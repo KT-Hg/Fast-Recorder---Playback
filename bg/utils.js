@@ -53,10 +53,7 @@ export function updateBadge() {
 
 /* ── Notifications ──────────────────────────────────────────────────────────── */
 
-// Minimal 1×1 transparent PNG — satisfies chrome.notifications iconUrl requirement
-// without a real asset file.  The MV3 service worker cannot access extension
-// assets via relative URLs at notification-creation time.
-const _NOTIF_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+gBkAAAAAAASUVORK5CYII=';
+const _NOTIF_ICON = chrome.runtime.getURL('icons/icon48.png');
 
 export async function sendCompletionNotification(title, message) {
   const res = await new Promise((r) => chrome.storage.sync.get(['notifyOnComplete'], r));
@@ -84,10 +81,33 @@ const _RANDOM_CHARSETS = {
   alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
 };
 
+/**
+ * Normalize a variable value to its active string representation.
+ * Handles both legacy plain strings and the new extended config objects.
+ */
+function _getVarActiveValue(v) {
+  if (typeof v === 'string') return v;
+  if (v && typeof v === 'object' && 'activeType' in v) {
+    const t = v.activeType || 's';
+    if (t === 'r' && v.r) return `{random:${v.r.type}:${v.r.length}}`;
+    if (t === 'p') {
+      const vals = (v.p || []).filter(Boolean);
+      return vals.length ? `{pick:${vals.join('|')}}` : '';
+    }
+    if (t === 'f') {
+      const vals = (v.f || []).filter(Boolean);
+      return vals.length ? `{fallback:${vals.join('|')}}` : '';
+    }
+    return v.s || '';
+  }
+  return String(v || '');
+}
+
 /** Resolve {random:type:len} and {pick:val1|val2|val3} placeholders at run start. */
 export function resolveRandomVars(vars) {
   const result = {};
-  for (const [k, v] of Object.entries(vars)) {
+  for (const [k, rawV] of Object.entries(vars)) {
+    const v = _getVarActiveValue(rawV);
     const m = typeof v === 'string' && v.match(/^\{random:(\w+):(\d+)\}$/);
     if (m) {
       if (m[1] === 'datetime') {

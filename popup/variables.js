@@ -1,21 +1,20 @@
-﻿/**
+/**
  * variables.js — Variables list management (Pure Action Row Mirror design).
  *
- * Each variable is an <li class="var-row t-{s|r|p}"> that mirrors the action
- * list style: fixed-width type column with equal-size icon badge (S/R/P),
+ * Each variable is an <li class="var-row t-{s|r|p|f}"> that mirrors the action
+ * list style: fixed-width type column with equal-size icon badge (S/R/P/F),
  * key → value display, Edit/Delete buttons.
  *
- * Three variable formats stored in li.dataset.value:
- *   static  — plain string
- *   rand    — {random:type:len}
- *   pick    — {pick:val1|val2|val3}
+ * Extended config model — each variable stores a full config object so that
+ * switching between types never discards previously entered data:
+ *   { activeType: 's'|'r'|'p'|'f', s: string, r: {type,length}, p: string[], f: string[] }
  *
- * Editing always goes through the 3-tab modal (Static / Random / Pick).
+ * Old plain-string values in storage are migrated automatically on load.
  *
  * Exports: addVariableRow, loadVariables, getVariablesFromTable, findEmptyRow, initVariables
  */
 
-import { showToast, lockScroll, unlockScroll } from './utils.js';
+import { showToast, showConfirm, lockScroll, unlockScroll } from './utils.js';
 
 /* ── Parsers ─────────────────────────────────────────────────────────────── */
 
@@ -38,36 +37,69 @@ function _parseFallback(val) {
   return m ? m[1].split('|').map(s => s.trim()).filter(Boolean) : null;
 }
 
-/* ── Type helpers ────────────────────────────────────────────────────────── */
+/* ── Config model ────────────────────────────────────────────────────────── */
 
-// 's' | 'r' | 'p' | 'f'
-function _typeKey(value) {
-  if (_parseFallback(value)) return 'f';
-  if (_parsePick(value))     return 'p';
-  if (_parseRandom(value))   return 'r';
-  return 's';
+function _defaultConfig() {
+  return { activeType: 's', s: '', r: { type: 'alphanumeric', length: '8' }, p: ['', ''], f: ['', ''] };
 }
+
+/**
+ * Converts old plain-string value to new config object. Idempotent for new format.
+ * Ensures all fields are present even if the stored object is partially populated.
+ */
+export function _migrateToConfig(val) {
+  if (val && typeof val === 'object' && 'activeType' in val) {
+    const def = _defaultConfig();
+    return {
+      ...def,
+      ...val,
+      r: { ...def.r, ...(val.r || {}) },
+      p: Array.isArray(val.p) && val.p.length ? val.p : def.p,
+      f: Array.isArray(val.f) && val.f.length ? val.f : def.f,
+    };
+  }
+  const cfg = _defaultConfig();
+  const fallbackVals = _parseFallback(val);
+  const pickVals     = _parsePick(val);
+  const randSpec     = _parseRandom(val);
+  if      (fallbackVals) { cfg.activeType = 'f'; cfg.f = fallbackVals; }
+  else if (pickVals)     { cfg.activeType = 'p'; cfg.p = pickVals; }
+  else if (randSpec)     { cfg.activeType = 'r'; cfg.r = randSpec; }
+  else                   { cfg.activeType = 's'; cfg.s = typeof val === 'string' ? val : ''; }
+  return cfg;
+}
+
+/** Compute the active value string from a config object (for runtime/export use). */
+export function _getActiveValue(cfg) {
+  const t = cfg.activeType || 's';
+  if (t === 'r' && cfg.r) return `{random:${cfg.r.type}:${cfg.r.length}}`;
+  if (t === 'p') {
+    const vals = (cfg.p || []).filter(Boolean);
+    return vals.length ? `{pick:${vals.join('|')}}` : '';
+  }
+  if (t === 'f') {
+    const vals = (cfg.f || []).filter(Boolean);
+    return vals.length ? `{fallback:${vals.join('|')}}` : '';
+  }
+  return cfg.s || '';
+}
+
+/* ── Type helpers ────────────────────────────────────────────────────────── */
 
 function _typeLabel(t) {
   return t === 'f' ? 'Fallback' : t === 'p' ? 'Pick' : t === 'r' ? 'Rand' : 'Static';
 }
 
-// Text shown in the value column for each type
-function _valueText(value, t) {
+function _valueText(cfg) {
+  const t = cfg.activeType || 's';
   if (t === 'r') {
-    const spec = _parseRandom(value);
-    if (!spec) return value;
-    return spec.type === 'datetime' ? 'YYYY-MM-DD_HH-MM-SS' : `${spec.type} · ${spec.length}`;
+    return cfg.r?.type === 'datetime'
+      ? 'YYYY-MM-DD_HH-MM-SS'
+      : `${cfg.r?.type || 'alphanumeric'} · ${cfg.r?.length || '8'}`;
   }
-  if (t === 'p') {
-    const vals = _parsePick(value);
-    return vals ? vals.join(' · ') : value;
-  }
-  if (t === 'f') {
-    const vals = _parseFallback(value);
-    return vals ? vals.join(' → ') : value;
-  }
-  return value || '';
+  if (t === 'p') return (cfg.p || []).filter(Boolean).join(' · ') || '—';
+  if (t === 'f') return (cfg.f || []).filter(Boolean).join(' → ') || '—';
+  return cfg.s || '';
 }
 
 /* ── DOM helpers ─────────────────────────────────────────────────────────── */
@@ -83,85 +115,93 @@ function _reindexRows() {
     const idx = li.querySelector('.vr-idx');
     if (idx) idx.textContent = (i + 1) + '.';
   });
-  // Show/hide empty state message
   const empty = ul.querySelector('.var-list-empty');
   const hasRows = ul.querySelectorAll('li.var-row').length > 0;
   if (empty) empty.style.display = hasRows ? 'none' : '';
 }
 
+/* ── Auto-save ───────────────────────────────────────────────────────────── */
+
+function _autoSave() {
+  chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: getVariablesFromTable() });
+}
+
 /* ── Row rendering ───────────────────────────────────────────────────────── */
 
-function _buildRow(key, value) {
-  const t = _typeKey(value);
+function _buildRow(key, valOrCfg) {
+  const cfg = _migrateToConfig(valOrCfg);
+  const t   = cfg.activeType || 's';
 
   const li = document.createElement('li');
-  li.className = `var-row t-${t}`;
-  li.dataset.key   = key;
-  li.dataset.value = value;
+  li.className      = `var-row t-${t}`;
+  li.dataset.key    = key;
+  li.dataset.config = JSON.stringify(cfg);
 
-  // Index
   const idxSpan = document.createElement('span');
   idxSpan.className = 'vr-idx';
   idxSpan.textContent = '1.';
 
-  // Type — fixed-width column with equal-size icon box
   const typeSpan = document.createElement('span');
   typeSpan.className = 'vr-type';
   const iconBox = document.createElement('span');
-  iconBox.className = `vt-i ${t}`;
+  iconBox.className   = `vt-i ${t}`;
   iconBox.textContent = t === 's' ? 'S' : t === 'r' ? 'R' : t === 'p' ? 'P' : 'F';
   typeSpan.appendChild(iconBox);
-  typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
+  typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
 
-  // Key
   const keySpan = document.createElement('span');
-  keySpan.className = 'vr-key';
-  keySpan.title = key;
+  keySpan.className   = 'vr-key';
+  keySpan.title       = key;
   keySpan.textContent = key || '—';
 
-  // Arrow
   const arrSpan = document.createElement('span');
-  arrSpan.className = 'vr-arr';
+  arrSpan.className   = 'vr-arr';
   arrSpan.textContent = '→';
 
-  // Value
   const valSpan = document.createElement('span');
-  valSpan.className = 'vr-val';
-  valSpan.title = value;
-  valSpan.textContent = _valueText(value, t);
+  valSpan.className   = 'vr-val';
+  valSpan.title       = _getActiveValue(cfg);
+  valSpan.textContent = _valueText(cfg);
 
   if (t === 'p') {
     const sub = document.createElement('span');
-    sub.className = 'vr-sub';
-    const n = _parsePick(value)?.length || 0;
+    sub.className   = 'vr-sub';
+    const n = (cfg.p || []).filter(Boolean).length;
     sub.textContent = `${n} option${n !== 1 ? 's' : ''} · random per run · CSV overrides`;
     valSpan.appendChild(sub);
   } else if (t === 'r') {
     const sub = document.createElement('span');
-    sub.className = 'vr-sub';
+    sub.className   = 'vr-sub';
     sub.textContent = 'new value each run';
     valSpan.appendChild(sub);
   } else if (t === 'f') {
     const sub = document.createElement('span');
-    sub.className = 'vr-sub';
-    const n = _parseFallback(value)?.length || 0;
+    sub.className   = 'vr-sub';
+    const n = (cfg.f || []).filter(Boolean).length;
     sub.textContent = `${n} values · tries A→B→C in Child Condition · sticky per run`;
     valSpan.appendChild(sub);
   }
 
-  // Buttons
   const btnRow = document.createElement('div');
   btnRow.className = 'var-btn-row';
 
   const editBtn = document.createElement('button');
-  editBtn.className = 'vr-edit';
+  editBtn.className   = 'vr-edit';
   editBtn.textContent = 'Edit';
   editBtn.addEventListener('click', () => _openModal(li));
 
   const delBtn = document.createElement('button');
-  delBtn.className = 'vr-delete';
+  delBtn.className   = 'vr-delete';
   delBtn.textContent = 'Delete';
-  delBtn.addEventListener('click', () => { li.remove(); _reindexRows(); });
+  delBtn.addEventListener('click', () => {
+    const varKey = li.dataset.key || 'this variable';
+    showConfirm(`Delete variable "${varKey}"?`, () => {
+      li.remove();
+      _reindexRows();
+      _autoSave();
+      showToast(`"${varKey}" deleted`, 'success');
+    }, { title: 'Delete Variable', danger: true });
+  });
 
   btnRow.appendChild(editBtn);
   btnRow.appendChild(delBtn);
@@ -176,11 +216,11 @@ function _buildRow(key, value) {
   return li;
 }
 
-// Refreshes all visual elements of an existing row from its data attributes
 function _refreshRow(li) {
-  const key   = li.dataset.key   || '';
-  const value = li.dataset.value || '';
-  const t     = _typeKey(value);
+  let cfg;
+  try { cfg = JSON.parse(li.dataset.config || '{}'); } catch { cfg = _defaultConfig(); }
+  cfg = _migrateToConfig(cfg);
+  const t = cfg.activeType || 's';
 
   li.className = `var-row t-${t}`;
 
@@ -188,34 +228,35 @@ function _refreshRow(li) {
   if (typeSpan) {
     typeSpan.innerHTML = '';
     const iconBox = document.createElement('span');
-    iconBox.className = `vt-i ${t}`;
-    iconBox.textContent = t === 's' ? 'S' : t === 'r' ? 'R' : 'P';
+    iconBox.className   = `vt-i ${t}`;
+    iconBox.textContent = t === 's' ? 'S' : t === 'r' ? 'R' : t === 'p' ? 'P' : 'F';
     typeSpan.appendChild(iconBox);
-    typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
+    typeSpan.appendChild(document.createTextNode(' ' + _typeLabel(t)));
   }
 
+  const key     = li.dataset.key || '';
   const keySpan = li.querySelector('.vr-key');
   if (keySpan) { keySpan.textContent = key || '—'; keySpan.title = key; }
 
   const valSpan = li.querySelector('.vr-val');
   if (valSpan) {
-    valSpan.title = value;
-    valSpan.textContent = _valueText(value, t);
+    valSpan.title       = _getActiveValue(cfg);
+    valSpan.textContent = _valueText(cfg);
     if (t === 'p') {
       const sub = document.createElement('span');
-      sub.className = 'vr-sub';
-      const n = _parsePick(value)?.length || 0;
+      sub.className   = 'vr-sub';
+      const n = (cfg.p || []).filter(Boolean).length;
       sub.textContent = `${n} option${n !== 1 ? 's' : ''} · random per run · CSV overrides`;
       valSpan.appendChild(sub);
     } else if (t === 'r') {
       const sub = document.createElement('span');
-      sub.className = 'vr-sub';
+      sub.className   = 'vr-sub';
       sub.textContent = 'new value each run';
       valSpan.appendChild(sub);
     } else if (t === 'f') {
       const sub = document.createElement('span');
-      sub.className = 'vr-sub';
-      const n = _parseFallback(value)?.length || 0;
+      sub.className   = 'vr-sub';
+      const n = (cfg.f || []).filter(Boolean).length;
       sub.textContent = `${n} values · tries A→B→C in Child Condition · sticky per run`;
       valSpan.appendChild(sub);
     }
@@ -227,17 +268,18 @@ function _refreshRow(li) {
 /**
  * Add a variable row. Called by main.js (auto-create vars, restore draft, etc.)
  * and by the modal confirm handler for new rows.
+ * `value` may be a plain string (old format) or a config object (new format).
  */
 export function addVariableRow(key = '', value = '') {
   const ul = getListEl();
   if (!ul) return;
 
-  // Reuse the first empty row if key+value were given (migration compat)
   if (key || value) {
     const empty = findEmptyRow();
     if (empty) {
-      empty.dataset.key   = key;
-      empty.dataset.value = value;
+      const cfg = _migrateToConfig(value);
+      empty.dataset.key    = key;
+      empty.dataset.config = JSON.stringify(cfg);
       _refreshRow(empty);
       _reindexRows();
       return;
@@ -249,24 +291,38 @@ export function addVariableRow(key = '', value = '') {
   _reindexRows();
 }
 
-/** Return the first row with no key and no value, or null. */
+/** Return the first row with no key and empty active value, or null. */
 export function findEmptyRow() {
   const ul = getListEl();
   if (!ul) return null;
   for (const li of ul.querySelectorAll('li.var-row')) {
-    if (!li.dataset.key && !li.dataset.value) return li;
+    if (!li.dataset.key) {
+      try {
+        const cfg = JSON.parse(li.dataset.config || '{}');
+        if (!_getActiveValue(cfg)) return li;
+      } catch { return li; }
+    }
   }
   return null;
 }
 
-/** Read all non-empty key/value pairs from the list. */
+/**
+ * Read all non-empty key/config pairs from the list.
+ * Returns a map of { varName: configObject } for storage.
+ */
 export function getVariablesFromTable() {
-  const ul = getListEl();
+  const ul     = getListEl();
   const result = {};
   if (!ul) return result;
   ul.querySelectorAll('li.var-row').forEach(li => {
     const key = li.dataset.key?.trim();
-    if (key) result[key] = li.dataset.value || '';
+    if (key) {
+      try {
+        result[key] = JSON.parse(li.dataset.config || '{}');
+      } catch {
+        result[key] = _defaultConfig();
+      }
+    }
   });
   return result;
 }
@@ -278,7 +334,6 @@ export function loadVariables() {
     if (!ul) return;
     ul.innerHTML = '';
 
-    // Empty-state placeholder (hidden when rows exist)
     const empty = document.createElement('div');
     empty.className = 'var-list-empty';
     empty.textContent = 'No variables yet — click + Add Row';
@@ -293,13 +348,16 @@ export function loadVariables() {
 /* ── Modal state ─────────────────────────────────────────────────────────── */
 
 let _editingRow = null;
-let _focusTimer = null;
-let _triggerEl  = null;
-let _rndMode    = 'static'; // 'static' | 'string' | 'pick'
+let _focusTimer  = null;
+let _triggerEl   = null;
+let _rndMode     = 'static'; // 'static' | 'string' | 'pick' | 'fallback'
 
-/* ── Pick list helpers ───────────────────────────────────────────────────── */
+const _TYPE_TO_MODE = { s: 'static', r: 'string', p: 'pick', f: 'fallback' };
+const _MODE_TO_TYPE = { static: 's', string: 'r', pick: 'p', fallback: 'f' };
 
-function _addPickValueRow(value = '') {
+/* ── Pick / Fallback list helpers ────────────────────────────────────────── */
+
+function _addPickValueRow(value = '', doFocus = true) {
   const list = document.getElementById('pickValuesList');
   if (!list) return;
 
@@ -307,20 +365,25 @@ function _addPickValueRow(value = '') {
   row.className = 'pick-value-row';
 
   const inp = document.createElement('input');
-  inp.type = 'text'; inp.placeholder = 'e.g., active'; inp.value = value;
+  inp.type        = 'text';
+  inp.placeholder = 'e.g., active';
+  inp.value       = value;
 
   const del = document.createElement('button');
-  del.className = 'del-pick-btn'; del.type = 'button'; del.textContent = '×';
-  del.title = 'Remove value';
+  del.className   = 'del-pick-btn';
+  del.type        = 'button';
+  del.textContent = '×';
+  del.title       = 'Remove value';
   del.addEventListener('click', () => {
     const rows = list.querySelectorAll('.pick-value-row');
     if (rows.length > 1) row.remove();
     else showToast('At least one value required', 'error');
   });
 
-  row.appendChild(inp); row.appendChild(del);
+  row.appendChild(inp);
+  row.appendChild(del);
   list.appendChild(row);
-  inp.focus();
+  if (doFocus) inp.focus();
 }
 
 function _getPickValues() {
@@ -330,22 +393,31 @@ function _getPickValues() {
     .map(i => i.value.trim()).filter(Boolean);
 }
 
-function _addFallbackValueRow(value = '') {
+function _addFallbackValueRow(value = '', doFocus = true) {
   const list = document.getElementById('fallbackValuesList');
   if (!list) return;
+
   const row = document.createElement('div');
   row.className = 'pick-value-row';
+
   const inp = document.createElement('input');
-  inp.type = 'text'; inp.placeholder = 'e.g., active'; inp.value = value;
+  inp.type        = 'text';
+  inp.placeholder = 'e.g., active';
+  inp.value       = value;
+
   const del = document.createElement('button');
-  del.className = 'del-pick-btn'; del.type = 'button'; del.textContent = '×';
+  del.className   = 'del-pick-btn';
+  del.type        = 'button';
+  del.textContent = '×';
   del.addEventListener('click', () => {
     if (list.querySelectorAll('.pick-value-row').length > 1) row.remove();
     else showToast('At least one fallback value required', 'error');
   });
-  row.appendChild(inp); row.appendChild(del);
+
+  row.appendChild(inp);
+  row.appendChild(del);
   list.appendChild(row);
-  inp.focus();
+  if (doFocus) inp.focus();
 }
 
 function _getFallbackValues() {
@@ -392,60 +464,59 @@ function _openModal(editRow = null) {
   const rndLen     = document.getElementById('randomLength');
   const title      = document.getElementById('randomModalTitle');
   const confirmBtn = document.getElementById('confirmRandom');
-  const pickList   = document.getElementById('pickValuesList');
 
   if (editRow) {
-    const currentKey   = editRow.dataset.key   || '';
-    const currentValue = editRow.dataset.value  || '';
-    if (varName) { varName.value = currentKey; varName.readOnly = false; }
+    let cfg;
+    try { cfg = JSON.parse(editRow.dataset.config || '{}'); } catch { cfg = _defaultConfig(); }
+    cfg = _migrateToConfig(cfg);
+
+    if (varName) { varName.value = editRow.dataset.key || ''; varName.readOnly = false; }
     if (title)      title.textContent      = 'Edit Variable';
     if (confirmBtn) confirmBtn.textContent = 'Save';
 
-    // Always reset all panels so stale data from a previous edit never leaks
-    // into a tab the user switches to during this session.
-    if (pickList) { pickList.innerHTML = ''; _addPickValueRow(''); _addPickValueRow(''); }
-    const fbListEl0 = document.getElementById('fallbackValuesList');
-    if (fbListEl0) { fbListEl0.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
-    if (rndType) rndType.value = 'alphanumeric';
-    if (rndLen)  rndLen.value  = '8';
-    _updateLengthRow('alphanumeric');
-    const sv0 = document.getElementById('staticValue');
-    if (sv0) sv0.value = '';
+    // Populate static tab
+    const sv = document.getElementById('staticValue');
+    if (sv) sv.value = cfg.s || '';
 
-    const pickVals    = _parsePick(currentValue);
-    const randSpec    = _parseRandom(currentValue);
-    const fallbackVals = _parseFallback(currentValue);
+    // Populate random tab
+    if (rndType) rndType.value = cfg.r?.type   || 'alphanumeric';
+    if (rndLen)  rndLen.value  = cfg.r?.length  || '8';
+    _updateLengthRow(cfg.r?.type || 'alphanumeric');
 
-    if (fallbackVals) {
-      _switchMode('fallback');
-      const fbListEl = document.getElementById('fallbackValuesList');
-      if (fbListEl) { fbListEl.innerHTML = ''; fallbackVals.forEach(v => _addFallbackValueRow(v)); }
-    } else if (pickVals) {
-      _switchMode('pick');
-      if (pickList) { pickList.innerHTML = ''; pickVals.forEach(v => _addPickValueRow(v)); }
-    } else if (randSpec) {
-      _switchMode('string');
-      if (rndType) rndType.value = randSpec.type;
-      if (rndLen)  rndLen.value  = randSpec.length;
-      _updateLengthRow(randSpec.type);
-    } else {
-      _switchMode('static');
-      const sv = document.getElementById('staticValue');
-      if (sv) sv.value = currentValue;
+    // Populate pick tab (doFocus=false to avoid stealing focus from wrong tab)
+    const pickList = document.getElementById('pickValuesList');
+    if (pickList) {
+      pickList.innerHTML = '';
+      const pickVals = (cfg.p || []).filter(v => v !== undefined);
+      (pickVals.length >= 2 ? pickVals : ['', '']).forEach(v => _addPickValueRow(v, false));
     }
+
+    // Populate fallback tab
+    const fbListEl = document.getElementById('fallbackValuesList');
+    if (fbListEl) {
+      fbListEl.innerHTML = '';
+      const fbVals = (cfg.f || []).filter(v => v !== undefined);
+      (fbVals.length >= 2 ? fbVals : ['', '']).forEach(v => _addFallbackValueRow(v, false));
+    }
+
+    _switchMode(_TYPE_TO_MODE[cfg.activeType] || 'static');
   } else {
     if (varName) { varName.value = ''; varName.readOnly = false; }
     if (title)      title.textContent      = 'Add Variable';
     if (confirmBtn) confirmBtn.textContent = 'Add Variable';
-    _switchMode('static');
+
     const sv = document.getElementById('staticValue');
     if (sv) sv.value = '';
     if (rndType) rndType.value = 'alphanumeric';
     if (rndLen)  rndLen.value  = '8';
     _updateLengthRow('alphanumeric');
-    if (pickList) { pickList.innerHTML = ''; _addPickValueRow(''); _addPickValueRow(''); }
-    const fbListElNew = document.getElementById('fallbackValuesList');
-    if (fbListElNew) { fbListElNew.innerHTML = ''; _addFallbackValueRow(''); _addFallbackValueRow(''); }
+
+    const pickList = document.getElementById('pickValuesList');
+    if (pickList) { pickList.innerHTML = ''; _addPickValueRow('', false); _addPickValueRow('', false); }
+    const fbListEl = document.getElementById('fallbackValuesList');
+    if (fbListEl) { fbListEl.innerHTML = ''; _addFallbackValueRow('', false); _addFallbackValueRow('', false); }
+
+    _switchMode('static');
   }
 
   modal?.setAttribute('aria-hidden', 'false');
@@ -475,30 +546,26 @@ function _closeModal() {
 /* ── Init ────────────────────────────────────────────────────────────────── */
 
 export function initVariables() {
-  const addBtn  = document.getElementById('addVariableRow');
-  const saveBtn = document.getElementById('saveVariables');
-  const reloadBtn    = document.getElementById('reloadVariables');
-  const modal        = document.getElementById('randomModal');
-  const varName      = document.getElementById('randomVarName');
-  const rndType      = document.getElementById('randomType');
-  const rndLen       = document.getElementById('randomLength');
-  const cancelBtn    = document.getElementById('cancelRandom');
-  const confirmBtn   = document.getElementById('confirmRandom');
+  const addBtn     = document.getElementById('addVariableRow');
+  const modal      = document.getElementById('randomModal');
+  const varName    = document.getElementById('randomVarName');
+  const rndType    = document.getElementById('randomType');
+  const rndLen     = document.getElementById('randomLength');
+  const cancelBtn  = document.getElementById('cancelRandom');
+  const confirmBtn = document.getElementById('confirmRandom');
 
   addBtn?.addEventListener('click', () => _openModal(null));
 
   cancelBtn?.addEventListener('click', _closeModal);
   modal?.addEventListener('click', (e) => { if (e.target === modal) _closeModal(); });
 
-  // Mode tab switching
   document.querySelectorAll('.rnd-mode-tab').forEach(btn => {
     btn.addEventListener('click', () => _switchMode(btn.dataset.mode));
   });
 
-  // Hide length field when datetime is selected
   rndType?.addEventListener('change', () => _updateLengthRow(rndType.value));
 
-  document.getElementById('addPickValue')?.addEventListener('click', () => _addPickValueRow());
+  document.getElementById('addPickValue')?.addEventListener('click',     () => _addPickValueRow());
   document.getElementById('addFallbackValue')?.addEventListener('click', () => _addFallbackValueRow());
 
   confirmBtn?.addEventListener('click', () => {
@@ -509,40 +576,43 @@ export function initVariables() {
       return;
     }
 
-    let value;
+    // Read ALL tabs regardless of which is active — this is what preserves config across switches
+    const staticVal    = document.getElementById('staticValue')?.value || '';
+    const randTypeVal  = rndType?.value || 'alphanumeric';
+    const randLenVal   = rndLen?.value  || '8';
+    const pickVals     = _getPickValues();
+    const fallbackVals = _getFallbackValues();
+
+    // Validate only the active tab
     if (_rndMode === 'fallback') {
-      const vals = _getFallbackValues();
-      if (vals.length < 2) { showToast('Add at least 2 fallback values', 'error'); return; }
-      value = `{fallback:${vals.join('|')}}`;
+      if (fallbackVals.length < 2) { showToast('Add at least 2 fallback values', 'error'); return; }
     } else if (_rndMode === 'pick') {
-      const vals = _getPickValues();
-      if (vals.length < 2) { showToast('Add at least 2 values to Pick list', 'error'); return; }
-      value = `{pick:${vals.join('|')}}`;
-    } else if (_rndMode === 'string') {
-      value = `{random:${rndType?.value}:${rndLen?.value}}`;
-    } else {
-      value = document.getElementById('staticValue')?.value || '';
+      if (pickVals.length < 2) { showToast('Add at least 2 values to Pick list', 'error'); return; }
     }
+
+    const cfg = {
+      activeType: _MODE_TO_TYPE[_rndMode] || 's',
+      s: staticVal,
+      r: { type: randTypeVal, length: randLenVal },
+      p: pickVals.length     ? pickVals     : ['', ''],
+      f: fallbackVals.length ? fallbackVals : ['', ''],
+    };
 
     if (_editingRow) {
-      _editingRow.dataset.key   = name;
-      _editingRow.dataset.value = value;
+      _editingRow.dataset.key    = name;
+      _editingRow.dataset.config = JSON.stringify(cfg);
       _refreshRow(_editingRow);
       _reindexRows();
+      _closeModal();
+      _autoSave();
+      showToast(`✓ "${name}" saved`, 'success');
     } else {
-      addVariableRow(name, value);
+      addVariableRow(name, cfg);
+      _closeModal();
+      _autoSave();
+      showToast(`✓ "${name}" added`, 'success');
     }
-    _closeModal();
   });
-
-  saveBtn?.addEventListener('click', () => {
-    const vars = getVariablesFromTable();
-    chrome.runtime.sendMessage({ type: 'SAVE_VARIABLES', variables: vars }, () => {
-      showToast('✓ Variables saved', 'success');
-    });
-  });
-
-  reloadBtn?.addEventListener('click', () => loadVariables());
 
   loadVariables();
 }
