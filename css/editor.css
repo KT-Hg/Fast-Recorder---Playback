@@ -26,6 +26,7 @@
   --save-bg: #1e3a5f;
   --save-text: #93c5fd;
   --save-hover-bg: #1d4ed8;
+  --modal-backdrop: rgba(0, 0, 0, 0.52);
 }
 
 body.light {
@@ -113,7 +114,7 @@ body {
   padding: 4px 10px; background: var(--bg-secondary);
   border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
 }
-.toolbar h1 { font-size: 13px; font-weight: 700; white-space: nowrap; }
+.toolbar h1, .toolbar-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
 .sep { width: 1px; height: 22px; background: var(--border); flex-shrink: 0; }
 #selInfo { font-size: 11px; color: var(--text-muted); min-width: 120px; flex: 1; }
 
@@ -193,7 +194,7 @@ body {
 
 /* === Shortcut overlay === */
 #shortcutOverlay {
-  display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);
+  display:none;position:fixed;inset:0;background:var(--modal-backdrop);
   z-index:100;align-items:center;justify-content:center;
 }
 #shortcutOverlay.show { display:flex; }
@@ -265,7 +266,7 @@ body {
 
 /* === Confirm Modal === */
 #confirmModal {
-  display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
+  display:none;position:fixed;inset:0;background:var(--modal-backdrop);
   z-index:200;align-items:center;justify-content:center;
 }
 #confirmModal.show { display:flex; }

@@ -1,23 +1,4 @@
-/**
- * export-selenium.js — Convert a recorded scenario into standalone Selenium Python code.
- *
- * Generates a complete, runnable `.py` file using `selenium`, `WebDriverWait`,
- * and `expected_conditions`. Each action type is mapped to its most idiomatic
- * Selenium equivalent; `switch` actions are skipped with a comment because they
- * require extension-level scenario routing.
- *
- * Variable handling mirrors the bookmarklet generator: static variables become
- * `str` assignments; `{random:type:len}` variables expand to `random.choices()`
- * calls; `readdom` variables are declared as empty strings and filled at run time.
- *
- * Exports: generateSeleniumPy, initExportSelenium
- */
-
 import { showToast, lockScroll, unlockScroll, trapFocus, escHtml, getUsedVarNames } from './utils.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GENERATOR CORE
-// ─────────────────────────────────────────────────────────────────────────────
 
 function _activeVal(v) {
   if (typeof v === 'string') return v;

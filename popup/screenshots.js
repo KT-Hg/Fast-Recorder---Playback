@@ -170,6 +170,28 @@ export function initScreenshots() {
   document.getElementById('cropScreenshotElement')?.addEventListener('click', () => startElemShotPick(true));
 
 
+  /* Capture sub-tab buttons (data-capture-action dispatcher) */
+  const captureActionMap = {
+    screenshotVisible:    () => takeScreenshotWithCrop('TAKE_SCREENSHOT'),
+    cropVisible:          () => takeScreenshotWithCrop('TAKE_SCREENSHOT', true),
+    screenshotFull:       () => takeScreenshotWithCrop('TAKE_SCREENSHOT_FULL'),
+    cropFull:             () => takeScreenshotWithCrop('TAKE_SCREENSHOT_FULL', true),
+    screenshotScrollV:    () => takeScreenshotWithCrop('TAKE_SCREENSHOT_SCROLL_V'),
+    cropScrollV:          () => takeScreenshotWithCrop('TAKE_SCREENSHOT_SCROLL_V', true),
+    screenshotScrollH:    () => takeScreenshotWithCrop('TAKE_SCREENSHOT_SCROLL_H'),
+    cropScrollH:          () => takeScreenshotWithCrop('TAKE_SCREENSHOT_SCROLL_H', true),
+    segmentScrollV:       () => startSegmentCapture('vertical'),
+    cropSegmentScrollV:   () => startSegmentCapture('vertical', true),
+    segmentScrollH:       () => startSegmentCapture('horizontal'),
+    cropSegmentScrollH:   () => startSegmentCapture('horizontal', true),
+    screenshotElement:    () => startElemShotPick(false),
+    cropScreenshotElement:() => startElemShotPick(true),
+  };
+  document.addEventListener('click', (e) => {
+    const action = e.target.closest('[data-capture-action]')?.dataset.captureAction;
+    if (action && captureActionMap[action]) captureActionMap[action]();
+  });
+
   /* Image diff */
   initDiff();
 }

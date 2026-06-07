@@ -1,23 +1,4 @@
-/**
- * export-bookmarklet.js — Convert a recorded scenario into a standalone JS bookmarklet.
- *
- * The generated code is a self-contained `javascript:(async () => { … })()` IIFE
- * that reproduces click/input/hover/navigate/wait/script/condition actions using
- * only browser APIs — no extension required at run time. Screenshot and switch
- * actions are skipped with a comment because they depend on the Extension API.
- *
- * Variable interpolation is handled in the generated code: static variables become
- * `const` declarations; `{random:type:len}` variables become inline generators that
- * produce a fresh value on each bookmark click.
- *
- * Exports: generateBookmarklet, initExportBookmarklet
- */
-
 import { showToast, lockScroll, unlockScroll, trapFocus, escHtml, getUsedVarNames } from './utils.js';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// GENERATOR CORE
-// ─────────────────────────────────────────────────────────────────────────────
 
 const SKIPPED_TYPES = new Set([
   'screenshot', 'screenshot_full', 'screenshot_element', 'screenshot_tovar', 'switch'

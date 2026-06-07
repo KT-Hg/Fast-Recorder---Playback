@@ -1,18 +1,4 @@
-/**
- * variables.js — Variables list management (Pure Action Row Mirror design).
- *
- * Each variable is an <li class="var-row t-{s|r|p|f}"> that mirrors the action
- * list style: fixed-width type column with equal-size icon badge (S/R/P/F),
- * key → value display, Edit/Delete buttons.
- *
- * Extended config model — each variable stores a full config object so that
- * switching between types never discards previously entered data:
- *   { activeType: 's'|'r'|'p'|'f', s: string, r: {type,length}, p: string[], f: string[] }
- *
- * Old plain-string values in storage are migrated automatically on load.
- *
- * Exports: addVariableRow, loadVariables, getVariablesFromTable, findEmptyRow, initVariables
- */
+// Each variable stores a full config object across all 4 types so switching type never discards data.
 
 import { showToast, showConfirm, lockScroll, unlockScroll } from './utils.js';
 
@@ -43,10 +29,6 @@ function _defaultConfig() {
   return { activeType: 's', s: '', r: { type: 'alphanumeric', length: '8' }, p: ['', ''], f: ['', ''] };
 }
 
-/**
- * Converts old plain-string value to new config object. Idempotent for new format.
- * Ensures all fields are present even if the stored object is partially populated.
- */
 export function _migrateToConfig(val) {
   if (val && typeof val === 'object' && 'activeType' in val) {
     const def = _defaultConfig();
@@ -69,7 +51,6 @@ export function _migrateToConfig(val) {
   return cfg;
 }
 
-/** Compute the active value string from a config object (for runtime/export use). */
 export function _getActiveValue(cfg) {
   const t = cfg.activeType || 's';
   if (t === 'r' && cfg.r) return `{random:${cfg.r.type}:${cfg.r.length}}`;
@@ -265,11 +246,6 @@ function _refreshRow(li) {
 
 /* ── Public API ──────────────────────────────────────────────────────────── */
 
-/**
- * Add a variable row. Called by main.js (auto-create vars, restore draft, etc.)
- * and by the modal confirm handler for new rows.
- * `value` may be a plain string (old format) or a config object (new format).
- */
 export function addVariableRow(key = '', value = '') {
   const ul = getListEl();
   if (!ul) return;
@@ -291,7 +267,6 @@ export function addVariableRow(key = '', value = '') {
   _reindexRows();
 }
 
-/** Return the first row with no key and empty active value, or null. */
 export function findEmptyRow() {
   const ul = getListEl();
   if (!ul) return null;
@@ -306,10 +281,6 @@ export function findEmptyRow() {
   return null;
 }
 
-/**
- * Read all non-empty key/config pairs from the list.
- * Returns a map of { varName: configObject } for storage.
- */
 export function getVariablesFromTable() {
   const ul     = getListEl();
   const result = {};
@@ -327,7 +298,6 @@ export function getVariablesFromTable() {
   return result;
 }
 
-/** Fetch variables from background and repopulate the list. */
 export function loadVariables() {
   chrome.runtime.sendMessage({ type: 'GET_VARIABLES' }, (res) => {
     const ul = getListEl();
@@ -474,16 +444,14 @@ function _openModal(editRow = null) {
     if (title)      title.textContent      = 'Edit Variable';
     if (confirmBtn) confirmBtn.textContent = 'Save';
 
-    // Populate static tab
     const sv = document.getElementById('staticValue');
     if (sv) sv.value = cfg.s || '';
 
-    // Populate random tab
     if (rndType) rndType.value = cfg.r?.type   || 'alphanumeric';
     if (rndLen)  rndLen.value  = cfg.r?.length  || '8';
     _updateLengthRow(cfg.r?.type || 'alphanumeric');
 
-    // Populate pick tab (doFocus=false to avoid stealing focus from wrong tab)
+    // doFocus=false — all 4 tabs are populated at once, only the active tab should receive focus
     const pickList = document.getElementById('pickValuesList');
     if (pickList) {
       pickList.innerHTML = '';
@@ -491,7 +459,6 @@ function _openModal(editRow = null) {
       (pickVals.length >= 2 ? pickVals : ['', '']).forEach(v => _addPickValueRow(v, false));
     }
 
-    // Populate fallback tab
     const fbListEl = document.getElementById('fallbackValuesList');
     if (fbListEl) {
       fbListEl.innerHTML = '';
@@ -583,7 +550,6 @@ export function initVariables() {
     const pickVals     = _getPickValues();
     const fallbackVals = _getFallbackValues();
 
-    // Validate only the active tab
     if (_rndMode === 'fallback') {
       if (fallbackVals.length < 2) { showToast('Add at least 2 fallback values', 'error'); return; }
     } else if (_rndMode === 'pick') {

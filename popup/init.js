@@ -36,6 +36,20 @@ function initHeaderSpacer() {
   window.addEventListener('resize', sync);
 }
 
+function initCaptureTabs() {
+  const nav = document.getElementById('captureTabNav');
+  if (!nav) return;
+  nav.addEventListener('click', e => {
+    const btn = e.target.closest('.capture-tab-btn');
+    if (!btn) return;
+    const tab = btn.dataset.captureTab;
+    nav.querySelectorAll('.capture-tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.capture-group').forEach(g => {
+      g.style.display = g.id === `captureGroup-${tab}` ? '' : 'none';
+    });
+  });
+}
+
 function initTabs() {
   const tabNav = document.getElementById('tabNav');
   const tabPanels = document.querySelectorAll('.tab-panel');
@@ -116,6 +130,7 @@ function initTabs() {
 
 initHeaderSpacer();
 initTabs();
+initCaptureTabs();
 initTheme();
 initScreenshots();
 initVariables();

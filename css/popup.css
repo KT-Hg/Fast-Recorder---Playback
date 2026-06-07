@@ -21,6 +21,17 @@
   --secondary-bg: #f3f4f6;
   --secondary-text: #111827;
   --list-bg: #f3f4f6;
+  /* Modal backdrop — unified */
+  --modal-backdrop: rgba(0, 0, 0, 0.52);
+  /* Code block / toolbar (light mode) */
+  --code-bg: #f1f5f9;
+  --code-text: #334155;
+  --code-toolbar-bg: #e2e8f0;
+  --code-toolbar-border: #cbd5e1;
+  --code-toolbar-label: #475569;
+  --code-toolbar-btn-bg: #f8fafc;
+  --code-toolbar-btn-border: #cbd5e1;
+  --code-toolbar-btn-text: #475569;
 }
 
 [data-theme="dark"] {
@@ -40,6 +51,15 @@
   --secondary-bg: #1a2938;
   --secondary-text: #f5f7fa;
   --list-bg: #0d1829;
+  /* Code block / toolbar (dark mode) */
+  --code-bg: #1e2231;
+  --code-text: #abb2bf;
+  --code-toolbar-bg: #1a2938;
+  --code-toolbar-border: #2d4157;
+  --code-toolbar-label: #6b7280;
+  --code-toolbar-btn-bg: rgba(255, 255, 255, 0.05);
+  --code-toolbar-btn-border: rgba(255, 255, 255, 0.1);
+  --code-toolbar-btn-text: #9ca3af;
   color-scheme: dark;
 }
 
@@ -275,9 +295,24 @@ button:disabled {
   flex: 1 1 0;
 }
 
-/* === Scrollbars — hidden globally === */
+/* === Scrollbars — hidden globally, restored for list containers === */
 *::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; }
+
+/* Thin scrollbar on action/variable lists so users know more items exist */
+.actions,
+.var-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.actions::-webkit-scrollbar,
+.var-list::-webkit-scrollbar { display: block; width: 5px; }
+.actions::-webkit-scrollbar-track,
+.var-list::-webkit-scrollbar-track { background: transparent; }
+.actions::-webkit-scrollbar-thumb,
+.var-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.actions::-webkit-scrollbar-thumb:hover,
+.var-list::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
 /* === Preview Actions === */
 
@@ -754,7 +789,7 @@ button:disabled {
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--modal-backdrop);
   z-index: 1000;
   align-items: center;
   justify-content: center;
@@ -1397,16 +1432,48 @@ button:disabled {
   animation: pulse-border 1s ease infinite;
 }
 
-/* Blur record-related hotkeys when extension is not activated */
+/* Disabled state for hotkeys requiring tab activation */
 [data-requires-activation] {
-  transition: filter 0.25s ease, opacity 0.25s ease;
+  transition: opacity 0.25s ease;
 }
 
 body:not([data-activation="active"]) [data-requires-activation] {
-  filter: blur(3px);
-  opacity: 0.35;
+  opacity: 0.38;
   pointer-events: none;
   user-select: none;
+}
+
+/* Hatch pattern on badge to reinforce "unavailable" without blur */
+body:not([data-activation="active"]) [data-requires-activation] .hotkey-badge {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--secondary-bg), var(--secondary-bg) 4px,
+    var(--border) 4px, var(--border) 6px
+  );
+  color: var(--muted);
+}
+
+/* Hide Set button; JS adds aria-hidden + tabindex="-1" on the row */
+body:not([data-activation="active"]) [data-requires-activation] .hotkey-set-btn {
+  display: none;
+}
+
+/* Notice shown below hotkey list when not activated */
+.activation-required-notice {
+  display: none;
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
+  align-items: center;
+  gap: 6px;
+}
+
+body:not([data-activation="active"]) .activation-required-notice {
+  display: flex;
 }
 
 @keyframes pulse-border {
@@ -1505,7 +1572,7 @@ body.modal-open {
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--modal-backdrop);
   z-index: 2000;
   align-items: flex-start;
   justify-content: center;
@@ -1628,7 +1695,7 @@ body.modal-open {
   position: fixed;
   top: 0; left: 0;
   width: 100%; height: 100%;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--modal-backdrop);
   z-index: 2000;
   align-items: center;
   justify-content: center;
@@ -1731,6 +1798,18 @@ body.modal-open {
   letter-spacing: 0.06em;
   margin: 8px 0 2px;
   padding: 0 2px;
+}
+
+.step-label.step-label-optional {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* Thin separator before the first optional field */
+.step-label.step-label-divider-top {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
 }
 
 /* Recording top bar */
@@ -2100,7 +2179,7 @@ textarea:focus-visible,
   transform: none;
 }
 
-/* === Screenshot Grid === */
+/* === Screenshot Grid (legacy, kept for compatibility) === */
 .screenshot-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2111,6 +2190,128 @@ textarea:focus-visible,
   font-size: 11px;
   padding: 8px 4px;
   margin: 0;
+}
+
+/* === Capture Tab — Version A (pill tabs + grouped rows) === */
+.capture-tab-nav {
+  display: flex;
+  gap: 3px;
+  padding: 8px 0 6px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.capture-tab-btn {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  margin: 0;
+  width: auto;
+  transition: all 0.12s;
+}
+
+.capture-tab-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: transparent;
+  transform: none;
+}
+
+.capture-tab-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.capture-tab-btn.active:hover:not(:disabled) {
+  background: var(--primary-dark);
+  transform: none;
+}
+
+.capture-group-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 0;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.capture-group-row:last-child {
+  border-bottom: none;
+}
+
+.capture-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.capture-btn-row {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  flex-wrap: wrap;
+}
+
+.cap-save-btn {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1.5px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  color: var(--primary);
+  cursor: pointer;
+  margin: 0;
+  white-space: nowrap;
+  text-align: center;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.cap-save-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border-color: var(--primary);
+  transform: none;
+}
+
+.cap-edit-btn {
+  flex: 1;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 5px;
+  border: 1.5px dashed color-mix(in srgb, var(--secondary) 50%, transparent);
+  background: color-mix(in srgb, var(--secondary) 6%, transparent);
+  color: var(--secondary);
+  cursor: pointer;
+  margin: 0;
+  white-space: nowrap;
+  text-align: center;
+  transition: background 0.12s, border-color 0.12s, border-style 0.12s;
+}
+
+.cap-edit-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--secondary) 13%, transparent);
+  border-color: var(--secondary);
+  border-style: solid;
+  transform: none;
+}
+
+.capture-tools-row {
+  padding: 6px 0 0;
+  border-top: 2px solid var(--border);
+  margin-top: 4px;
 }
 
 .settings-section-title {
@@ -2489,7 +2690,7 @@ textarea:focus-visible,
   display: none;
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--modal-backdrop);
   z-index: 9999;
   align-items: flex-start;
   justify-content: center;
@@ -2721,14 +2922,14 @@ textarea:focus-visible,
   align-items: center;
   justify-content: space-between;
   padding: 5px 10px 5px 14px;
-  background: #2a2f3e;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--code-toolbar-bg);
+  border-bottom: 1px solid var(--code-toolbar-border);
   flex-shrink: 0;
 }
 
 .export-bm-code-label {
   font-size: 10px;
-  color: #6b7280;
+  color: var(--code-toolbar-label);
   font-family: 'Consolas', monospace;
 }
 
@@ -2740,9 +2941,9 @@ textarea:focus-visible,
 .export-bm-code-toolbar-btn {
   padding: 2px 8px !important;
   border-radius: 4px !important;
-  border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  background: rgba(255, 255, 255, 0.05) !important;
-  color: #9ca3af !important;
+  border: 1px solid var(--code-toolbar-btn-border) !important;
+  background: var(--code-toolbar-btn-bg) !important;
+  color: var(--code-toolbar-btn-text) !important;
   font-size: 10px !important;
   cursor: pointer;
   font-family: monospace;
@@ -2753,12 +2954,12 @@ textarea:focus-visible,
 }
 
 .export-bm-code-toolbar-btn:hover {
-  background: rgba(255, 255, 255, 0.1) !important;
-  color: #e2e6ea !important;
+  background: var(--secondary-bg) !important;
+  color: var(--text) !important;
   transform: none !important;
 }
 
-/* ── Code block (dark) ── */
+/* ── Code block ── */
 .export-bm-code {
   margin: 0;
   padding: 12px 14px;
@@ -2767,8 +2968,8 @@ textarea:focus-visible,
   line-height: 1.6;
   white-space: pre;
   overflow-x: auto;
-  color: #abb2bf;
-  background: #1e2231;
+  color: var(--code-text);
+  background: var(--code-bg);
   min-height: 180px;
   max-height: 300px;
   overflow-y: auto;
@@ -2776,7 +2977,7 @@ textarea:focus-visible,
 
 .export-bm-code::-webkit-scrollbar { width: 6px; height: 6px; }
 .export-bm-code::-webkit-scrollbar-track { background: transparent; }
-.export-bm-code::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 3px; }
+.export-bm-code::-webkit-scrollbar-thumb { background: var(--code-toolbar-border); border-radius: 3px; }
 
 /* ── Variables — row layout ── */
 .export-bm-no-vars {

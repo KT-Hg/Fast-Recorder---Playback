@@ -1,9 +1,3 @@
-/**
- * utils.js — Common utility functions shared across popup modules.
- * Exports: escHtml, ACTION_ICONS, getActionIcon, showToast, lockScroll, unlockScroll,
- *          showConfirm, showAlert, validateNumberInput, safeSendTabMessage, isEligibleTab, debounce
- */
-
 /* === HTML Escape === */
 
 export function escHtml(s) {
@@ -68,11 +62,7 @@ export function unlockScroll() {
 // natural tab order and should not be cycled through by the trap.
 const FOCUSABLE_SEL = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/**
- * Trap keyboard focus inside a modal element.
- * Returns a cleanup function that removes the listener and restores focus to
- * the element that was active before the trap was applied.
- */
+// Returns a cleanup function that removes the listener and restores prior focus.
 export function trapFocus(modalEl) {
   const prevActive = document.activeElement;
   const getFocusable = () => Array.from(modalEl.querySelectorAll(FOCUSABLE_SEL))
@@ -118,10 +108,6 @@ function _closeModal(modal, releaseFocus, extra) {
   unlockScroll();
 }
 
-/**
- * Show a confirm dialog backed by the shared #confirmModal element.
- * Reuses a single DOM node to avoid stacking multiple overlays.
- */
 export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel = '' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
@@ -140,7 +126,6 @@ export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false,
   okBtn.onclick = () => { close(); onConfirm(); };
 }
 
-/** Show an alert dialog (single OK button, no cancel). */
 export function showAlert(msg, { title = 'Notice' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
@@ -161,7 +146,6 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
 
 /* === Validation === */
 
-/** Validate a numeric input and visually flag it if invalid. */
 export function validateNumberInput(input, min = 0) {
   const value = parseInt(input.value, 10);
   if (input.value && (isNaN(value) || value < min)) {
@@ -177,7 +161,6 @@ export function validateNumberInput(input, min = 0) {
 
 /* === Tab Messaging === */
 
-/** Fire-and-forget message to a content script; swallows "no receiver" errors. */
 export function safeSendTabMessage(tabId, payload) {
   chrome.tabs.sendMessage(tabId, payload, () => {
     if (chrome.runtime.lastError) {
@@ -186,11 +169,7 @@ export function safeSendTabMessage(tabId, payload) {
   });
 }
 
-/**
- * Returns true for tabs where the content script can run.
- * chrome:// and chrome-extension:// URLs are restricted by Chrome's CSP and
- * cannot receive scripting.executeScript or sendMessage calls.
- */
+// chrome:// and chrome-extension:// URLs reject scripting.executeScript and sendMessage.
 export function isEligibleTab(tab) {
   if (!tab?.url) return false;
   const url = tab.url;
@@ -216,11 +195,6 @@ export function debounce(fn, delay = 200) {
 
 /* === Variable Usage Scanning === */
 
-/**
- * Returns the set of variable names (without ${} delimiters) that are
- * referenced in the given actions' string fields.
- * Used to filter the variable table to only exported/used keys.
- */
 export function getUsedVarNames(actions) {
   const used = new Set();
   const re = /\$\{([^}]+)\}/g;

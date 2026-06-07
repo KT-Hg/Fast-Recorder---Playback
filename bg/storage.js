@@ -1,5 +1,3 @@
-/** storage.js — Chrome storage CRUD helpers for scenarios, folders, variables */
-
 /* === Scenarios === */
 
 export function getScenarios() {
@@ -59,12 +57,8 @@ export function generateId() {
 }
 
 /* === Undo / Redo Stacks ===
- * In-memory per-scenario stacks persisted to chrome.storage.session so they
- * survive SW suspend within the same browser session.
- *
- * Capacity limits:
- *   _UNDO_MAX_SCENARIOS — LRU eviction; avoids unbounded Map growth across many tabs.
- *   50 per stack          — keeps session storage impact predictable.
+ * In-memory stacks persisted to chrome.storage.session (survives SW suspend).
+ * LRU-capped at _UNDO_MAX_SCENARIOS scenarios; 50 entries per stack.
  */
 const _UNDO_MAX_SCENARIOS = 20;
 
@@ -96,7 +90,6 @@ function _persistUndoStacks() {
 
 export function getStack(key) {
   if (!undoStacks[key]) {
-    // LRU eviction — drop the oldest tracked scenario when the cap is reached.
     if (_undoOrder.length >= _UNDO_MAX_SCENARIOS) {
       const evicted = _undoOrder.shift();
       delete undoStacks[evicted];
@@ -104,7 +97,6 @@ export function getStack(key) {
     undoStacks[key] = { undo: [], redo: [] };
     _undoOrder.push(key);
   } else {
-    // Promote to MRU position.
     const idx = _undoOrder.indexOf(key);
     if (idx !== -1) { _undoOrder.splice(idx, 1); _undoOrder.push(key); }
   }
@@ -119,15 +111,6 @@ export function pushUndo(key, snapshot) {
   _persistUndoStacks();
 }
 
-/**
- * Atomically fetch a scenario, push its current actions onto the undo stack,
- * apply the updater, and persist — all within a single async transaction.
- * Throws if scenarioId is not found.
- *
- * @param {string}   scenarioId
- * @param {Function} updater  (prevActions: Array) => nextActions: Array
- * @returns {Promise<Array>} The updated actions array
- */
 export async function mutateScenarioActions(scenarioId, updater) {
   const scenarios = await getScenarios();
   if (!scenarios[scenarioId]) throw new Error(`Scenario "${scenarioId}" not found`);

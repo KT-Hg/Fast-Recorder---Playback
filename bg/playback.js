@@ -1,9 +1,3 @@
-/**
- * playback.js — Scenario playback engine (single, loop, sequence, CSV).
- * Exports: playActionsOnTab, startPlayback, startPlaybackFromCheckpoint,
- *          startSequence, startCsvPlayback
- */
-
 import { state, persistCsvState, clearCsvState, saveCsvRows } from './state.js';
 import { getScenarios, getVariables } from './storage.js';
 import {
@@ -71,26 +65,11 @@ async function _getSsSettings() {
 
 /* ── Playback Core ──────────────────────────────────────────────────────────── */
 
-/**
- * Execute an action list on a tab.
- *
- * @param {number}  tabId
- * @param {Array}   actions
- * @param {object}  vars              Resolved variable map (null → load from storage)
- * @param {object}  screenshotsResult Accumulator for base64 screenshots (CSV mode)
- * @param {boolean} forceAutoSave     Override saveMode to "auto" (CSV mode)
- * @param {boolean} skipDownload      Skip file download (CSV/export mode)
- * @param {number}  startFromIndex    Resume from this action index (checkpoint resume)
- * @param {Array}   failedActions     Accumulator for failure records (CSV mode)
- * @param {number}  _depth            Recursion depth counter — guards against infinite
- *                                    switch loops
- */
 export async function playActionsOnTab(
   tabId, actions, vars = null, screenshotsResult = null,
   forceAutoSave = false, skipDownload = false, startFromIndex = 0,
   failedActions = null, _depth = 0,
 ) {
-  // Guard against infinite switch/nested-scenario recursion.
   if (_depth > 10) {
     console.error('[PLAYBACK] Max switch/nested-scenario depth (10) exceeded — aborting branch');
     _notifyActionFailed(startFromIndex, null, 'Max nested scenario depth exceeded (possible infinite loop in switch)');
@@ -597,10 +576,6 @@ export async function startSequence(runList) {
 
 /* ── CSV Playback ───────────────────────────────────────────────────────────── */
 
-/**
- * Collect variable names actually referenced by a scenario's actions so the
- * per-row result record only stores relevant keys (keeps IDB entries small).
- */
 function collectRelevantKeys(actions) {
   const keys    = new Set();
   const VAR_RE  = /\$\{([^}]+)\}/g;
@@ -627,16 +602,7 @@ function collectRelevantKeys(actions) {
   return keys;
 }
 
-/**
- * CSV data-driven playback entry point.
- *
- * Results are written to IndexedDB one row at a time via csvResultWrite — O(1)
- * per row.  This replaces the previous approach of accumulating all results in
- * a JS array and re-writing the entire array to chrome.storage.local each batch,
- * which was O(n²) in total bytes written.
- *
- * @param {number} startRowIndex  Resume from this row (for interrupted run resume).
- */
+// Results go to IndexedDB one row at a time (O(1)/row vs the previous O(n²) array-rewrite approach).
 export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFormat = 'csv', startRowIndex = 0) {
   if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   _ssSettings = null;
@@ -672,6 +638,30 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
 
   const actions      = scenario.actions || [];
   const relevantKeys = collectRelevantKeys(actions);
+
+  // Collect screenshot varNames in action order, including nested scenarios
+  // reached via Switch, so XLSX/HTML column headers match the full action sequence.
+  function _collectSsVars(acts, visited) {
+    const out = [];
+    for (const a of acts) {
+      if (a.type === 'screenshot_tovar' && a.varName && !visited.has('var:' + a.varName)) {
+        visited.add('var:' + a.varName);
+        out.push(a.varName);
+      }
+      if (a.type === 'switch' && a.cases) {
+        for (const c of a.cases) {
+          if (c.scenarioId && !visited.has('sc:' + c.scenarioId)) {
+            visited.add('sc:' + c.scenarioId);
+            const nested = scenarios[c.scenarioId];
+            if (nested?.actions) out.push(..._collectSsVars(nested.actions, visited));
+          }
+        }
+      }
+    }
+    return out;
+  }
+  const ssVarOrder = _collectSsVars(actions, new Set(['sc:' + scenarioId]));
+  chrome.storage.local.set({ csvSsVarOrder: ssVarOrder });
 
   // Clear previous run's results, screenshots, and any stale single-scenario
   // checkpoint before starting — a fresh run should never show stale data from
@@ -716,9 +706,20 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
 
     // Only store variables that are actually referenced by the scenario to
     // keep IDB records lean.
-    const filteredVars = Object.fromEntries(
+    // Screenshot vars are placed last in action-capture order so that XLSX/HTML
+    // column headers match the scenario's action sequence rather than the order
+    // the vars were defined (CSV column order or baseVars order).
+    const filteredVarsRaw = Object.fromEntries(
       Object.entries(finalVars).filter(([k]) => relevantKeys.has(k)),
     );
+    const ssKeys = new Set(Object.keys(screenshotsResult));
+    const filteredVars = {};
+    for (const [k, v] of Object.entries(filteredVarsRaw)) {
+      if (!ssKeys.has(k)) filteredVars[k] = v;
+    }
+    for (const k of Object.keys(screenshotsResult)) {
+      if (k in filteredVarsRaw) filteredVars[k] = filteredVarsRaw[k];
+    }
 
     await csvResultWrite(i, { rowIndex: i, vars: filteredVars, failures: failedActions });
 

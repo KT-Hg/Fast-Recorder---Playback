@@ -1,11 +1,3 @@
-/**
- * utils.js — Shared helpers for the background service worker.
- * Exports: updateBadge, sendCompletionNotification,
- *          applyVars, interpolateAction, resolveRandomVars,
- *          runScriptViaCdp, openDropdownViaCdp, tryDetachDebugger,
- *          getActiveTabId, getTabUrl, waitForTabLoad, tabMsg
- */
-
 import { state } from './state.js';
 import { markSessionOpen, markSessionClosed } from './cdp-session.js';
 
@@ -81,10 +73,6 @@ const _RANDOM_CHARSETS = {
   alphanumeric: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
 };
 
-/**
- * Normalize a variable value to its active string representation.
- * Handles both legacy plain strings and the new extended config objects.
- */
 function _getVarActiveValue(v) {
   if (typeof v === 'string') return v;
   if (v && typeof v === 'object' && 'activeType' in v) {
@@ -103,7 +91,6 @@ function _getVarActiveValue(v) {
   return String(v || '');
 }
 
-/** Resolve {random:type:len} and {pick:val1|val2|val3} placeholders at run start. */
 export function resolveRandomVars(vars) {
   const result = {};
   for (const [k, rawV] of Object.entries(vars)) {
@@ -135,20 +122,13 @@ export function resolveRandomVars(vars) {
   return result;
 }
 
-/** Substitute ${varName} placeholders in plain string fields. */
 export function applyVars(str, vars) {
   if (typeof str !== 'string' || !vars) return str;
   return str.replace(/\$\{([^}]+)\}/g, (_, k) => (k in vars ? vars[k] : `\${${k}}`));
 }
 
-/**
- * Substitute ${varName} placeholders in script/code fields.
- *
- * Separate from applyVars because variable values injected into code strings
- * must be escaped to prevent breaking out of any JS string context
- * (single-quoted, double-quoted, or template literal).
- * Backslash must be escaped first to avoid double-escaping downstream.
- */
+// Values must be escaped before injection to prevent breaking out of any JS string context;
+// backslash escaped first to avoid double-escaping downstream.
 function _applyVarsToCode(code, vars) {
   if (typeof code !== 'string' || !vars) return code;
   return code.replace(/\$\{([^}]+)\}/g, (match, k) => {
@@ -291,18 +271,8 @@ export function tryDetachDebugger(tabId) {
   chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
 }
 
-/**
- * Open a dropdown via a CDP trusted click.
- *
- * Native <select>: sends mousePressed only (no mouseReleased, no detach).
- * Detaching synthesizes a mouseReleased event which closes the OS native
- * dropdown popup before the user can interact with it.
- *
- * Custom dropdowns: full press+release then detach.
- *
- * A 10-second safety timeout ensures the returned Promise always resolves even
- * if chrome.debugger.attach never fires (e.g. on a crashed renderer).
- */
+// Native <select>: mousePressed only — mouseReleased/detach closes the OS popup before user can interact.
+// Custom dropdowns: full press+release then detach. 10-second safety timeout guards crashed renderers.
 export function openDropdownViaCdp(tabId, selector) {
   return new Promise((resolve) => {
     const _safetyTimer = setTimeout(resolve, 10_000);
@@ -392,7 +362,6 @@ export function openDropdownViaCdp(tabId, selector) {
   });
 }
 
-/** Execute arbitrary JavaScript in the page via CDP Runtime.evaluate. */
 export async function runScriptViaCdp(tabId, code) {
   const expression = code.replace(/^javascript:/i, '').trim();
   return new Promise((resolve) => {
@@ -416,13 +385,8 @@ export async function runScriptViaCdp(tabId, code) {
 
 /* ── Tab Helpers ────────────────────────────────────────────────────────────── */
 
-/**
- * Get the active tab ID with a multi-layer fallback to handle edge cases where
- * no focused window is available (e.g. popup opened via keyboard shortcut):
- *  1. Focused window's active tab
- *  2. Any window's active tab on an eligible (non-chrome://) URL
- *  3. Session-stored last-known tab (survives SW suspend)
- */
+// Three-layer fallback: focused window → any eligible tab → session-stored last-known tab.
+// The session fallback handles popups opened via keyboard shortcut (no focused window).
 export function getActiveTabId() {
   return new Promise((resolve) => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -456,7 +420,6 @@ export function getActiveTabId() {
   });
 }
 
-/** Get the current URL of a tab. Returns null on error or missing tab. */
 export function getTabUrl(tabId) {
   return new Promise((resolve) => {
     chrome.tabs.get(tabId, (tab) => {
@@ -466,10 +429,6 @@ export function getTabUrl(tabId) {
   });
 }
 
-/**
- * Wait until a tab reaches status='complete' or the timeout elapses.
- * Resolves true on success, false on timeout or tab removal.
- */
 export function waitForTabLoad(tabId, timeoutMs = 15_000) {
   return new Promise((resolve) => {
     let resolved = false;
@@ -501,16 +460,7 @@ export function waitForTabLoad(tabId, timeoutMs = 15_000) {
   });
 }
 
-/**
- * Send a message to the content script on a tab with a hard timeout.
- * Returns a failure object on timeout so callers can distinguish
- * "no content script" from actual action failures.
- *
- * @param {number}  tabId
- * @param {object}  msg
- * @param {number}  [timeout=10_000]
- * @param {number}  [frameId]  Target a specific iframe; omit for main frame.
- */
+// Returns a failure object on timeout so callers can distinguish "no content script" from real failures.
 export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
   return new Promise((resolve) => {
     let settled = false;
@@ -541,15 +491,7 @@ export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
 
 /* ── Upload File via CDP ────────────────────────────────────────────────────── */
 
-/**
- * Inject a local file into an <input type="file"> element using CDP
- * DOM.setFileInputFiles.  This is the same mechanism Selenium/Playwright use
- * to automate file uploads without opening the OS file-picker dialog.
- *
- * @param {number} tabId
- * @param {string} selector  CSS selector targeting the file input element
- * @param {string} filePath  Absolute local path, e.g. "C:\\Data\\file.pdf"
- */
+// Uses CDP DOM.setFileInputFiles — same mechanism as Selenium/Playwright, bypasses the OS file-picker.
 export function setFileInputViaCdp(tabId, selector, filePaths) {
   return new Promise((resolve, reject) => {
     const _safetyTimer = setTimeout(() => reject(new Error('uploadFile: timed out after 15 s')), 15_000);

@@ -100,7 +100,7 @@
   <div id="headerSpacer" style="height:72px;"></div>
 
   <!-- ===== TAB: RECORD & PLAY ===== -->
-  <div class="tab-panel" id="tabRecord">
+  <div class="tab-panel active" id="tabRecord">
     <div class="main-content" id="mainContent" role="main">
 
     <!-- Recording badge (floating) -->
@@ -125,34 +125,44 @@
     </div>
 
     <!-- ADD MANUAL ACTION -->
-    <div class="card collapsible collapsed" id="addManualActionCard">
-      <h3 role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;">Add Manual Action <span class="caret">▸</span><button class="card-help-btn" data-card="addManual" title="Manual action guide" style="margin-left:auto;">?</button></h3>
+    <div class="card collapsible" id="addManualActionCard">
+      <h3 role="button" tabindex="0" aria-expanded="true" style="display:flex;align-items:center;">Add Manual Action <span class="caret">▾</span><button class="card-help-btn" data-card="addManual" title="Manual action guide" style="margin-left:auto;">?</button></h3>
 
-      <!-- ① Action Type — always first -->
-      <div class="step-label">① Action Type</div>
+      <!-- Action Type — always first -->
+      <div class="step-label">Action Type</div>
       <select id="manualActionType">
         <option value="">-- Select Action Type --</option>
-        <option value="click">Click</option>
-        <option value="input">Input</option>
-        <option value="hover">Hover</option>
-        <option value="dropdown">Open Dropdown</option>
-        <option value="dragdrop">Drag &amp; Drop</option>
-        <option value="navigate">Navigate</option>
-        <option value="wait">Wait (ms)</option>
-        <option value="script">Run JS</option>
-        <option value="condition">Condition (If)</option>
-        <option value="switch">Switch (Variable → Scenario)</option>
-        <option value="readdom">Read DOM → Variable</option>
-        <option value="screenshot">Screenshot (Visible)</option>
-        <option value="screenshot_full">Screenshot (Full Page)</option>
-        <option value="screenshot_element">Screenshot (Element)</option>
-        <option value="screenshot_tovar">Screenshot → Variable (CSV)</option>
-        <option value="uploadFile">Upload File</option>
+        <optgroup label="Interactions">
+          <option value="click">Click</option>
+          <option value="input">Input</option>
+          <option value="hover">Hover</option>
+          <option value="dropdown">Open Dropdown</option>
+          <option value="dragdrop">Drag &amp; Drop</option>
+        </optgroup>
+        <optgroup label="Navigation &amp; Code">
+          <option value="navigate">Navigate</option>
+          <option value="wait">Wait (ms)</option>
+          <option value="script">Run JS</option>
+        </optgroup>
+        <optgroup label="Logic">
+          <option value="condition">Condition (If)</option>
+          <option value="switch">Switch (Variable → Scenario)</option>
+          <option value="readdom">Read DOM → Variable</option>
+        </optgroup>
+        <optgroup label="Screenshots">
+          <option value="screenshot">Screenshot (Visible)</option>
+          <option value="screenshot_full">Screenshot (Full Page)</option>
+          <option value="screenshot_element">Screenshot (Element)</option>
+          <option value="screenshot_tovar">Screenshot → Variable (CSV)</option>
+        </optgroup>
+        <optgroup label="Files">
+          <option value="uploadFile">Upload File</option>
+        </optgroup>
       </select>
 
       <!-- SELECTOR SECTION — shown only when selected type needs a selector -->
       <div class="hidden-by-default" id="selectorSection">
-        <div class="step-label" id="selectorStepLabel">② Selector</div>
+        <div class="step-label" id="selectorStepLabel">Selector</div>
         <div class="row" id="selectorRow">
           <select id="selectorType" class="w-100" style="font-size: 11px;">
             <option value="css">CSS</option>
@@ -173,7 +183,7 @@
 
       <!-- READ DOM SETTINGS — shown for readdom type -->
       <div class="hidden-by-default" id="readdomWrapper" style="margin-top:6px;">
-        <div class="step-label" id="readdomStepLabel">③ Read DOM Settings</div>
+        <div class="step-label" id="readdomStepLabel">Read DOM Settings</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap;">Save to var</label>
           <input id="readdomVarName" placeholder="${varName}" style="flex:1; margin:0;" />
@@ -191,7 +201,7 @@
 
       <!-- SCREENSHOT → VARIABLE SETTINGS — shown for screenshot_tovar type -->
       <div class="hidden-by-default" id="screenshotTovarWrapper" style="margin-top:6px;">
-        <div class="step-label" id="screenshotTovarStepLabel">② Screenshot Settings</div>
+        <div class="step-label" id="screenshotTovarStepLabel">Screenshot Settings</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Target</label>
           <select id="screenshotTovarTarget" style="flex:1; margin:0;">
@@ -209,7 +219,7 @@
 
       <!-- DROP TARGET — shown for dragdrop type (after source selector) -->
       <div class="hidden-by-default" id="dragdropWrapper" style="margin-top:6px;">
-        <div class="step-label" id="dragdropStepLabel">③ Drop Target</div>
+        <div class="step-label" id="dragdropStepLabel">Drop Target</div>
         <div class="row" id="dragdropTargetRow">
           <select id="dragdropTargetSelectorType" class="w-100" style="font-size: 11px;">
             <option value="css">CSS</option>
@@ -231,7 +241,7 @@
 
       <!-- UPLOAD FILE SETTINGS — shown for uploadFile type -->
       <div class="hidden-by-default" id="uploadFileWrapper" style="margin-top:6px;">
-        <div class="step-label" id="uploadFileStepLabel">③ File to Upload</div>
+        <div class="step-label" id="uploadFileStepLabel">File to Upload</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Upload mode</label>
           <select id="uploadMode" style="flex:1; margin:0;">
@@ -252,7 +262,7 @@
 
       <!-- CONDITION SETTINGS — shown for condition type -->
       <div class="hidden-by-default" id="conditionWrapper">
-        <div class="step-label" id="conditionStepLabel">② Condition</div>
+        <div class="step-label" id="conditionStepLabel">Condition</div>
         <div class="row" style="margin-top: 6px; gap: 6px;">
           <select id="conditionType" style="flex: 1; margin: 0;">
             <option value="elementExists">Element Exists</option>
@@ -279,7 +289,7 @@
 
       <!-- SWITCH SETTINGS — shown for switch type -->
       <div class="hidden-by-default" id="switchWrapper" style="margin-top:6px;">
-        <div class="step-label" id="switchStepLabel">② Switch Variable</div>
+        <div class="step-label" id="switchStepLabel">Switch Variable</div>
         <div style="display:flex; gap:6px; align-items:center; margin-bottom:6px;">
           <label style="font-size:12px; color:var(--muted); white-space:nowrap; width:80px;">Variable</label>
           <input id="switchVar" placeholder="${varName}  e.g. ${role}" style="flex:1; margin:0;" />
@@ -358,13 +368,13 @@
 
       <!-- VALUE FIELD — shown for input/navigate/script/wait/screenshot/screenshot_full -->
       <div class="hidden-by-default" id="manualValueWrapper">
-        <div class="step-label" id="valueStepLabel">③ Value</div>
+        <div class="step-label" id="valueStepLabel">Value</div>
         <textarea id="manualValue" placeholder="Value (for input/navigate) or JS code (for script)" style="width:100%; height:80px; margin-top:6px;"></textarea>
       </div>
 
       <!-- DELAY -->
       <div class="hidden-by-default" id="manualDelayWrapper">
-        <div class="step-label" id="delayStepLabel">④ Delay (optional)</div>
+        <div class="step-label step-label-optional step-label-divider-top" id="delayStepLabel">Delay</div>
         <div class="row" style="gap:6px; margin-top:0;">
           <select id="manualDelayPreset" style="flex: 1;">
             <option value="500" selected>0.5s (default)</option>
@@ -382,7 +392,7 @@
 
       <!-- LABEL -->
       <div class="hidden-by-default" id="manualLabelWrapper">
-        <div class="step-label" id="labelStepLabel">⑤ Label (optional)</div>
+        <div class="step-label step-label-optional" id="labelStepLabel">Label</div>
         <input id="manualLabel" placeholder="Short description for this action" />
       </div>
 
@@ -622,7 +632,6 @@
           <label class="csv-format-label">Export format:</label>
           <select id="csvExportFormat" style="flex:1; margin:0; font-size:12px;">
             <option value="xlsx" selected>Excel XLSX (images in cells)</option>
-            <option value="csv">CSV (file path)</option>
             <option value="html">HTML (embedded images)</option>
             <option value="zip">ZIP (screenshots + CSV)</option>
           </select>
@@ -648,61 +657,140 @@
     </div>
   </div>
 
-  <!-- ===== TAB: CAPTURE (default) ===== -->
-  <div class="tab-panel active" id="tabCapture">
+  <!-- ===== TAB: CAPTURE ===== -->
+  <div class="tab-panel" id="tabCapture">
 
-    <!-- Screenshot Grid -->
     <div class="card">
-      <h3>Screenshot</h3>
-      <div class="screenshot-grid">
-        <button id="screenshotVisible"  class="secondary">📷 Visible</button>
-        <button id="screenshotFull"     class="secondary">📄 Full Page</button>
-        <button id="cropVisible"        class="secondary" title="Capture visible then crop/edit">✂ Visible</button>
-        <button id="cropFull"           class="secondary" title="Capture full page then crop/edit">✂ Full</button>
+      <!-- Tab bar -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;">
+        <h3 style="margin:0;">Capture</h3>
       </div>
-    </div>
-
-    <div class="card">
-      <h3>Scroll Capture</h3>
-      <div class="screenshot-grid">
-        <button id="screenshotScrollV"  class="secondary" title="Capture full vertical scroll">↕ Scroll V</button>
-        <button id="screenshotScrollH"  class="secondary" title="Capture full horizontal scroll">↔ Scroll H</button>
-        <button id="cropScrollV"        class="secondary" title="Capture vertical scroll then crop/edit">✂ Scroll V</button>
-        <button id="cropScrollH"        class="secondary" title="Capture horizontal scroll then crop/edit">✂ Scroll H</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Segment Capture</h3>
-      <div class="screenshot-grid">
-        <button id="segmentScrollV"     class="secondary" title="Mark start, scroll to end, then stop">⬍ Seg V</button>
-        <button id="segmentScrollH"     class="secondary" title="Mark start, scroll right to end, then stop">⬌ Seg H</button>
-        <button id="cropSegmentScrollV" class="secondary" title="Segment capture then open editor">✂ Seg V</button>
-        <button id="cropSegmentScrollH" class="secondary" title="Segment capture then open editor">✂ Seg H</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h3>Element Capture</h3>
-      <div class="screenshot-grid">
-        <button id="screenshotElement"     class="secondary" title="Capture a specific element">📌 Element</button>
-        <button id="cropScreenshotElement" class="secondary" title="Capture element then open editor">✂ Element</button>
+      <div class="capture-tab-nav" id="captureTabNav">
+        <button class="capture-tab-btn active" data-capture-tab="all">All</button>
+        <button class="capture-tab-btn" data-capture-tab="visible">Visible</button>
+        <button class="capture-tab-btn" data-capture-tab="scroll">Scroll</button>
+        <button class="capture-tab-btn" data-capture-tab="segment">Segment</button>
+        <button class="capture-tab-btn" data-capture-tab="element">Element</button>
       </div>
 
+      <!-- All -->
+      <div class="capture-group" id="captureGroup-all">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Visible</span>
+          <div class="capture-btn-row">
+            <button id="screenshotVisible"  class="cap-save-btn" title="Capture visible viewport">📷 Page</button>
+            <button id="screenshotFull"     class="cap-save-btn" title="Capture full page">📄 Full</button>
+            <button id="cropVisible"        class="cap-edit-btn" title="Capture visible then crop/edit">✂ Page</button>
+            <button id="cropFull"           class="cap-edit-btn" title="Capture full page then crop/edit">✂ Full</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Scroll</span>
+          <div class="capture-btn-row">
+            <button id="screenshotScrollV"  class="cap-save-btn" title="Capture full vertical scroll">↕ V</button>
+            <button id="screenshotScrollH"  class="cap-save-btn" title="Capture full horizontal scroll">↔ H</button>
+            <button id="cropScrollV"        class="cap-edit-btn" title="Capture vertical scroll then crop/edit">✂ ↕V</button>
+            <button id="cropScrollH"        class="cap-edit-btn" title="Capture horizontal scroll then crop/edit">✂ ↔H</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Segment</span>
+          <div class="capture-btn-row">
+            <button id="segmentScrollV"     class="cap-save-btn" title="Mark start, scroll to end, then stop">⬍ V</button>
+            <button id="segmentScrollH"     class="cap-save-btn" title="Mark start, scroll right to end, then stop">⬌ H</button>
+            <button id="cropSegmentScrollV" class="cap-edit-btn" title="Segment capture then open editor">✂ ⬍V</button>
+            <button id="cropSegmentScrollH" class="cap-edit-btn" title="Segment capture then open editor">✂ ⬌H</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Element</span>
+          <div class="capture-btn-row">
+            <button id="screenshotElement"     class="cap-save-btn" title="Capture a specific element">📌 Pick</button>
+            <button id="cropScreenshotElement" class="cap-edit-btn" title="Capture element then open editor">✂ Pick</button>
+          </div>
+        </div>
+      </div>
 
-    </div>
+      <!-- Visible -->
+      <div class="capture-group" id="captureGroup-visible" style="display:none;">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Page</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotVisible" title="Capture visible viewport">📷 Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropVisible" title="Capture then open editor">✂ Edit</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Full</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotFull" title="Capture full page">📄 Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropFull" title="Capture full page then edit">✂ Edit</button>
+          </div>
+        </div>
+      </div>
 
-    <div class="card">
-      <h3>Tools</h3>
-      <button id="diffScreenshots" class="secondary" style="font-size:12px;" title="Compare two screenshots and highlight differences">🔍 Image Diff</button>
+      <!-- Scroll -->
+      <div class="capture-group" id="captureGroup-scroll" style="display:none;">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Vertical</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotScrollV" title="Capture full vertical scroll">↕ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropScrollV" title="Capture then edit">✂ Edit</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Horizontal</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotScrollH" title="Capture full horizontal scroll">↔ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropScrollH" title="Capture then edit">✂ Edit</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Segment -->
+      <div class="capture-group" id="captureGroup-segment" style="display:none;">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Vertical</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="segmentScrollV" title="Segment vertical">⬍ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollV" title="Segment then edit">✂ Edit</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Horizontal</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="segmentScrollH" title="Segment horizontal">⬌ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollH" title="Segment then edit">✂ Edit</button>
+          </div>
+        </div>
+        <span class="helper-text">Press hotkey/button to mark start, scroll to desired end, then press again to capture.</span>
+      </div>
+
+      <!-- Element -->
+      <div class="capture-group" id="captureGroup-element" style="display:none;">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Element</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotElement" title="Capture a specific element">📌 Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropScreenshotElement" title="Capture element then edit">✂ Edit</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tools row (always visible) -->
+      <div class="capture-tools-row">
+        <button id="diffScreenshots" class="secondary" style="font-size:11px;margin:0;padding:5px 12px;" title="Compare two screenshots and highlight differences">🔍 Image Diff</button>
+      </div>
     </div>
 
   </div>
 
   <!-- ===== TAB: SETTINGS ===== -->
   <div class="tab-panel" id="tabSettings">
+
+    <!-- Hotkeys card -->
     <div class="card">
-      <p class="settings-section-title" style="margin-top:0;">Hotkeys</p>
+      <h3>Hotkeys</h3>
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <div class="hotkey-row" data-requires-activation>
           <span class="hotkey-label">Start Recording</span>
@@ -755,10 +843,16 @@
           <button class="hotkey-set-btn secondary" data-hotkey="screenshotElement">Set</button>
         </div>
       </div>
+      <div class="activation-required-notice" role="status">
+        🔒 Recording hotkeys are available after activating on the current tab
+      </div>
       <span class="helper-text" style="margin-top: 4px; display: block;">Click Set → press any key combo. ESC to cancel.</span>
       <button id="resetHotkeys" class="secondary" style="margin-top: 6px; font-size: 11px; padding: 5px 10px;">Reset to defaults</button>
+    </div>
 
-      <p class="settings-section-title">Screenshot</p>
+    <!-- Screenshot settings card -->
+    <div class="card">
+      <h3>Screenshot</h3>
       <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
         <input type="radio" name="screenshotSaveMode" value="auto" id="saveModeAuto" style="width: auto; margin: 0; cursor: pointer;" />
         Auto (save to Downloads/screenshots/)
@@ -770,7 +864,7 @@
       <input id="screenshotPrefix" placeholder="Filename prefix (e.g. screenshot)" style="margin-top: 8px;" />
       <span class="helper-text">Format: {prefix}_{YYYY-MM-DD_HH-MM-SS}.png</span>
 
-      <p class="settings-section-title" style="margin-top:12px;">Visible Screenshot — Countdown</p>
+      <div class="step-label step-label-divider-top">Countdown</div>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
         <input type="checkbox" id="screenshotCountdownEnabled" style="width:auto; margin:0; cursor:pointer;" />
         Countdown before capture (to keep dropdown open)
@@ -785,7 +879,7 @@
       </div>
       <span class="helper-text">On: press hotkey/button → countdown → open dropdown → auto capture. Off: capture immediately (default).</span>
 
-      <p class="settings-section-title" style="margin-top:12px;">Watermark</p>
+      <div class="step-label step-label-divider-top">Watermark</div>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
         <input type="checkbox" id="watermarkEnabled" style="width:auto; margin:0; cursor:pointer;" />
         Overlay watermark on screenshots
@@ -799,7 +893,7 @@
         <span style="font-size:12px; color:var(--muted);">px</span>
       </div>
 
-      <p class="settings-section-title" style="margin-top:12px;">Segment Scroll Speed</p>
+      <div class="step-label step-label-divider-top">Segment Scroll Speed</div>
       <div style="display:flex; flex-direction:column; gap:6px;">
         <div style="display:flex; align-items:center; gap:8px;">
           <span style="font-size:12px; color:var(--muted); width:80px;">↕ Vertical</span>
@@ -814,14 +908,20 @@
         <span class="helper-text">px / frame — 0.1 = slowest, 10 = fastest</span>
       </div>
       <button id="saveScreenshotSettings" class="success" style="margin-top: 8px;">Save Settings</button>
+    </div>
 
-      <p class="settings-section-title">Notifications</p>
+    <!-- Notifications card -->
+    <div class="card">
+      <h3>Notifications</h3>
       <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
         <input type="checkbox" id="notifyOnComplete" style="width: auto; margin: 0; cursor: pointer;" />
         Show notification when playback/sequence finishes
       </label>
+    </div>
 
-      <p class="settings-section-title">Import / Export</p>
+    <!-- Import / Export card (collapsible) -->
+    <div class="card collapsible collapsed" id="importExportCard">
+      <h3 role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;">Import / Export <span class="caret">▸</span></h3>
       <div class="row">
         <select id="exportScenarioSelect" class="flex-1">
           <option value="">-- Select scenario --</option>
@@ -837,8 +937,11 @@
       <span class="helper-text">Exports all scenarios in selected folder</span>
       <input type="file" id="importFile" accept=".json" />
       <button id="importScenario" class="secondary">Import Scenario</button>
+    </div>
 
-      <p class="settings-section-title">Backup / Restore</p>
+    <!-- Backup / Restore card (collapsible) -->
+    <div class="card collapsible collapsed" id="backupRestoreCard">
+      <h3 role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;">Backup / Restore <span class="caret">▸</span></h3>
       <input type="file" id="restoreFile" accept=".json" />
       <div class="row" style="gap:6px;">
         <button id="backupAll" class="secondary flex-1">⬇ Backup All Data</button>

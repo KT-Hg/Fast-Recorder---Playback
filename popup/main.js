@@ -1,14 +1,5 @@
-/**
- * main.js — Core popup UI logic: recording, scenario management, playback, schedule, CSV.
- *
- * All logic lives inside the `initMain()` function body (a single large closure) so that
- * DOM queries run after the document is ready and module-level variables are scoped to
- * the function rather than the module. This avoids cross-module DOM query races while
- * keeping all tightly-coupled UI state local.
- *
- * Exports: initMain
- */
-
+// All logic lives inside initMain() — a single closure so DOM queries run after
+// document ready and UI state stays local rather than module-level.
 import { escHtml, getActionIcon, showToast, showConfirm, showAlert,
          lockScroll, unlockScroll, validateNumberInput,
          safeSendTabMessage, isEligibleTab, debounce } from './utils.js';
@@ -690,7 +681,6 @@ const DEFAULT_DELAY_MS = "500";
 const TYPES_NO_SELECTOR = new Set(["navigate", "wait", "script", "screenshot", "screenshot_full", "switch"]);
 
 /* === Step label renumbering after visibility changes === */
-const _STEP_CIRCLES = ['①','②','③','④','⑤','⑥','⑦'];
 const _STEP_LABEL_TEXTS = {
   selectorStepLabel:       'Selector',
   readdomStepLabel:        'Read DOM Settings',
@@ -698,9 +688,10 @@ const _STEP_LABEL_TEXTS = {
   dragdropStepLabel:       'Drop Target',
   conditionStepLabel:      'Condition',
   switchStepLabel:         'Switch Variable',
-  delayStepLabel:          'Delay (optional)',
-  labelStepLabel:          'Label (optional)',
+  delayStepLabel:          'Delay',
+  labelStepLabel:          'Label',
 };
+const _OPTIONAL_LABELS = new Set(['delayStepLabel', 'labelStepLabel']);
 const _VALUE_LABEL_TEXTS = {
   script:          'Code JS',
   navigate:        'URL',
@@ -722,21 +713,28 @@ const _STEP_ORDER = [
 
 function _updateStepLabels() {
   const type = manualActionType.value;
-  let n = 2; // ① is always Action Type
+  let firstOptional = true;
   for (const [labelId, parentId] of _STEP_ORDER) {
     const parent = document.getElementById(parentId);
     const label  = document.getElementById(labelId);
     if (!parent || !label) continue;
-    // Visible = inline style explicitly set to block/flex (not '', not 'none')
     const vis = parent.style.display !== '' && parent.style.display !== 'none';
     if (!vis) continue;
+    const isOptional = _OPTIONAL_LABELS.has(labelId);
     const text = labelId === 'valueStepLabel'
       ? (_VALUE_LABEL_TEXTS[type] || 'Value')
       : labelId === 'delayStepLabel' && type === 'wait'
         ? 'Duration (ms)'
         : (_STEP_LABEL_TEXTS[labelId] || '');
-    label.textContent = `${_STEP_CIRCLES[n - 1]} ${text}`;
-    n++;
+    label.textContent = text;
+    label.classList.toggle('step-label-optional', isOptional);
+    // Insert a divider before the first optional label
+    if (isOptional && firstOptional) {
+      label.classList.add('step-label-divider-top');
+      firstOptional = false;
+    } else {
+      label.classList.remove('step-label-divider-top');
+    }
   }
 }
 
@@ -1964,7 +1962,7 @@ function previewActions() {
       actionsEl.innerHTML = "";
 
       if (!res?.actions?.length) {
-        actionsEl.innerHTML = `<li class="empty">No actions recorded</li>`;
+        actionsEl.innerHTML = `<li class="empty">No actions recorded — use the Add Manual Action card above to add one</li>`;
         if (actionCount) actionCount.style.display = "none";
         updateUndoRedoState();
         return;
@@ -2180,9 +2178,7 @@ manualActionType.onchange = () => {
   const manualLabelWrapper = document.getElementById("manualLabelWrapper");
   if (manualLabelWrapper) manualLabelWrapper.style.display = type ? "block" : "none";
 
-  // Renumber step labels
   if (type !== "condition") _updateStepLabels();
-  // (condition calls updateConditionFieldsVisibility which calls _updateStepLabels)
 };
 
 /* === Child Condition toggle === */
@@ -3513,10 +3509,7 @@ if (createFolderAction) {
   };
 }
 
-// MANAGE FOLDERS is now always visible, render it when folders load
-// (already called in loadScenarios)
 
-// Variables UI is fully managed by popup/variables.js (initVariables called in init.js)
 
 scenarioList.onchange = () => {
   // If editing an action that belongs to a different scenario, clear the form
@@ -3960,7 +3953,6 @@ function updateRunListDisplay() {
     runListDisplay.appendChild(li);
   });
 
-  // Task 2 — Paste item nếu clipboard có dữ liệu
   if (sequenceClipboard) {
     const pasteLi = document.createElement("li");
     pasteLi.className = "action-navigate action-paste-li";
@@ -4276,7 +4268,6 @@ loadSchedules();
 
 /* === CSV DATA-DRIVEN RUN === */
 
-// Extract ${variable} names used as inputs in a scenario's actions (mirrors collectRelevantKeys in bg/playback.js)
 function _getInputVarsFromScenario(scenarioId) {
   const scenario = scenariosCache[scenarioId];
   if (!scenario?.actions) return new Set();
@@ -4574,23 +4565,49 @@ function downloadCsvText(text, filename) {
   };
 })();
 
-// Build full-header list from results + screenshots keys (always appends "Action Failed" last)
-function _buildAllHeaders(originalHeaders, results, screenshots) {
-  const headerSet = new Set(originalHeaders);
+// Build full-header list. Screenshot columns are always placed last in the
+// action-capture order given by ssVarOrder, so the XLSX/HTML columns match
+// the scenario's action sequence regardless of CSV or baseVars ordering.
+function _buildAllHeaders(originalHeaders, results, screenshots, ssVarOrder) {
+  const ssSet = new Set(ssVarOrder || []);
+
+  // Non-screenshot base headers (CSV columns, excluding screenshot varNames)
+  const baseHeaders = originalHeaders.filter(h => !ssSet.has(h));
+  const headerSet   = new Set(baseHeaders);
+
+  // Extra vars produced by the run (readdom, etc.) — excluding screenshot vars
   const extra = [];
   results.forEach(r => {
-    Object.keys(r.vars || {}).forEach(k => { if (!headerSet.has(k)) { extra.push(k); headerSet.add(k); } });
+    Object.keys(r.vars || {}).forEach(k => {
+      if (!headerSet.has(k) && !ssSet.has(k)) { extra.push(k); headerSet.add(k); }
+    });
   });
+
+  // Screenshot columns: start with ssVarOrder (action order), then append any
+  // varNames found in screenshots that are not yet covered — this handles nested
+  // scenarios reached via Switch whose varNames may not be in ssVarOrder.
+  const ssHeaders = ssVarOrder && ssVarOrder.length > 0 ? [...ssVarOrder] : [];
+  const ssHeaderSet = new Set([...Array.from(headerSet), ...ssHeaders]);
+  // Fallback: add vars from results that slipped through (readdom-style outputs)
+  if (!ssVarOrder || ssVarOrder.length === 0) {
+    results.forEach(r => {
+      Object.keys(r.vars || {}).forEach(k => {
+        if (!ssHeaderSet.has(k)) { ssHeaders.push(k); ssHeaderSet.add(k); }
+      });
+    });
+  }
+  // Always sweep screenshots to catch any varName not yet covered
   Object.keys(screenshots || {}).forEach(key => {
     const vn = key.split(':').slice(1).join(':');
-    if (!headerSet.has(vn)) { extra.push(vn); headerSet.add(vn); }
+    if (!ssHeaderSet.has(vn)) { ssHeaders.push(vn); ssHeaderSet.add(vn); }
   });
-  return [...originalHeaders, ...extra, "Action Failed"];
+
+  return [...baseHeaders, ...extra, ...ssHeaders, "Action Failed"];
 }
 
 // HTML export — images as base64 <img> tags
-function generateResultHtml(originalHeaders, originalRows, results, screenshots) {
-  const allHeaders = _buildAllHeaders(originalHeaders, results, screenshots);
+function generateResultHtml(originalHeaders, originalRows, results, screenshots, ssVarOrder) {
+  const allHeaders = _buildAllHeaders(originalHeaders, results, screenshots, ssVarOrder);
   const imgCols = new Set();
   Object.keys(screenshots || {}).forEach(key => {
     const vn = key.split(':').slice(1).join(':');
@@ -4622,8 +4639,8 @@ function generateResultHtml(originalHeaders, originalRows, results, screenshots)
 }
 
 // XLSX export — images placed in cells via drawing anchors
-function generateResultXlsx(originalHeaders, originalRows, results, screenshots) {
-  const allHeaders = _buildAllHeaders(originalHeaders, results, screenshots);
+function generateResultXlsx(originalHeaders, originalRows, results, screenshots, ssVarOrder) {
+  const allHeaders = _buildAllHeaders(originalHeaders, results, screenshots, ssVarOrder);
   const ss = screenshots || {};
 
   // Which columns have images
@@ -4811,12 +4828,13 @@ document.getElementById("csvDownloadResult")?.addEventListener("click", () => {
       showToast("Downloaded — results still available for re-download", "success");
     } else {
       fetchSS(ssRes => {
-        const ss = ssRes?.screenshots || {};
+        const ss         = ssRes?.screenshots || {};
+        const ssVarOrder = ssRes?.ssVarOrder  || [];
         if (format === "html") {
-          const html = generateResultHtml(csvParsed.headers, csvParsed.rows, results, ss);
+          const html = generateResultHtml(csvParsed.headers, csvParsed.rows, results, ss, ssVarOrder);
           _downloadBlob(new Blob([html], { type: "text/html;charset=utf-8;" }), `csv_result_${ts}.html`);
         } else if (format === "xlsx") {
-          const blob = generateResultXlsx(csvParsed.headers, csvParsed.rows, results, ss);
+          const blob = generateResultXlsx(csvParsed.headers, csvParsed.rows, results, ss, ssVarOrder);
           _downloadBlob(blob, `csv_result_${ts}.xlsx`);
         } else if (format === "zip") {
           const zip = new ZipWriter();

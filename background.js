@@ -703,8 +703,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (type === "GET_CSV_SCREENSHOTS") {
     ssReadAll()
-      .then(screenshots => sendResponse({ screenshots }))
-      .catch(e => { console.error('[CSV] IDB read failed:', e); sendResponse({ screenshots: {} }); });
+      .then(screenshots => {
+        chrome.storage.local.get('csvSsVarOrder', res => {
+          sendResponse({ screenshots, ssVarOrder: res.csvSsVarOrder || [] });
+        });
+      })
+      .catch(e => { console.error('[CSV] IDB read failed:', e); sendResponse({ screenshots: {}, ssVarOrder: [] }); });
     return true;
   }
 
