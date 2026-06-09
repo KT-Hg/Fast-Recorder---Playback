@@ -16,6 +16,7 @@ import { updateBadge } from './bg/utils.js';
 import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback } from './bg/playback.js';
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
+  openCropUI,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 
@@ -785,6 +786,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ activated });
     });
     return true;
+  }
+
+  /* --- Image Editor (from clipboard / file in popup) --- */
+  if (type === "OPEN_IMAGE_EDITOR") {
+    openCropUI(request.dataUrl, null, false);
+    sendResponse({ ok: true });
+    return;
   }
 
   /* --- Crop UI --- */

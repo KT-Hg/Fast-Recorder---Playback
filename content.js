@@ -748,7 +748,7 @@ document.addEventListener('click', (event) => {
     height: Math.round(_cr.height),
   };
 
-  chrome.storage.local.set({ lastPickedSelector: selectors.css, lastPickedSelectors: selectors });
+  try { chrome.storage.local.set({ lastPickedSelector: selectors.css, lastPickedSelectors: selectors }); } catch (_) {}
   safeSend({ type: 'ELEMENT_PICKED', selector: selectors.css, selectors, rect: pickedRect });
   pickerMode = false;
   clearPickerUI();
@@ -929,14 +929,18 @@ let activeHotkeys = {
   screenshotElement:   'Alt+E',
 };
 
-chrome.storage.sync.get(['hotkeys'], (res) => {
-  if (res.hotkeys) activeHotkeys = { ...activeHotkeys, ...res.hotkeys };
-});
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'sync' && changes.hotkeys) {
-    activeHotkeys = { ...activeHotkeys, ...changes.hotkeys.newValue };
-  }
-});
+try {
+  chrome.storage.sync.get(['hotkeys'], (res) => {
+    try { void chrome.runtime.lastError; if (res?.hotkeys) activeHotkeys = { ...activeHotkeys, ...res.hotkeys }; } catch (_) {}
+  });
+} catch (_) {}
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.hotkeys) {
+      activeHotkeys = { ...activeHotkeys, ...changes.hotkeys.newValue };
+    }
+  });
+} catch (_) {}
 
 function getKeyCombo(e) {
   const parts = [];
@@ -1044,17 +1048,27 @@ document.addEventListener('keydown', (e) => {
 
   if (combo === activeHotkeys.startRecord || combo === activeHotkeys.stopRecord) {
     e.preventDefault();
-    chrome.runtime.sendMessage({ type: 'IS_TAB_ACTIVATED' }, (res) => {
-      if (!res?.activated) return;
-      if (combo === activeHotkeys.startRecord) { safeSend({ type: 'START_RECORD' }); }
-      else                                     { safeSend({ type: 'STOP_RECORD'  }); }
-    });
+    try {
+      if (!chrome.runtime?.id) return;
+      chrome.runtime.sendMessage({ type: 'IS_TAB_ACTIVATED' }, (res) => {
+        if (chrome.runtime.lastError) return;
+        if (!res?.activated) return;
+        if (combo === activeHotkeys.startRecord) { safeSend({ type: 'START_RECORD' }); }
+        else                                     { safeSend({ type: 'STOP_RECORD'  }); }
+      });
+    } catch (_) {}
   } else if (combo === activeHotkeys.screenshot) {
     e.preventDefault();
-    chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
-      if (res.screenshotCountdownEnabled) _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
-      else safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
-    });
+    try {
+      if (!chrome.runtime?.id) return;
+      chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
+        try {
+          void chrome.runtime.lastError;
+          if (res.screenshotCountdownEnabled) _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
+          else safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
+        } catch (_) {}
+      });
+    } catch (_) {}
   } else if (combo === activeHotkeys.screenshotFull)   { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_FULL', crop: true }); }
   else if (activeHotkeys.screenshotScrollV && combo === activeHotkeys.screenshotScrollV) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_V' }); }
   else if (activeHotkeys.screenshotScrollH && combo === activeHotkeys.screenshotScrollH) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_H' }); }
@@ -1131,9 +1145,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   let rafId = null, scrollStopped = false, scrollStep = 2;
   const speedKey = isVert ? 'segScrollSpeedV' : 'segScrollSpeedH';
-  chrome.storage.sync.get([speedKey], (res) => {
-    scrollStep = Math.min(10, Math.max(0.1, parseFloat(res[speedKey]) || 2));
-  });
+  try {
+    chrome.storage.sync.get([speedKey], (res) => {
+      try { void chrome.runtime.lastError; scrollStep = Math.min(10, Math.max(0.1, parseFloat(res?.[speedKey]) || 2)); } catch (_) {}
+    });
+  } catch (_) {}
 
   const scrollLoop = () => {
     if (scrollStopped) return;
@@ -1155,7 +1171,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   btnCancel.addEventListener('click', () => {
     cleanup();
-    chrome.runtime.sendMessage({ type: 'CANCEL_SEGMENT_CAPTURE' });
+    safeSend({ type: 'CANCEL_SEGMENT_CAPTURE' });
   });
 
   btnStop.addEventListener('click', () => {
@@ -1164,7 +1180,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     cleanup();
     window.scrollTo(startX, startY);
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      chrome.runtime.sendMessage({
+      safeSend({
         type: 'CAPTURE_SEGMENT',
         xStart: Math.min(startX, endX), yStart: Math.min(startY, endY),
         xEnd:   Math.max(startX, endX), yEnd:   Math.max(startY, endY),
@@ -1175,6 +1191,312 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   _segCapture = { cleanup };
   sendResponse({ ok: true });
   return true;
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   HIGHLIGHT ENGINE
+───────────────────────────────────────────────────────────────────────────── */
+
+const _HL_KEY = 'hl_v1';
+
+const _HL_COLORS = {
+  yellow: { light: '#fde047', dark: 'rgba(253,224,71,0.75)'  },
+  green:  { light: '#86efac', dark: 'rgba(74,222,128,0.70)'  },
+  pink:   { light: '#f9a8d4', dark: 'rgba(244,114,182,0.72)' },
+  blue:   { light: '#93c5fd', dark: 'rgba(147,197,253,0.72)' },
+  orange: { light: '#fdba74', dark: 'rgba(251,146,60,0.75)'  },
+};
+
+function _hlBg(color) {
+  const bg = window.getComputedStyle(document.body).backgroundColor;
+  const m = bg.match(/\d+/g);
+  const isDark = m ? (Number(m[0]) * 0.299 + Number(m[1]) * 0.587 + Number(m[2]) * 0.114) < 100 : false;
+  return isDark ? (_HL_COLORS[color]?.dark ?? _HL_COLORS.yellow.dark)
+                : (_HL_COLORS[color]?.light ?? _HL_COLORS.yellow.light);
+}
+
+function _hlCtxOk() { return !!chrome.runtime?.id; }
+
+function _hlGetAll(cb) {
+  try {
+    if (!_hlCtxOk()) return;
+    chrome.storage.local.get(_HL_KEY, res => {
+      try {
+        void chrome.runtime.lastError;
+        cb(res[_HL_KEY] || {});
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
+function _hlSavePage(list, cb) {
+  _hlGetAll(all => {
+    all[location.href] = list;
+    try {
+      if (!_hlCtxOk()) { cb?.(); return; }
+      chrome.storage.local.set({ [_HL_KEY]: all }, () => {
+        try {
+          void chrome.runtime.lastError;
+          safeSend({ type: 'HL_UPDATED', url: location.href });
+          cb?.();
+        } catch (_) { cb?.(); }
+      });
+    } catch (_) { cb?.(); }
+  });
+}
+
+function _hlGetPage(cb) {
+  _hlGetAll(all => cb(all[location.href] || []));
+}
+
+// ── Tooltip ──
+let _hlTip = null;
+let _hlRange = null;
+
+function _hlTipEl() {
+  if (_hlTip) return _hlTip;
+  const d = document.createElement('div');
+  d.setAttribute('data-hl-ui', '1');
+  d.style.cssText = [
+    'all:initial', 'position:fixed', 'z-index:2147483647',
+    'display:none', 'flex-direction:column', 'gap:6px',
+    'background:#1e1e2e', 'border:1px solid rgba(255,255,255,0.12)',
+    'border-radius:10px', 'padding:8px 10px',
+    'box-shadow:0 4px 24px rgba(0,0,0,0.45)',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'font-size:11px', 'color:#cdd6f4', 'min-width:190px',
+    'pointer-events:auto', 'user-select:none',
+  ].join(';');
+
+  const lbl = document.createElement('div');
+  lbl.textContent = 'Highlight color:';
+  lbl.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;';
+  d.appendChild(lbl);
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;font-family:inherit;';
+
+  const DOTS = { yellow:'#d97706', green:'#059669', pink:'#db2777', blue:'#2563eb', orange:'#ea580c' };
+  const LABELS = { yellow:'Yellow', green:'Green', pink:'Pink', blue:'Blue', orange:'Orange' };
+  Object.keys(DOTS).forEach(color => {
+    const btn = document.createElement('button');
+    btn.style.cssText = [
+      'all:initial', 'display:inline-block',
+      `background:${DOTS[color]}`,
+      'width:22px', 'height:22px', 'border-radius:50%',
+      'cursor:pointer', 'border:2px solid transparent',
+      'transition:transform 0.1s,border-color 0.1s',
+    ].join(';');
+    btn.title = LABELS[color];
+    btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.25)'; btn.style.borderColor = 'rgba(255,255,255,0.7)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.transform = ''; btn.style.borderColor = 'transparent'; });
+    btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+    btn.addEventListener('click', e => { e.stopPropagation(); _hlApply(color); });
+    row.appendChild(btn);
+  });
+  d.appendChild(row);
+  document.documentElement.appendChild(d);
+  _hlTip = d;
+  return d;
+}
+
+function _hlShowTip(rect) {
+  const tt = _hlTipEl();
+  tt.style.display = 'flex';
+  const tw = tt.offsetWidth || 195, th = tt.offsetHeight || 70;
+  let top  = rect.top - th - 10;
+  let left = rect.left + rect.width / 2 - tw / 2;
+  if (top < 8) top = rect.bottom + 10;
+  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+  tt.style.top  = top  + 'px';
+  tt.style.left = left + 'px';
+}
+
+function _hlHideTip() {
+  if (_hlTip) _hlTip.style.display = 'none';
+  _hlRange = null;
+}
+
+document.addEventListener('mouseup', e => {
+  setTimeout(() => {
+    if (e.target?.closest?.('[data-hl-ui]')) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) { _hlHideTip(); return; }
+    const text = sel.toString().trim();
+    if (!text || text.length < 2) { _hlHideTip(); return; }
+    const range = sel.getRangeAt(0);
+    if (e.target?.closest?.('[data-hl-ui]')) return;
+    _hlRange = range.cloneRange();
+    _hlShowTip(range.getBoundingClientRect());
+  }, 10);
+}, true);
+
+document.addEventListener('mousedown', e => {
+  if (!e.target?.closest?.('[data-hl-ui]')) _hlHideTip();
+}, true);
+
+// ── Apply highlight ──
+function _hlApply(color) {
+  if (!_hlRange) return;
+  const text = _hlRange.toString().trim();
+  if (!text) return;
+
+  const id   = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const mark = _hlMark(id, color);
+
+  try {
+    _hlRange.surroundContents(mark);
+  } catch {
+    try {
+      const frag = _hlRange.extractContents();
+      mark.appendChild(frag);
+      _hlRange.insertNode(mark);
+    } catch (_) { _hlHideTip(); return; }
+  }
+
+  window.getSelection().removeAllRanges();
+  _hlHideTip();
+
+  _hlGetPage(list => {
+    list.push({ id, text, color, createdAt: Date.now() });
+    _hlSavePage(list);
+  });
+}
+
+function _hlMark(id, color) {
+  const m = document.createElement('mark');
+  m.setAttribute('data-hl-id', id);
+  m.setAttribute('data-hl-color', color);
+  m.setAttribute('data-hl-ui', '1');
+  m.style.cssText = `background-color:${_hlBg(color)};color:inherit;border-radius:2px;padding:0;cursor:pointer;`;
+  m.addEventListener('click', () => _hlRemove(id));
+  return m;
+}
+
+// ── Remove ──
+function _hlRemove(id) {
+  const mark = document.querySelector(`[data-hl-id="${id}"]`);
+  if (mark) {
+    const p = mark.parentNode;
+    while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
+    p.removeChild(mark);
+    p.normalize();
+  }
+  _hlGetPage(list => _hlSavePage(list.filter(h => h.id !== id)));
+}
+
+// ── Clear page ──
+function _hlClear() {
+  document.querySelectorAll('[data-hl-id]').forEach(m => {
+    const p = m.parentNode;
+    if (!p) return;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+  });
+  document.body?.normalize();
+  _hlSavePage([]);
+}
+
+// ── Find a Range for text that may span across element boundaries (e.g. <a> tags) ──
+function _hlFindRange(text) {
+  if (!text) return null;
+
+  // Collect all text nodes, skipping nodes already inside a highlight or UI element
+  const nodes = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      return n.parentElement?.closest('[data-hl-id],[data-hl-ui]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+
+  // Build a flat string from all text nodes and record each node's start offset
+  let pos = 0;
+  const offsets = nodes.map(n => { const s = pos; pos += n.textContent.length; return s; });
+  const flat = nodes.map(n => n.textContent).join('');
+
+  const idx = flat.indexOf(text);
+  if (idx < 0) return null;
+  const end = idx + text.length;
+
+  let startNode, startOff, endNode, endOff;
+  for (let i = 0; i < nodes.length; i++) {
+    const s = offsets[i], e = s + nodes[i].textContent.length;
+    if (!startNode && idx < e) { startNode = nodes[i]; startOff = idx - s; }
+    if (end <= e)               { endNode   = nodes[i]; endOff   = end - s; break; }
+  }
+  if (!startNode || !endNode) return null;
+
+  const range = document.createRange();
+  range.setStart(startNode, startOff);
+  range.setEnd(endNode, endOff);
+  return range;
+}
+
+// ── Restore ──
+function _hlRestore() {
+  _hlGetPage(list => {
+    list.forEach(h => {
+      if (document.querySelector(`[data-hl-id="${h.id}"]`)) return;
+      const range = _hlFindRange(h.text);
+      if (!range) return;
+      const mark = _hlMark(h.id, h.color);
+      try { range.surroundContents(mark); } catch {
+        try { const frag = range.extractContents(); mark.appendChild(frag); range.insertNode(mark); } catch (_) {}
+      }
+    });
+  });
+}
+
+// ── Scroll to ──
+function _hlScrollTo(id) {
+  const m = document.querySelector(`[data-hl-id="${id}"]`);
+  if (!m) return false;
+  m.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const prev = m.style.outline;
+  m.style.outline = '2.5px solid #6366f1';
+  m.style.outlineOffset = '2px';
+  setTimeout(() => { m.style.outline = prev; m.style.outlineOffset = ''; }, 1200);
+  return true;
+}
+
+// ── Restore on DOMContentLoaded ──
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _hlRestore);
+} else {
+  _hlRestore();
+}
+
+// ── MutationObserver for SPA navigation ──
+let _hlRestoreTimer = null;
+new MutationObserver(() => {
+  clearTimeout(_hlRestoreTimer);
+  _hlRestoreTimer = setTimeout(() => { if (_hlCtxOk()) _hlRestore(); }, 600);
+}).observe(document.documentElement, { childList: true, subtree: true });
+
+// ── Message handler ──
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'HL_GET_PAGE') {
+    _hlGetAll(all => sendResponse({ url: location.href, data: all }));
+    return true;
+  }
+  if (msg.type === 'HL_REMOVE') {
+    _hlRemove(msg.id);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'HL_CLEAR') {
+    _hlClear();
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'HL_SCROLL_TO') {
+    sendResponse({ found: _hlScrollTo(msg.id) });
+    return false;
+  }
 });
 
 /* ─────────────────────────────────────────────────────────────────────────────

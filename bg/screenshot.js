@@ -306,7 +306,9 @@ export function downloadDataUrl(dataUrl, filename, saveAs) {
 export async function openCropUI(dataUrl, downloadPath, saveAs) {
   state.pendingCrop = { dataUrl, downloadPath, saveAs };
   const url = chrome.runtime.getURL('editor.html');
-  chrome.windows.create({ url, type: 'popup', width: 1280, height: 820 });
+  chrome.windows.create({ url, type: 'popup' }, (win) => {
+    chrome.windows.update(win.id, { state: 'maximized' });
+  });
   return { success: true, cropping: true };
 }
 

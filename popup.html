@@ -89,6 +89,7 @@
       <button class="tab-btn" data-tab="tabRecord">Record & Play</button>
       <button class="tab-btn" data-tab="tabData">Data</button>
       <button class="tab-btn" data-tab="tabCapture">Capture</button>
+      <button class="tab-btn" data-tab="tabHighlight">Highlight <span id="hlTabBadge" class="count-badge" style="display:none;"></span></button>
       <button class="tab-btn" data-tab="tabSettings">Settings</button>
     </div>
   </div>
@@ -780,9 +781,79 @@
       <!-- Tools row (always visible) -->
       <div class="capture-tools-row">
         <button id="diffScreenshots" class="secondary" style="font-size:11px;margin:0;padding:5px 12px;" title="Compare two screenshots and highlight differences">🔍 Image Diff</button>
+        <button id="openImageEditor" class="btn-img-editor" title="Edit an image from clipboard or file">🖼 Image Editor</button>
       </div>
     </div>
 
+  </div>
+
+  <!-- ===== TAB: HIGHLIGHT ===== -->
+  <div class="tab-panel" id="tabHighlight">
+    <div class="main-content" role="complementary">
+
+      <div class="card">
+        <!-- Page picker -->
+        <div class="hl-page-picker" id="hlPagePicker">
+
+          <!-- Current tab chip -->
+          <div class="hl-current-page" id="hlCurrentPage" role="button" tabindex="0" title="View highlights for the current tab" style="display:none;">
+            <span class="hl-current-dot"></span>
+            <span class="hl-current-label">Current tab</span>
+            <span class="hl-current-url" id="hlCurrentUrl"></span>
+            <span class="hl-current-count" id="hlCurrentCount" style="display:none;"></span>
+          </div>
+
+          <!-- Other saved pages -->
+          <div class="hl-other-row">
+            <span class="hl-other-label">Other pages</span>
+            <select id="hlUrlSelect" class="hl-url-select">
+              <option value="">Loading…</option>
+            </select>
+            <button id="hlUrlClearBtn" class="hl-url-clear-btn" title="Clear highlights for this page" style="display:none;">🗑</button>
+          </div>
+
+        </div>
+
+        <!-- Stats row -->
+        <div class="hl-stats-row">
+          <div class="hl-stat-chip">
+            <div class="hl-stat-num" id="hlStatPage">0</div>
+            <div class="hl-stat-label">This page</div>
+          </div>
+          <div class="hl-stat-chip">
+            <div class="hl-stat-num" id="hlStatTotal">0</div>
+            <div class="hl-stat-label">All pages</div>
+          </div>
+          <div class="hl-stat-chip">
+            <div class="hl-stat-num" id="hlStatPages">—</div>
+            <div class="hl-stat-label">Pages with HL</div>
+          </div>
+        </div>
+
+        <!-- Color filter pills -->
+        <div class="hl-filter-row" id="hlFilterRow">
+          <button class="hl-filter-pill active" data-color="">All</button>
+          <button class="hl-filter-pill" data-color="yellow" style="--dot:#d97706;">Yellow</button>
+          <button class="hl-filter-pill" data-color="green"  style="--dot:#059669;">Green</button>
+          <button class="hl-filter-pill" data-color="pink"   style="--dot:#db2777;">Pink</button>
+          <button class="hl-filter-pill" data-color="blue"   style="--dot:#2563eb;">Blue</button>
+          <button class="hl-filter-pill" data-color="orange" style="--dot:#ea580c;">Orange</button>
+        </div>
+
+        <!-- Empty state -->
+        <div class="hl-empty" id="hlEmpty">
+          <div class="hl-empty-icon">✎</div>
+          <div>Select text on the page to highlight</div>
+        </div>
+
+        <!-- Highlight list -->
+        <ul class="hl-list" id="hlList"></ul>
+
+        <!-- Clear page highlights (hidden — delegated to urlClearBtn) -->
+        <button id="hlClearBtn" class="danger" style="display:none;width:100%;margin-top:8px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
+      </div>
+
+    </div>
   </div>
 
   <!-- ===== TAB: SETTINGS ===== -->
@@ -967,8 +1038,6 @@
     <ul id="actionsScenarioCompact"></ul>
     <label id="toggleAdvancedMode"></label>
   </div>
-
-  <div style="height: 12px; flex-shrink: 0;"></div>
 
   <!-- ===== MODALS ===== -->
 
@@ -1336,6 +1405,41 @@
       <h3 class="lock-overlay-title" id="lockOverlayDataTitle">Activate on Tab</h3>
       <p class="lock-overlay-sub" id="lockOverlayDataSub">Click Activate to enable recording and playback on the current tab.</p>
       <button class="lock-overlay-activate-btn" id="lockOverlayDataBtn">Activate</button>
+    </div>
+  </div>
+
+  <!-- Image Editor Modal -->
+  <div id="imageEditorModal" class="random-modal" role="dialog" aria-modal="true" aria-labelledby="imgEditorModalTitle" aria-hidden="true">
+    <div class="random-modal-content" style="width:360px;">
+      <h4 id="imgEditorModalTitle" style="margin:0 0 12px;display:flex;align-items:center;gap:8px;">
+        <span aria-hidden="true">🖼</span> Image Editor
+      </h4>
+
+      <!-- Drop zone -->
+      <div id="imgEditorDropZone" class="img-editor-drop-zone">
+        <div class="img-editor-dz-icon">🖼️</div>
+        <div class="img-editor-dz-title">Kéo thả ảnh vào đây</div>
+        <div class="img-editor-dz-sub">
+          hoặc nhấn <kbd>Ctrl+V</kbd> để paste
+          <span style="margin:0 3px;">·</span>
+          PNG · JPG · WebP · GIF
+        </div>
+      </div>
+
+      <!-- Hidden file input -->
+      <input type="file" id="imgEditorFileInput" accept="image/*" style="display:none;" />
+
+      <div style="text-align:center;font-size:11px;color:var(--muted);margin:-2px 0 10px;">hoặc chọn từ nguồn</div>
+
+      <!-- Source buttons -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px;">
+        <button id="imgEditorBrowseBtn" class="secondary" style="font-size:12px;padding:8px;">📁 Browse File</button>
+        <button id="imgEditorClipboardBtn" class="secondary" style="font-size:12px;padding:8px;">📋 From Clipboard</button>
+      </div>
+
+      <div style="display:flex;gap:6px;margin-top:8px;">
+        <button id="imgEditorCancel" class="secondary" style="flex:1;">✕ Đóng</button>
+      </div>
     </div>
   </div>
 

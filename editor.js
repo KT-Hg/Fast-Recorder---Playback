@@ -1248,4 +1248,233 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   updateToolbarBadges();
   setTool("crop");
 
+  /* === 20. Right panel: Adjust / Resize / Stamp === */
+
+  const rightPanel = document.getElementById("rightPanel");
+  const rpClose    = document.getElementById("rpClose");
+
+  // Tab switching
+  document.querySelectorAll(".rp-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".rp-tab").forEach(t => t.classList.remove("active"));
+      tab.classList.add("active");
+      const name = tab.dataset.rpTab;
+      document.querySelectorAll(".rp-body").forEach(b => b.style.display = "none");
+      const body = document.getElementById("rpTab" + name.charAt(0).toUpperCase() + name.slice(1));
+      if (body) body.style.display = "";
+    });
+  });
+
+  // Sidebar buttons toggle panel
+  function openRightPanel(tabName) {
+    rightPanel.style.display = "";
+    document.querySelectorAll(".rp-tab").forEach(t => t.classList.toggle("active", t.dataset.rpTab === tabName));
+    document.querySelectorAll(".rp-body").forEach(b => b.style.display = "none");
+    const body = document.getElementById("rpTab" + tabName.charAt(0).toUpperCase() + tabName.slice(1));
+    if (body) body.style.display = "";
+  }
+
+  function closeRightPanel() {
+    rightPanel.style.display = "none";
+  }
+
+  rpClose.addEventListener("click", closeRightPanel);
+
+  document.getElementById("btnAdjust").addEventListener("click", () => {
+    rightPanel.style.display === "none" ? openRightPanel("adjust") : closeRightPanel();
+  });
+  document.getElementById("btnResize").addEventListener("click", () => {
+    // Populate current dimensions
+    document.getElementById("rsWidth").value  = workCanvas.width;
+    document.getElementById("rsHeight").value = workCanvas.height;
+    document.getElementById("rsScale").value  = 100;
+    document.getElementById("rsScaleVal").textContent = "100%";
+    rightPanel.style.display === "none" ? openRightPanel("resize") : closeRightPanel();
+  });
+  document.getElementById("btnStamp").addEventListener("click", () => {
+    rightPanel.style.display === "none" ? openRightPanel("stamp") : closeRightPanel();
+  });
+
+  /* ── Adjust ── */
+  function adjVal(id) { return parseInt(document.getElementById(id).value, 10); }
+
+  ["adjBrightness","adjContrast","adjSaturation","adjSharpness"].forEach(id => {
+    const input = document.getElementById(id);
+    const valEl = document.getElementById(id + "Val");
+    input.addEventListener("input", () => { valEl.textContent = input.value; });
+  });
+
+  document.getElementById("adjReset").addEventListener("click", () => {
+    ["adjBrightness","adjContrast","adjSaturation","adjSharpness"].forEach(id => {
+      const el = document.getElementById(id);
+      el.value = el.id === "adjSharpness" ? "0" : "0";
+      document.getElementById(id + "Val").textContent = "0";
+    });
+  });
+
+  document.getElementById("adjApply").addEventListener("click", () => {
+    saveUndo();
+    const brightness  = adjVal("adjBrightness");   // -100..100
+    const contrast    = adjVal("adjContrast");
+    const saturation  = adjVal("adjSaturation");
+    const sharpness   = adjVal("adjSharpness");     // 0..10
+
+    // Build CSS filter string
+    const bFactor = 1 + brightness / 100;    // 0..2
+    const cFactor = 1 + contrast   / 100;
+    const sFactor = 1 + saturation / 100;
+    const filterStr = `brightness(${bFactor}) contrast(${cFactor}) saturate(${sFactor})`;
+
+    const tmp = document.createElement("canvas");
+    tmp.width = workCanvas.width; tmp.height = workCanvas.height;
+    const tCtx = tmp.getContext("2d");
+    tCtx.filter = filterStr;
+    tCtx.drawImage(workCanvas, 0, 0);
+    tCtx.filter = "none";
+
+    if (sharpness > 0) {
+      // Simple unsharp mask via convolution kernel repeat
+      const iData  = tCtx.getImageData(0, 0, tmp.width, tmp.height);
+      const blured = document.createElement("canvas");
+      blured.width = tmp.width; blured.height = tmp.height;
+      const bCtx = blured.getContext("2d");
+      bCtx.filter = `blur(${sharpness * 0.4}px)`;
+      bCtx.drawImage(tmp, 0, 0);
+      bCtx.filter = "none";
+      const bData = bCtx.getImageData(0, 0, blured.width, blured.height);
+      const d = iData.data, b = bData.data;
+      const amt = sharpness * 0.6;
+      for (let i = 0; i < d.length; i += 4) {
+        d[i]   = Math.min(255, Math.max(0, d[i]   + (d[i]   - b[i])   * amt));
+        d[i+1] = Math.min(255, Math.max(0, d[i+1] + (d[i+1] - b[i+1]) * amt));
+        d[i+2] = Math.min(255, Math.max(0, d[i+2] + (d[i+2] - b[i+2]) * amt));
+      }
+      tCtx.putImageData(iData, 0, 0);
+    }
+
+    workCtx.clearRect(0, 0, workCanvas.width, workCanvas.height);
+    workCtx.drawImage(tmp, 0, 0);
+    render();
+    showSaveToast("Adjustments applied");
+    // Reset sliders
+    document.getElementById("adjReset").click();
+  });
+
+  /* ── Resize ── */
+  const rsWidth  = document.getElementById("rsWidth");
+  const rsHeight = document.getElementById("rsHeight");
+  const rsLockAR = document.getElementById("rsLockAR");
+  const rsScale  = document.getElementById("rsScale");
+  const rsScaleVal = document.getElementById("rsScaleVal");
+  let _origW = workCanvas.width, _origH = workCanvas.height;
+  let _rsAR  = _origW / _origH;
+
+  rsWidth.addEventListener("input", () => {
+    if (rsLockAR.checked) rsHeight.value = Math.round(+rsWidth.value / _rsAR);
+  });
+  rsHeight.addEventListener("input", () => {
+    if (rsLockAR.checked) rsWidth.value = Math.round(+rsHeight.value * _rsAR);
+  });
+  rsScale.addEventListener("input", () => {
+    const pct = +rsScale.value;
+    rsScaleVal.textContent = pct + "%";
+    rsWidth.value  = Math.round(_origW * pct / 100);
+    rsHeight.value = Math.round(_origH * pct / 100);
+  });
+
+  document.getElementById("rsReset").addEventListener("click", () => {
+    rsWidth.value  = workCanvas.width;
+    rsHeight.value = workCanvas.height;
+    rsScale.value  = 100;
+    rsScaleVal.textContent = "100%";
+    _origW = workCanvas.width; _origH = workCanvas.height;
+    _rsAR  = _origW / _origH;
+  });
+
+  document.getElementById("rsApply").addEventListener("click", () => {
+    const newW = Math.max(1, +rsWidth.value  || workCanvas.width);
+    const newH = Math.max(1, +rsHeight.value || workCanvas.height);
+    if (newW === workCanvas.width && newH === workCanvas.height) return;
+
+    saveUndo();
+    const tmp = document.createElement("canvas");
+    tmp.width = newW; tmp.height = newH;
+    tmp.getContext("2d").drawImage(workCanvas, 0, 0, newW, newH);
+    workCanvas.width  = newW;
+    workCanvas.height = newH;
+    workCtx.drawImage(tmp, 0, 0);
+    _origW = newW; _origH = newH; _rsAR = newW / newH;
+    recalcFit();
+    applyCanvasSize();
+    render();
+    showSaveToast(`Resized to ${newW} × ${newH}`);
+    document.getElementById("rsScale").value = 100;
+    rsScaleVal.textContent = "100%";
+  });
+
+  /* ── Stamp ── */
+  const stType       = document.getElementById("stType");
+  const stCustomRow  = document.getElementById("stCustomRow");
+  const stFontSize   = document.getElementById("stFontSize");
+  const stFontSizeVal= document.getElementById("stFontSizeVal");
+  const stOpacity    = document.getElementById("stOpacity");
+  const stOpacityVal = document.getElementById("stOpacityVal");
+  let stampPos = "bl";
+
+  stType.addEventListener("change", () => {
+    stCustomRow.style.display = stType.value === "custom" ? "" : "none";
+  });
+  stFontSize.addEventListener("input", () => { stFontSizeVal.textContent = stFontSize.value + "px"; });
+  stOpacity.addEventListener("input",  () => { stOpacityVal.textContent  = stOpacity.value  + "%"; });
+
+  document.querySelectorAll(".rp-pos-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".rp-pos-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      stampPos = btn.dataset.pos;
+    });
+  });
+
+  document.getElementById("stApply").addEventListener("click", () => {
+    const fontSize = +stFontSize.value;
+    const opacity  = +stOpacity.value / 100;
+    const text = stType.value === "custom"
+      ? (document.getElementById("stCustomText").value || "")
+      : new Date().toISOString().replace("T", " ").slice(0, 19);
+    if (!text) return;
+
+    saveUndo();
+
+    const pad = Math.round(fontSize * 0.6);
+    const W = workCanvas.width, H = workCanvas.height;
+
+    workCtx.save();
+    workCtx.font = `${fontSize}px system-ui, sans-serif`;
+    workCtx.globalAlpha = opacity;
+    workCtx.shadowColor = "rgba(0,0,0,0.8)";
+    workCtx.shadowBlur  = 3;
+
+    const tw = workCtx.measureText(text).width;
+    let x, y;
+    const row = stampPos[0], col = stampPos[1];
+    x = col === "l" ? pad : col === "c" ? (W - tw) / 2 : W - tw - pad;
+    y = row === "t" ? pad + fontSize : row === "m" ? (H + fontSize) / 2 : H - pad;
+
+    // Dark background pill
+    workCtx.globalAlpha = opacity * 0.55;
+    workCtx.fillStyle = "#000";
+    workCtx.beginPath();
+    workCtx.roundRect(x - 4, y - fontSize + 1, tw + 8, fontSize + 6, 3);
+    workCtx.fill();
+
+    workCtx.globalAlpha = opacity;
+    workCtx.fillStyle = "#fff";
+    workCtx.shadowBlur = 0;
+    workCtx.fillText(text, x, y);
+    workCtx.restore();
+
+    render();
+    showSaveToast("Stamp applied");
+  });
+
 })();

@@ -16,6 +16,8 @@ import { initSettings, reloadSettings } from './settings.js';
 import { initMain } from './main.js';
 import { initExportBookmarklet } from './export-bookmarklet.js';
 import { initExportSelenium } from './export-selenium.js';
+import { initImageEditor } from './image-editor.js';
+import { initHighlight } from './highlight.js';
 
 /**
  * Keep a spacer div below the sticky header the same height as the header.
@@ -27,7 +29,11 @@ function initHeaderSpacer() {
   const header = document.querySelector('.sticky-header');
   const spacer = document.getElementById('headerSpacer');
   if (!header || !spacer) return;
-  function sync() { spacer.style.height = header.offsetHeight + 'px'; }
+  function sync() {
+    const h = header.offsetHeight;
+    spacer.style.height = h + 'px';
+    document.documentElement.style.setProperty('--header-h', h + 'px');
+  }
   sync();
   new MutationObserver(sync).observe(header, {
     childList: true, subtree: true, attributes: true,
@@ -138,4 +144,6 @@ initSettings();
 initMain();
 initExportBookmarklet();
 initExportSelenium();
+initImageEditor();
+initHighlight();
 startConnectionCheck();

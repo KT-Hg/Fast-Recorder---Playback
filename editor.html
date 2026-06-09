@@ -24,6 +24,10 @@
     <div class="s-sep"></div>
     <button id="btnUndo" class="s-btn" disabled data-tip="Undo (Ctrl+Z)">↩</button>
     <button id="btnRedo" class="s-btn" disabled data-tip="Redo (Ctrl+Y)">↪</button>
+    <div class="s-sep"></div>
+    <button id="btnAdjust" class="s-btn" data-tip="Adjust (Brightness / Contrast)">◑</button>
+    <button id="btnResize" class="s-btn" data-tip="Resize image">⤡</button>
+    <button id="btnStamp"  class="s-btn" data-tip="Stamp / Watermark">🏷</button>
     <div style="flex:1"></div>
     <button id="btnTheme" class="s-btn" data-tip="Toggle Theme">🌙</button>
     <button id="btnHelp" class="s-btn" data-tip="Shortcuts (?)">?</button>
@@ -61,6 +65,105 @@
       <span id="zoomLabel">100%</span>
       <button id="btnZoomIn" class="zbtn" title="Zoom in">+</button>
       <button id="btnZoomReset" class="zbtn" title="Reset zoom" disabled style="font-size:11px">1:1</button>
+    </div>
+  </div>
+
+  <!-- Right panel: Adjust / Resize / Stamp -->
+  <div class="right-panel" id="rightPanel" style="display:none;">
+    <div class="rp-tabs">
+      <button class="rp-tab active" data-rp-tab="adjust">Adjust</button>
+      <button class="rp-tab" data-rp-tab="resize">Resize</button>
+      <button class="rp-tab" data-rp-tab="stamp">Stamp</button>
+      <button class="rp-close" id="rpClose" title="Close panel">✕</button>
+    </div>
+
+    <!-- Adjust tab -->
+    <div class="rp-body" id="rpTabAdjust">
+      <div class="rp-row">
+        <div class="rp-label"><span>Brightness</span><span id="adjBrightnessVal">0</span></div>
+        <input type="range" id="adjBrightness" class="rp-slider" min="-100" max="100" value="0">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Contrast</span><span id="adjContrastVal">0</span></div>
+        <input type="range" id="adjContrast" class="rp-slider" min="-100" max="100" value="0">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Saturation</span><span id="adjSaturationVal">0</span></div>
+        <input type="range" id="adjSaturation" class="rp-slider" min="-100" max="100" value="0">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Sharpness</span><span id="adjSharpnessVal">0</span></div>
+        <input type="range" id="adjSharpness" class="rp-slider" min="0" max="10" value="0">
+      </div>
+      <div class="rp-btn-row">
+        <button id="adjReset"  class="rp-btn">↺ Reset</button>
+        <button id="adjApply"  class="rp-btn rp-btn-primary">✓ Apply</button>
+      </div>
+    </div>
+
+    <!-- Resize tab -->
+    <div class="rp-body" id="rpTabResize" style="display:none;">
+      <div class="rp-row">
+        <div class="rp-label"><span>Width</span></div>
+        <input type="number" id="rsWidth" class="rp-input-num" min="1" max="8000">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Height</span></div>
+        <input type="number" id="rsHeight" class="rp-input-num" min="1" max="8000">
+      </div>
+      <div class="rp-row" style="align-items:center;gap:6px;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;">
+          <input type="checkbox" id="rsLockAR" checked style="cursor:pointer;"> Keep ratio
+        </label>
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Scale</span><span id="rsScaleVal">100%</span></div>
+        <input type="range" id="rsScale" class="rp-slider" min="10" max="300" value="100">
+      </div>
+      <div class="rp-btn-row">
+        <button id="rsReset" class="rp-btn">↺ Reset</button>
+        <button id="rsApply" class="rp-btn rp-btn-primary">✓ Apply</button>
+      </div>
+    </div>
+
+    <!-- Stamp tab -->
+    <div class="rp-body" id="rpTabStamp" style="display:none;">
+      <div class="rp-row">
+        <div class="rp-label"><span>Type</span></div>
+        <select id="stType" class="rp-select">
+          <option value="timestamp">Timestamp</option>
+          <option value="custom">Custom text</option>
+        </select>
+      </div>
+      <div id="stCustomRow" class="rp-row" style="display:none;">
+        <div class="rp-label"><span>Text</span></div>
+        <input type="text" id="stCustomText" class="rp-input-text" placeholder="Your text here">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Position</span></div>
+        <div class="rp-grid3">
+          <button class="rp-pos-btn" data-pos="tl">↖</button>
+          <button class="rp-pos-btn" data-pos="tc">↑</button>
+          <button class="rp-pos-btn" data-pos="tr">↗</button>
+          <button class="rp-pos-btn" data-pos="ml">←</button>
+          <button class="rp-pos-btn" data-pos="mc">·</button>
+          <button class="rp-pos-btn" data-pos="mr">→</button>
+          <button class="rp-pos-btn active" data-pos="bl">↙</button>
+          <button class="rp-pos-btn" data-pos="bc">↓</button>
+          <button class="rp-pos-btn" data-pos="br">↘</button>
+        </div>
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Font size</span><span id="stFontSizeVal">14px</span></div>
+        <input type="range" id="stFontSize" class="rp-slider" min="8" max="48" value="14">
+      </div>
+      <div class="rp-row">
+        <div class="rp-label"><span>Opacity</span><span id="stOpacityVal">80%</span></div>
+        <input type="range" id="stOpacity" class="rp-slider" min="10" max="100" value="80">
+      </div>
+      <div class="rp-btn-row">
+        <button id="stApply" class="rp-btn rp-btn-primary" style="width:100%;">✓ Apply Stamp</button>
+      </div>
     </div>
   </div>
 
