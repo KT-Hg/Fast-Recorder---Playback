@@ -175,12 +175,19 @@ export function initHighlight() {
     if (res?.lastTab === 'tabHighlight') load();
   });
 
-  // ── Pattern editor ──
   if (patternToggleBtn && patternBody) {
+    chrome.storage.local.get('hl_pattern_open', res => {
+      if (res.hl_pattern_open) {
+        patternBody.style.display = 'block';
+        patternToggleBtn.classList.add('hl-pattern-toggle-btn--open');
+      }
+    });
+
     patternToggleBtn.addEventListener('click', () => {
       const open = patternBody.style.display !== 'none';
       patternBody.style.display = open ? 'none' : 'block';
       patternToggleBtn.classList.toggle('hl-pattern-toggle-btn--open', !open);
+      chrome.storage.local.set({ hl_pattern_open: !open });
     });
   }
 

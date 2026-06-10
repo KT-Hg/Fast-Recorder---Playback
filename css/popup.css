@@ -3869,22 +3869,24 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   border-color: var(--primary);
 }
 #tabHighlight.active {
-  display: flex;
-  flex-direction: column;
   height: calc(600px - var(--header-h, 72px));
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 #tabHighlight.active .main-content {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
-#tabHighlight.active .card {
-  flex: 1;
+#tabHighlight.active .card:first-child {
   display: flex;
   flex-direction: column;
+  height: calc(600px - var(--header-h, 72px) - 20px);
+  flex-shrink: 0;
   overflow: hidden;
+  margin-bottom: 10px;
+}
+#tabHighlight.active .hl-pattern-card {
+  flex-shrink: 0;
   margin-bottom: 0;
 }
 #tabHighlight .hl-list {
@@ -4056,12 +4058,6 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   outline-offset: 1px;
 }
 
-/* ── URL Pattern Section ── */
-.hl-pattern-section {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
 .hl-pattern-header {
   display: flex;
   align-items: center;
@@ -4096,13 +4092,13 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   border-color: var(--primary);
 }
 .hl-pattern-body {
-  margin-top: 8px;
+  margin-top: 6px;
 }
 .hl-pattern-hint {
   font-size: 10px;
   color: var(--muted);
-  margin-bottom: 6px;
-  line-height: 1.5;
+  margin-bottom: 4px;
+  line-height: 1.4;
 }
 .hl-pattern-hint code {
   font-size: 10px;
@@ -4120,6 +4116,9 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 }
 .hl-pattern-input {
   flex: 1;
+  min-width: 0;
+  width: auto;
+  margin-top: 0;
   padding: 5px 8px;
   font-size: 11px;
   border: 1px solid var(--border);
@@ -4128,13 +4127,14 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   color: var(--text);
   font-family: monospace;
   transition: border-color 0.12s;
-  width: 100%;
 }
 .hl-pattern-input:focus {
   outline: none;
   border-color: var(--primary);
 }
 .hl-pattern-add-btn {
+  width: auto;
+  margin-top: 0;
   padding: 5px 10px;
   font-size: 11px;
   font-weight: 600;

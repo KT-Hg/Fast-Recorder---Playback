@@ -864,20 +864,21 @@
         <!-- Clear page highlights (hidden — delegated to urlClearBtn) -->
         <button id="hlClearBtn" class="danger" style="display:none;width:100%;margin-top:8px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
 
-        <!-- URL Pattern editor -->
-        <div class="hl-pattern-section">
-          <div class="hl-pattern-header">
-            <span class="hl-pattern-title">URL Patterns</span>
-            <button class="hl-pattern-toggle-btn" id="hlPatternToggleBtn" title="Group URLs matching the same page type">⚙</button>
+      </div>
+
+      <!-- URL Patterns card -->
+      <div class="card hl-pattern-card">
+        <div class="hl-pattern-header">
+          <span class="hl-pattern-title">URL Patterns</span>
+          <button class="hl-pattern-toggle-btn" id="hlPatternToggleBtn" title="Group URLs matching the same page type">⚙</button>
+        </div>
+        <div class="hl-pattern-body" id="hlPatternBody" style="display:none;">
+          <div class="hl-pattern-hint">Use <code>*</code> to match any path segment, e.g. <code>example.com/account/*/settings</code></div>
+          <div class="hl-pattern-input-row">
+            <input type="text" id="hlPatternInput" class="hl-pattern-input" placeholder="example.com/account/*/settings">
+            <button id="hlPatternAddBtn" class="hl-pattern-add-btn">Add</button>
           </div>
-          <div class="hl-pattern-body" id="hlPatternBody" style="display:none;">
-            <div class="hl-pattern-hint">Use <code>*</code> to match any path segment, e.g. <code>example.com/account/*/settings</code></div>
-            <div class="hl-pattern-input-row">
-              <input type="text" id="hlPatternInput" class="hl-pattern-input" placeholder="example.com/account/*/settings">
-              <button id="hlPatternAddBtn" class="hl-pattern-add-btn">Add</button>
-            </div>
-            <ul id="hlPatternList" class="hl-pattern-list"></ul>
-          </div>
+          <ul id="hlPatternList" class="hl-pattern-list"></ul>
         </div>
       </div>
 

@@ -1324,22 +1324,22 @@ function _hlTipEl() {
   d.setAttribute('data-hl-ui', '1');
   d.style.cssText = [
     'all:initial', 'position:fixed', 'z-index:2147483647',
-    'display:none', 'flex-direction:column', 'gap:6px',
+    'display:none', 'flex-direction:column', 'gap:4px',
     'background:#1e1e2e', 'border:1px solid rgba(255,255,255,0.12)',
-    'border-radius:10px', 'padding:8px 10px',
+    'border-radius:10px', 'padding:6px 8px',
     'box-shadow:0 4px 24px rgba(0,0,0,0.45)',
     'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'font-size:11px', 'color:#cdd6f4', 'min-width:190px',
+    'font-size:11px', 'color:#cdd6f4',
     'pointer-events:auto', 'user-select:none',
   ].join(';');
 
   const lbl = document.createElement('div');
   lbl.textContent = 'Highlight color:';
-  lbl.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;';
+  lbl.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;line-height:1;';
   d.appendChild(lbl);
 
   const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:6px;font-family:inherit;';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;font-family:inherit;line-height:0;';
 
   const DOTS = { yellow:'#fde047', green:'#86efac', pink:'#f9a8d4', blue:'#93c5fd', orange:'#fdba74' };
   const LABELS = { yellow:'Yellow', green:'Green', pink:'Pink', blue:'Blue', orange:'Orange' };
@@ -1350,6 +1350,7 @@ function _hlTipEl() {
       `background:${DOTS[color]}`,
       'width:22px', 'height:22px', 'border-radius:50%',
       'cursor:pointer', 'border:2px solid transparent',
+      'box-sizing:border-box',
       'transition:transform 0.1s,border-color 0.1s',
     ].join(';');
     btn.title = LABELS[color];
