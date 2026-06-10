@@ -6,14 +6,15 @@
 
 import { showConfirm, showToast } from './utils.js';
 
-const HL_STORAGE_KEY = 'hl_v1';
+const HL_STORAGE_KEY  = 'hl_v1';
+const HL_PATTERNS_KEY = 'hl_patterns_v1';
 
 const HL_COLORS = {
-  yellow: { dot: '#d97706', label: 'Yellow' },
-  green:  { dot: '#059669', label: 'Green'  },
-  pink:   { dot: '#db2777', label: 'Pink'   },
-  blue:   { dot: '#2563eb', label: 'Blue'   },
-  orange: { dot: '#ea580c', label: 'Orange' },
+  yellow: { dot: '#fde047', label: 'Yellow' },
+  green:  { dot: '#86efac', label: 'Green'  },
+  pink:   { dot: '#f9a8d4', label: 'Pink'   },
+  blue:   { dot: '#93c5fd', label: 'Blue'   },
+  orange: { dot: '#fdba74', label: 'Orange' },
 };
 
 export function initHighlight() {
@@ -32,11 +33,67 @@ export function initHighlight() {
   const currentPage  = document.getElementById('hlCurrentPage');
   const currentUrl   = document.getElementById('hlCurrentUrl');
   const currentCount = document.getElementById('hlCurrentCount');
+  // Toggle
+  const hlToggle     = document.getElementById('hlToggle');
+  const hlToggleRow  = document.getElementById('hlToggleRow');
+  const hlToggleSub  = document.getElementById('hlToggleSub');
+  // Pattern editor
+  const patternInput    = document.getElementById('hlPatternInput');
+  const patternAddBtn   = document.getElementById('hlPatternAddBtn');
+  const patternList     = document.getElementById('hlPatternList');
+  const patternToggleBtn = document.getElementById('hlPatternToggleBtn');
+  const patternBody     = document.getElementById('hlPatternBody');
 
   let activeFilter  = '';
   let allData       = {};   // full hl_v1 storage object
   let activeTabUrl  = '';   // URL of the currently open tab
-  let selectedUrl   = '';   // URL shown in the selector
+  let selectedUrl   = '';   // URL/pattern key shown in the selector
+  let patterns      = [];   // hl_patterns_v1 array
+
+  // ── URL normalisation (mirrors content.js logic) ──
+  function hlMatchPattern(url, pattern) {
+    const strip = s => s.replace(/^https?:\/\//, '');
+    const escaped = strip(pattern)
+      .replace(/[.+?^${}()|[\]\\]/g, c => '\\' + c)
+      .replace(/\*/g, '[^/]+');
+    try { return new RegExp('^' + escaped + '(/.*)?$').test(strip(url)); }
+    catch (_) { return false; }
+  }
+
+  function hlNormalizeUrl(url) {
+    for (const p of patterns) {
+      if (hlMatchPattern(url, p)) return p;
+    }
+    return url;
+  }
+
+  // ── Toggle ──
+  function syncToggleUI() {
+    if (!hlToggle) return;
+    const on = hlToggle.checked;
+    if (hlToggleRow) {
+      hlToggleRow.classList.toggle('hl-toggle-row--off', !on);
+    }
+    if (hlToggleSub) {
+      hlToggleSub.textContent = on
+        ? 'Select text on any page to highlight'
+        : 'Highlight is paused — no DOM watching';
+    }
+  }
+
+  if (hlToggle) {
+    chrome.storage.local.get('hl_enabled', res => {
+      hlToggle.checked = res.hl_enabled !== false;
+      syncToggleUI();
+    });
+
+    hlToggle.addEventListener('change', () => {
+      const on = hlToggle.checked;
+      chrome.storage.local.set({ hl_enabled: on });
+      sendToTab({ type: 'HL_SET_ENABLED', enabled: on });
+      syncToggleUI();
+    });
+  }
 
   // ── Filter pills ──
   filterRow.addEventListener('click', e => {
@@ -53,7 +110,7 @@ export function initHighlight() {
   if (currentPage) {
     currentPage.addEventListener('click', () => {
       if (!activeTabUrl) return;
-      selectedUrl  = activeTabUrl;
+      selectedUrl  = hlNormalizeUrl(activeTabUrl);
       urlSelect.value = '';
       activeFilter = '';
       filterRow.querySelectorAll('.hl-filter-pill').forEach((p, i) => p.classList.toggle('active', i === 0));
@@ -77,7 +134,7 @@ export function initHighlight() {
   // ── URL-level clear button ──
   urlClearBtn.addEventListener('click', () => {
     if (!selectedUrl) return;
-    const isCurrentTab = selectedUrl === activeTabUrl;
+    const isCurrentTab = selectedUrl === hlNormalizeUrl(activeTabUrl);
     const label = selectedUrl.replace(/^https?:\/\//, '');
 
     showConfirm(
@@ -106,7 +163,7 @@ export function initHighlight() {
 
   // ── Refresh when content script updates storage ──
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes[HL_STORAGE_KEY]) load();
+    if (area === 'local' && (changes[HL_STORAGE_KEY] || changes[HL_PATTERNS_KEY])) load();
   });
 
   // ── Load when user clicks the Highlight tab ──
@@ -117,6 +174,72 @@ export function initHighlight() {
   chrome.storage.local.get('lastTab', res => {
     if (res?.lastTab === 'tabHighlight') load();
   });
+
+  // ── Pattern editor ──
+  if (patternToggleBtn && patternBody) {
+    patternToggleBtn.addEventListener('click', () => {
+      const open = patternBody.style.display !== 'none';
+      patternBody.style.display = open ? 'none' : 'block';
+      patternToggleBtn.classList.toggle('hl-pattern-toggle-btn--open', !open);
+    });
+  }
+
+  if (patternAddBtn && patternInput) {
+    patternAddBtn.addEventListener('click', () => addPattern());
+    patternInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') addPattern();
+    });
+  }
+
+  function addPattern() {
+    const raw = patternInput?.value.trim();
+    if (!raw) return;
+    // Strip protocol for storage (matching is protocol-agnostic)
+    const val = raw.replace(/^https?:\/\//, '');
+    if (!val || patterns.includes(val)) { patternInput.value = ''; return; }
+    patterns = [...patterns, val];
+    savePatterns();
+    patternInput.value = '';
+  }
+
+  function savePatterns() {
+    chrome.storage.local.set({ [HL_PATTERNS_KEY]: patterns }, () => {
+      sendToTab({ type: 'HL_PATTERNS_UPDATED', patterns });
+      renderPatterns();
+      load(); // rebuild URL list with new normalization
+    });
+  }
+
+  function renderPatterns() {
+    if (!patternList) return;
+    patternList.innerHTML = '';
+    if (!patterns.length) {
+      const li = document.createElement('li');
+      li.className = 'hl-pattern-empty';
+      li.textContent = 'No patterns defined';
+      patternList.appendChild(li);
+      return;
+    }
+    patterns.forEach((p, idx) => {
+      const li = document.createElement('li');
+      li.className = 'hl-pattern-item';
+      const matchCount = Object.keys(allData).filter(u => hlMatchPattern(u, p) || u === p).length;
+      // Highlight wildcards
+      const display = p.replace(/\*/g, '<span class="hl-pattern-wildcard">*</span>');
+      li.innerHTML = `
+        <span class="hl-pattern-item-text">${display}</span>
+        ${matchCount ? `<span class="hl-pattern-item-count">${matchCount} URL${matchCount > 1 ? 's' : ''}</span>` : ''}
+        <button class="hl-pattern-item-del" data-idx="${idx}" title="Remove pattern">✕</button>`;
+      patternList.appendChild(li);
+    });
+    patternList.querySelectorAll('.hl-pattern-item-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.idx);
+        patterns = patterns.filter((_, i) => i !== idx);
+        savePatterns();
+      });
+    });
+  }
 
   // ─────────────────────────────────────────────────────────
   function sendToTab(msg, cb) {
@@ -130,51 +253,60 @@ export function initHighlight() {
   }
 
   function load() {
-    // Get active tab URL first, then read storage
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
       activeTabUrl = tab?.url || '';
 
-      chrome.storage.local.get(HL_STORAGE_KEY, res => {
-        allData = res[HL_STORAGE_KEY] || {};
+      chrome.storage.local.get([HL_STORAGE_KEY, HL_PATTERNS_KEY], res => {
+        allData  = res[HL_STORAGE_KEY]  || {};
+        patterns = res[HL_PATTERNS_KEY] || [];
 
-        // Build URL list: active tab first (even if empty), then saved URLs
+        const normalizedTabUrl = hlNormalizeUrl(activeTabUrl);
+
+        // Build URL list: normalized active tab first, then other saved keys
         const savedUrls = Object.keys(allData).filter(u => allData[u]?.length > 0);
         const urlList   = activeTabUrl
-          ? [activeTabUrl, ...savedUrls.filter(u => u !== activeTabUrl)]
+          ? [normalizedTabUrl, ...savedUrls.filter(u => u !== normalizedTabUrl)]
           : savedUrls;
 
-        // Restore selectedUrl or default to active tab
+        // Restore selectedUrl or default to normalized active tab
         if (!selectedUrl || !urlList.includes(selectedUrl)) {
-          selectedUrl = activeTabUrl || urlList[0] || '';
+          selectedUrl = normalizedTabUrl || urlList[0] || '';
         }
 
         buildUrlSelect(urlList);
         render();
         updateStats();
         updateTabBadge();
+        renderPatterns();
       });
     });
   }
 
   function buildUrlSelect(urlList) {
+    const normalizedTabUrl = hlNormalizeUrl(activeTabUrl);
+
     // ── Current tab chip ──
     if (currentPage && currentUrl && currentCount) {
       if (activeTabUrl) {
         let label = activeTabUrl.replace(/^https?:\/\//, '');
         if (label.length > 52) label = label.slice(0, 50) + '…';
-        const count = (allData[activeTabUrl] || []).length;
+        const count = (allData[normalizedTabUrl] || []).length;
         currentUrl.textContent     = label;
         currentCount.textContent   = count;
         currentCount.style.display = count ? '' : 'none';
         currentPage.style.display  = '';
+        // If URL is grouped under a pattern, show a subtle indicator
+        currentPage.title = normalizedTabUrl !== activeTabUrl
+          ? `Grouped under pattern: ${normalizedTabUrl}`
+          : 'View highlights for the current tab';
       } else {
         currentPage.style.display = 'none';
       }
     }
     syncChipState();
 
-    // ── Other pages dropdown (excludes active tab) ──
-    const otherUrls = urlList.filter(u => u !== activeTabUrl && (allData[u] || []).length > 0);
+    // ── Other pages dropdown (excludes active tab key) ──
+    const otherUrls = urlList.filter(u => u !== normalizedTabUrl && (allData[u] || []).length > 0);
     urlSelect.innerHTML = '';
 
     if (otherUrls.length === 0) {
@@ -202,15 +334,14 @@ export function initHighlight() {
         urlSelect.appendChild(opt);
       });
 
-      urlClearBtn.style.display = selectedUrl !== activeTabUrl ? '' : 'none';
+      urlClearBtn.style.display = selectedUrl !== normalizedTabUrl ? '' : 'none';
     }
   }
 
   function syncChipState() {
     if (!currentPage) return;
-    const isCurrentSelected = selectedUrl === activeTabUrl;
+    const isCurrentSelected = selectedUrl === hlNormalizeUrl(activeTabUrl);
     currentPage.classList.toggle('hl-current-page--active', isCurrentSelected);
-    // Show clear button only when a "saved" page is selected
     urlClearBtn.style.display = (!isCurrentSelected && urlSelect.value) ? '' : 'none';
   }
 
@@ -220,7 +351,7 @@ export function initHighlight() {
       ? pageList.filter(h => h.color === activeFilter)
       : pageList;
 
-    clearBtn.style.display = 'none'; // hidden — URL-level clear is via urlClearBtn
+    clearBtn.style.display = 'none';
 
     if (filtered.length === 0) {
       listEl.innerHTML = '';
@@ -229,7 +360,7 @@ export function initHighlight() {
     }
     emptyEl.style.display = 'none';
 
-    const isCurrentTab = selectedUrl === activeTabUrl;
+    const isCurrentTab = selectedUrl === hlNormalizeUrl(activeTabUrl);
 
     listEl.innerHTML = filtered.slice().reverse().map(h => {
       const cfg = HL_COLORS[h.color] || HL_COLORS.yellow;
@@ -301,7 +432,7 @@ export function initHighlight() {
 
   function updateTabBadge() {
     if (!tabBadge) return;
-    const pageCount = (allData[activeTabUrl] || []).length;
+    const pageCount = (allData[hlNormalizeUrl(activeTabUrl)] || []).length;
     tabBadge.textContent   = pageCount;
     tabBadge.style.display = pageCount ? 'inline-block' : 'none';
   }

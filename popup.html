@@ -792,6 +792,18 @@
     <div class="main-content" role="complementary">
 
       <div class="card">
+        <!-- Highlight enable/disable toggle -->
+        <div class="hl-toggle-row" id="hlToggleRow">
+          <div class="hl-toggle-info">
+            <span class="hl-toggle-label">Highlight mode</span>
+            <span class="hl-toggle-sub" id="hlToggleSub">Select text on any page to highlight</span>
+          </div>
+          <label class="hl-toggle-switch">
+            <input type="checkbox" id="hlToggle" checked>
+            <span class="hl-toggle-slider"></span>
+          </label>
+        </div>
+
         <!-- Page picker -->
         <div class="hl-page-picker" id="hlPagePicker">
 
@@ -833,11 +845,11 @@
         <!-- Color filter pills -->
         <div class="hl-filter-row" id="hlFilterRow">
           <button class="hl-filter-pill active" data-color="">All</button>
-          <button class="hl-filter-pill" data-color="yellow" style="--dot:#d97706;">Yellow</button>
-          <button class="hl-filter-pill" data-color="green"  style="--dot:#059669;">Green</button>
-          <button class="hl-filter-pill" data-color="pink"   style="--dot:#db2777;">Pink</button>
-          <button class="hl-filter-pill" data-color="blue"   style="--dot:#2563eb;">Blue</button>
-          <button class="hl-filter-pill" data-color="orange" style="--dot:#ea580c;">Orange</button>
+          <button class="hl-filter-pill" data-color="yellow" style="--dot:#fde047;">Yellow</button>
+          <button class="hl-filter-pill" data-color="green"  style="--dot:#86efac;">Green</button>
+          <button class="hl-filter-pill" data-color="pink"   style="--dot:#f9a8d4;">Pink</button>
+          <button class="hl-filter-pill" data-color="blue"   style="--dot:#93c5fd;">Blue</button>
+          <button class="hl-filter-pill" data-color="orange" style="--dot:#fdba74;">Orange</button>
         </div>
 
         <!-- Empty state -->
@@ -851,6 +863,22 @@
 
         <!-- Clear page highlights (hidden — delegated to urlClearBtn) -->
         <button id="hlClearBtn" class="danger" style="display:none;width:100%;margin-top:8px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
+
+        <!-- URL Pattern editor -->
+        <div class="hl-pattern-section">
+          <div class="hl-pattern-header">
+            <span class="hl-pattern-title">URL Patterns</span>
+            <button class="hl-pattern-toggle-btn" id="hlPatternToggleBtn" title="Group URLs matching the same page type">⚙</button>
+          </div>
+          <div class="hl-pattern-body" id="hlPatternBody" style="display:none;">
+            <div class="hl-pattern-hint">Use <code>*</code> to match any path segment, e.g. <code>example.com/account/*/settings</code></div>
+            <div class="hl-pattern-input-row">
+              <input type="text" id="hlPatternInput" class="hl-pattern-input" placeholder="example.com/account/*/settings">
+              <button id="hlPatternAddBtn" class="hl-pattern-add-btn">Add</button>
+            </div>
+            <ul id="hlPatternList" class="hl-pattern-list"></ul>
+          </div>
+        </div>
       </div>
 
     </div>

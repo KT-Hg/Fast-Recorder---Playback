@@ -1217,6 +1217,70 @@ function _hlBg(color) {
 
 function _hlCtxOk() { return !!chrome.runtime?.id; }
 
+// ── Toggle / enabled state ──
+let _hlEnabled      = true;
+let _hlObserver     = null;
+let _hlRestoreTimer = null;
+
+function _hlSetEnabled(on) {
+  _hlEnabled = on;
+  if (on && !_hlObserver) {
+    _hlObserver = new MutationObserver(() => {
+      clearTimeout(_hlRestoreTimer);
+      _hlRestoreTimer = setTimeout(() => { if (_hlCtxOk()) _hlRestore(); }, 600);
+    });
+    _hlObserver.observe(document.documentElement, { childList: true, subtree: true });
+    _hlRestore();
+  } else if (!on && _hlObserver) {
+    _hlObserver.disconnect();
+    _hlObserver = null;
+    _hlHideTip();
+  }
+}
+
+// ── URL pattern normalisation ──
+const _HL_PATTERNS_KEY = 'hl_patterns_v1';
+let _hlPatterns = [];
+
+function _hlMatchPattern(url, pattern) {
+  const strip = s => s.replace(/^https?:\/\//, '');
+  const escaped = strip(pattern)
+    .replace(/[.+?^${}()|[\]\\]/g, c => '\\' + c)
+    .replace(/\*/g, '[^/]+');
+  try { return new RegExp('^' + escaped + '(/.*)?$').test(strip(url)); }
+  catch (_) { return false; }
+}
+
+function _hlNormalizeUrl(url) {
+  for (const p of _hlPatterns) {
+    if (_hlMatchPattern(url, p)) return p;
+  }
+  return url;
+}
+
+// ── Bootstrap: load patterns + enabled state, then start observer ──
+function _hlInit() {
+  try {
+    if (!_hlCtxOk()) { _hlSetEnabled(true); return; }
+    chrome.storage.local.get(['hl_enabled', _HL_PATTERNS_KEY], res => {
+      try {
+        void chrome.runtime.lastError;
+        _hlPatterns = res[_HL_PATTERNS_KEY] || [];
+        _hlSetEnabled(res.hl_enabled !== false);
+      } catch (_) { _hlSetEnabled(true); }
+    });
+  } catch (_) { _hlSetEnabled(true); }
+}
+
+// Keep patterns in sync when popup changes them
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[_HL_PATTERNS_KEY]) {
+      _hlPatterns = changes[_HL_PATTERNS_KEY].newValue || [];
+    }
+  });
+} catch (_) {}
+
 function _hlGetAll(cb) {
   try {
     if (!_hlCtxOk()) return;
@@ -1231,13 +1295,14 @@ function _hlGetAll(cb) {
 
 function _hlSavePage(list, cb) {
   _hlGetAll(all => {
-    all[location.href] = list;
+    const key = _hlNormalizeUrl(location.href);
+    all[key] = list;
     try {
       if (!_hlCtxOk()) { cb?.(); return; }
       chrome.storage.local.set({ [_HL_KEY]: all }, () => {
         try {
           void chrome.runtime.lastError;
-          safeSend({ type: 'HL_UPDATED', url: location.href });
+          safeSend({ type: 'HL_UPDATED', url: key });
           cb?.();
         } catch (_) { cb?.(); }
       });
@@ -1246,7 +1311,7 @@ function _hlSavePage(list, cb) {
 }
 
 function _hlGetPage(cb) {
-  _hlGetAll(all => cb(all[location.href] || []));
+  _hlGetAll(all => cb(all[_hlNormalizeUrl(location.href)] || []));
 }
 
 // ── Tooltip ──
@@ -1276,7 +1341,7 @@ function _hlTipEl() {
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:6px;font-family:inherit;';
 
-  const DOTS = { yellow:'#d97706', green:'#059669', pink:'#db2777', blue:'#2563eb', orange:'#ea580c' };
+  const DOTS = { yellow:'#fde047', green:'#86efac', pink:'#f9a8d4', blue:'#93c5fd', orange:'#fdba74' };
   const LABELS = { yellow:'Yellow', green:'Green', pink:'Pink', blue:'Blue', orange:'Orange' };
   Object.keys(DOTS).forEach(color => {
     const btn = document.createElement('button');
@@ -1319,6 +1384,7 @@ function _hlHideTip() {
 
 document.addEventListener('mouseup', e => {
   setTimeout(() => {
+    if (!_hlEnabled) return;
     if (e.target?.closest?.('[data-hl-ui]')) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) { _hlHideTip(); return; }
@@ -1335,24 +1401,23 @@ document.addEventListener('mousedown', e => {
   if (!e.target?.closest?.('[data-hl-ui]')) _hlHideTip();
 }, true);
 
-// ── Apply highlight ──
+// ── Apply highlight — wraps each text node individually to handle complex DOM ──
 function _hlApply(color) {
   if (!_hlRange) return;
   const text = _hlRange.toString().trim();
   if (!text) return;
 
-  const id   = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  const mark = _hlMark(id, color);
+  const id       = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const segments = _hlGetTextNodes(_hlRange);
+  if (!segments.length) { _hlHideTip(); return; }
 
-  try {
-    _hlRange.surroundContents(mark);
-  } catch {
-    try {
-      const frag = _hlRange.extractContents();
-      mark.appendChild(frag);
-      _hlRange.insertNode(mark);
-    } catch (_) { _hlHideTip(); return; }
-  }
+  segments.forEach(({ node, start, end }) => {
+    const mark = _hlMark(id, color);
+    if (end < node.length) node.splitText(end);
+    const target = start > 0 ? node.splitText(start) : node;
+    target.parentNode.insertBefore(mark, target);
+    mark.appendChild(target);
+  });
 
   window.getSelection().removeAllRanges();
   _hlHideTip();
@@ -1361,6 +1426,29 @@ function _hlApply(color) {
     list.push({ id, text, color, createdAt: Date.now() });
     _hlSavePage(list);
   });
+}
+
+// ── Collect text nodes within a Range, skipping existing highlights/UI ──
+function _hlGetTextNodes(range) {
+  const nodes = [];
+  const ancestor = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+    ? range.commonAncestorContainer.parentNode
+    : range.commonAncestorContainer;
+  const walker = document.createTreeWalker(ancestor, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      return n.parentElement?.closest('[data-hl-id],[data-hl-ui]')
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node;
+  while ((node = walker.nextNode())) {
+    if (!range.intersectsNode(node)) continue;
+    const start = node === range.startContainer ? range.startOffset : 0;
+    const end   = node === range.endContainer   ? range.endOffset   : node.length;
+    if (start < end) nodes.push({ node, start, end });
+  }
+  return nodes;
 }
 
 function _hlMark(id, color) {
@@ -1373,15 +1461,15 @@ function _hlMark(id, color) {
   return m;
 }
 
-// ── Remove ──
+// ── Remove — handles multiple marks from text-node wrapping ──
 function _hlRemove(id) {
-  const mark = document.querySelector(`[data-hl-id="${id}"]`);
-  if (mark) {
+  document.querySelectorAll(`[data-hl-id="${id}"]`).forEach(mark => {
     const p = mark.parentNode;
+    if (!p) return;
     while (mark.firstChild) p.insertBefore(mark.firstChild, mark);
     p.removeChild(mark);
     p.normalize();
-  }
+  });
   _hlGetPage(list => _hlSavePage(list.filter(h => h.id !== id)));
 }
 
@@ -1436,17 +1524,22 @@ function _hlFindRange(text) {
   return range;
 }
 
-// ── Restore ──
+// ── Restore — uses same text-node wrapping as _hlApply ──
 function _hlRestore() {
   _hlGetPage(list => {
     list.forEach(h => {
       if (document.querySelector(`[data-hl-id="${h.id}"]`)) return;
       const range = _hlFindRange(h.text);
       if (!range) return;
-      const mark = _hlMark(h.id, h.color);
-      try { range.surroundContents(mark); } catch {
-        try { const frag = range.extractContents(); mark.appendChild(frag); range.insertNode(mark); } catch (_) {}
-      }
+      const segments = _hlGetTextNodes(range);
+      if (!segments.length) return;
+      segments.forEach(({ node, start, end }) => {
+        const mark = _hlMark(h.id, h.color);
+        if (end < node.length) node.splitText(end);
+        const target = start > 0 ? node.splitText(start) : node;
+        target.parentNode.insertBefore(mark, target);
+        mark.appendChild(target);
+      });
     });
   });
 }
@@ -1463,19 +1556,12 @@ function _hlScrollTo(id) {
   return true;
 }
 
-// ── Restore on DOMContentLoaded ──
+// ── Bootstrap: loads settings then starts MutationObserver + restore ──
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _hlRestore);
+  document.addEventListener('DOMContentLoaded', _hlInit);
 } else {
-  _hlRestore();
+  _hlInit();
 }
-
-// ── MutationObserver for SPA navigation ──
-let _hlRestoreTimer = null;
-new MutationObserver(() => {
-  clearTimeout(_hlRestoreTimer);
-  _hlRestoreTimer = setTimeout(() => { if (_hlCtxOk()) _hlRestore(); }, 600);
-}).observe(document.documentElement, { childList: true, subtree: true });
 
 // ── Message handler ──
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1495,6 +1581,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'HL_SCROLL_TO') {
     sendResponse({ found: _hlScrollTo(msg.id) });
+    return false;
+  }
+  if (msg.type === 'HL_SET_ENABLED') {
+    _hlSetEnabled(msg.enabled);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'HL_PATTERNS_UPDATED') {
+    _hlPatterns = msg.patterns || [];
+    sendResponse({ ok: true });
     return false;
   }
 });

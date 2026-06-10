@@ -16,7 +16,7 @@ import { updateBadge } from './bg/utils.js';
 import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback } from './bg/playback.js';
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
-  openCropUI,
+  openCropUI, buildScreenshotFilename,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 
@@ -790,7 +790,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- Image Editor (from clipboard / file in popup) --- */
   if (type === "OPEN_IMAGE_EDITOR") {
-    openCropUI(request.dataUrl, null, false);
+    const { dataUrl, sourceFileName } = request;
+    let downloadPath;
+    if (sourceFileName) {
+      // Uploaded / dropped file: "{baseName}_edited_YYYY-MM-DD_HH-MM-SS.png"
+      const baseName = sourceFileName.replace(/\.[^.]+$/, '');
+      downloadPath = buildScreenshotFilename(baseName + '_edited', null);
+    } else {
+      // Paste / clipboard: "Screenshot_YYYY-MM-DD_HH-MM-SS.png"
+      downloadPath = buildScreenshotFilename('Screenshot', null);
+    }
+    openCropUI(dataUrl, downloadPath, false);
     sendResponse({ ok: true });
     return;
   }

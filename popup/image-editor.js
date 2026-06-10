@@ -26,9 +26,9 @@ export function initImageEditor() {
   cancelBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 
-  function launchEditor(dataUrl) {
+  function launchEditor(dataUrl, sourceFileName = null) {
     closeModal();
-    chrome.runtime.sendMessage({ type: 'OPEN_IMAGE_EDITOR', dataUrl }, () => {
+    chrome.runtime.sendMessage({ type: 'OPEN_IMAGE_EDITOR', dataUrl, sourceFileName }, () => {
       void chrome.runtime.lastError;
     });
     window.close();
@@ -39,7 +39,7 @@ export function initImageEditor() {
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     if (!file || !file.type.startsWith('image/')) return;
-    fileToDataUrl(file).then(launchEditor);
+    fileToDataUrl(file).then(url => launchEditor(url, file.name));
     fileInput.value = '';
   });
 
@@ -63,7 +63,7 @@ export function initImageEditor() {
       showToast('Chỉ hỗ trợ file ảnh', 'error');
       return;
     }
-    fileToDataUrl(file).then(launchEditor);
+    fileToDataUrl(file).then(url => launchEditor(url, file.name));
   });
 
   // navigator.clipboard.read() requires clipboardRead permission; hidden textarea avoids that.
@@ -90,7 +90,7 @@ export function initImageEditor() {
       if (item.type.startsWith('image/')) {
         const file = item.getAsFile();
         if (!file) continue;
-        fileToDataUrl(file).then(launchEditor);
+        fileToDataUrl(file).then(url => launchEditor(url, null));
         return true;
       }
     }
