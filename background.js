@@ -797,8 +797,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const baseName = sourceFileName.replace(/\.[^.]+$/, '');
       downloadPath = buildScreenshotFilename(baseName + '_edited', null);
     } else {
-      // Paste / clipboard: "Screenshot_YYYY-MM-DD_HH-MM-SS.png"
-      downloadPath = buildScreenshotFilename('Screenshot', null);
+      // Paste / clipboard: use same configurable prefix as auto screenshots
+      chrome.storage.sync.get(["screenshotPrefix"], (settings) => {
+        const prefix = settings.screenshotPrefix || "screenshot";
+        const path = buildScreenshotFilename(prefix, null);
+        openCropUI(dataUrl, path, false);
+      });
+      sendResponse({ ok: true });
+      return;
     }
     openCropUI(dataUrl, downloadPath, false);
     sendResponse({ ok: true });
