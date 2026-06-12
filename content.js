@@ -1221,20 +1221,42 @@ function _hlCtxOk() { return !!chrome.runtime?.id; }
 let _hlEnabled      = true;
 let _hlObserver     = null;
 let _hlRestoreTimer = null;
+let _hlStyleEl      = null;
+
+// Override user-select:none so text in any element can be selected for highlighting.
+// Uses high-specificity selector (0,1,2) to beat site rules like h1.class (0,1,1).
+function _hlInjectStyle() {
+  if (_hlStyleEl) return;
+  _hlStyleEl = document.createElement('style');
+  _hlStyleEl.setAttribute('data-hl-ui', '1');
+  _hlStyleEl.textContent = 'html body * { user-select: text !important; -webkit-user-select: text !important; }';
+  (document.head || document.documentElement).appendChild(_hlStyleEl);
+}
+
+function _hlRemoveStyle() {
+  _hlStyleEl?.remove();
+  _hlStyleEl = null;
+}
 
 function _hlSetEnabled(on) {
   _hlEnabled = on;
-  if (on && !_hlObserver) {
-    _hlObserver = new MutationObserver(() => {
-      clearTimeout(_hlRestoreTimer);
-      _hlRestoreTimer = setTimeout(() => { if (_hlCtxOk()) _hlRestore(); }, 600);
-    });
-    _hlObserver.observe(document.documentElement, { childList: true, subtree: true });
-    _hlRestore();
-  } else if (!on && _hlObserver) {
-    _hlObserver.disconnect();
-    _hlObserver = null;
-    _hlHideTip();
+  if (on) {
+    _hlInjectStyle();
+    if (!_hlObserver) {
+      _hlObserver = new MutationObserver(() => {
+        clearTimeout(_hlRestoreTimer);
+        _hlRestoreTimer = setTimeout(() => { if (_hlCtxOk()) _hlRestore(); }, 600);
+      });
+      _hlObserver.observe(document.documentElement, { childList: true, subtree: true });
+      _hlRestore();
+    }
+  } else {
+    _hlRemoveStyle();
+    if (_hlObserver) {
+      _hlObserver.disconnect();
+      _hlObserver = null;
+      _hlHideTip();
+    }
   }
 }
 
@@ -1317,6 +1339,8 @@ function _hlGetPage(cb) {
 // ── Tooltip ──
 let _hlTip = null;
 let _hlRange = null;
+let _hlAnchor = '';
+let _hlParentSel = '';
 
 function _hlTipEl() {
   if (_hlTip) return _hlTip;
@@ -1381,6 +1405,8 @@ function _hlShowTip(rect) {
 function _hlHideTip() {
   if (_hlTip) _hlTip.style.display = 'none';
   _hlRange = null;
+  _hlAnchor = '';
+  _hlParentSel = '';
 }
 
 document.addEventListener('mouseup', e => {
@@ -1394,6 +1420,8 @@ document.addEventListener('mouseup', e => {
     const range = sel.getRangeAt(0);
     if (e.target?.closest?.('[data-hl-ui]')) return;
     _hlRange = range.cloneRange();
+    _hlAnchor = _hlGetFlatCtx(range);
+    _hlParentSel = _hlGetParentSel(range);
     _hlShowTip(range.getBoundingClientRect());
   }, 10);
 }, true);
@@ -1402,20 +1430,119 @@ document.addEventListener('mousedown', e => {
   if (!e.target?.closest?.('[data-hl-ui]')) _hlHideTip();
 }, true);
 
+// ── Build CSS selector for the element containing the selection ──
+// Stored alongside each highlight so restore can pinpoint the exact element
+// instead of relying on flat-text anchor matching alone (which fails for
+// common words like "HTML" that appear hundreds of times on a page).
+function _hlGetParentSel(range) {
+  const sc = range.startContainer;
+  const el = sc.nodeType === Node.TEXT_NODE ? sc.parentElement : sc;
+  if (!el || el === document.body || el === document.documentElement) return '';
+
+  const path = [];
+  let cur = el;
+  while (cur && cur !== document.body && path.length < 5) {
+    let part = cur.tagName.toLowerCase();
+    if (cur.id && !_isDynamicId(cur.id)) {
+      // Stable ID found — use as anchor and stop walking up
+      path.unshift(`#${CSS.escape(cur.id)}`);
+      break;
+    }
+    if (cur.className && typeof cur.className === 'string') {
+      const cls = cur.className.split(/\s+/)
+        .filter(c => c.length > 2 && !_DYNAMIC_ID_RE.test(c))
+        .slice(0, 2);
+      if (cls.length) part += cls.map(c => '.' + CSS.escape(c)).join('');
+    }
+    path.unshift(part);
+    cur = cur.parentElement;
+  }
+
+  const sel = path.join(' > ');
+  try { if (sel && document.querySelector(sel)) return sel; } catch (_) {}
+  return '';
+}
+
+// ── Find a Range for text within a specific root element ──
+function _hlFindRangeIn(root, text) {
+  const nodes = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      return n.parentElement?.closest('mark[data-hl-id]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+
+  let pos = 0;
+  const offsets = nodes.map(n => { const s = pos; pos += n.textContent.length; return s; });
+  const flat = nodes.map(n => n.textContent).join('');
+
+  const idx = flat.indexOf(text);
+  if (idx < 0) return null;
+
+  const end = idx + text.length;
+  let startNode, startOff, endNode, endOff;
+  for (let i = 0; i < nodes.length; i++) {
+    const s = offsets[i], e = s + nodes[i].textContent.length;
+    if (!startNode && idx < e) { startNode = nodes[i]; startOff = idx - s; }
+    if (end <= e)               { endNode   = nodes[i]; endOff   = end - s; break; }
+  }
+  if (!startNode || !endNode) return null;
+
+  const range = document.createRange();
+  range.setStart(startNode, startOff);
+  range.setEnd(endNode, endOff);
+  return range;
+}
+
+// ── Build 50-char context window around a range in the page's flat text ──
+// Used to disambiguate identical text appearing multiple times on a page.
+function _hlGetFlatCtx(range) {
+  const nodes = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      return n.parentElement?.closest('mark[data-hl-id]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+  let pos = 0;
+  const offsets = nodes.map(nd => { const s = pos; pos += nd.textContent.length; return s; });
+  const flat    = nodes.map(nd => nd.textContent).join('');
+  const sc = range.startContainer;
+  if (sc.nodeType !== Node.TEXT_NODE) return '';
+  const si = nodes.indexOf(sc);
+  if (si < 0) return '';
+  const start = offsets[si] + range.startOffset;
+  return flat.slice(Math.max(0, start - 10), start + range.toString().length + 40);
+}
+
 // ── Apply highlight — wraps each text node individually to handle complex DOM ──
 function _hlApply(color) {
   if (!_hlRange) return;
   const text = _hlRange.toString().trim();
   if (!text) return;
 
-  const id       = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  const segments = _hlGetTextNodes(_hlRange);
+  const id        = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+  const anchor    = _hlAnchor;
+  const parentSel = _hlParentSel;
+  let segments = _hlGetTextNodes(_hlRange);
+
+  // Range có thể bị stale nếu trang thay đổi DOM sau khi user chọn text.
+  // Fallback: tìm lại text trong DOM hiện tại.
+  if (!segments.length) {
+    const fresh = _hlFindRange(text, anchor, parentSel);
+    if (fresh) segments = _hlGetTextNodes(fresh);
+  }
+
   if (!segments.length) { _hlHideTip(); return; }
 
   segments.forEach(({ node, start, end }) => {
     const mark = _hlMark(id, color);
     if (end < node.length) node.splitText(end);
     const target = start > 0 ? node.splitText(start) : node;
+    if (!target.parentNode) return;
     target.parentNode.insertBefore(mark, target);
     mark.appendChild(target);
   });
@@ -1424,7 +1551,7 @@ function _hlApply(color) {
   _hlHideTip();
 
   _hlGetPage(list => {
-    list.push({ id, text, color, createdAt: Date.now() });
+    list.push({ id, text, color, createdAt: Date.now(), anchor, parentSel });
     _hlSavePage(list);
   });
 }
@@ -1437,7 +1564,7 @@ function _hlGetTextNodes(range) {
     : range.commonAncestorContainer;
   const walker = document.createTreeWalker(ancestor, NodeFilter.SHOW_TEXT, {
     acceptNode(n) {
-      return n.parentElement?.closest('[data-hl-id],[data-hl-ui]')
+      return n.parentElement?.closest('mark[data-hl-id]')
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT;
     },
@@ -1457,7 +1584,7 @@ function _hlMark(id, color) {
   m.setAttribute('data-hl-id', id);
   m.setAttribute('data-hl-color', color);
   m.setAttribute('data-hl-ui', '1');
-  m.style.cssText = `background-color:${_hlBg(color)};color:inherit;border-radius:2px;padding:0;cursor:pointer;`;
+  m.style.cssText = `background-color:${_hlBg(color)} !important;background-image:none !important;color:inherit;border-radius:2px;padding:0;cursor:pointer;`;
   m.addEventListener('click', () => _hlRemove(id));
   return m;
 }
@@ -1487,14 +1614,27 @@ function _hlClear() {
 }
 
 // ── Find a Range for text that may span across element boundaries (e.g. <a> tags) ──
-function _hlFindRange(text) {
+// parentSel: CSS selector of the parent element — try first for precise lookup.
+// anchor: fallback 50-char context string for disambiguation across full page.
+function _hlFindRange(text, anchor = '', parentSel = '') {
   if (!text) return null;
 
-  // Collect all text nodes, skipping nodes already inside a highlight or UI element
+  // Primary strategy: narrow search to the element identified by parentSel.
+  // This handles common words (e.g. "HTML") that appear hundreds of times on a page.
+  if (parentSel) {
+    try {
+      const roots = document.querySelectorAll(parentSel);
+      for (const root of roots) {
+        const r = _hlFindRangeIn(root, text);
+        if (r) return r;
+      }
+    } catch (_) {}
+  }
+
   const nodes = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode(n) {
-      return n.parentElement?.closest('[data-hl-id],[data-hl-ui]')
+      return n.parentElement?.closest('mark[data-hl-id]')
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT;
     },
@@ -1502,15 +1642,41 @@ function _hlFindRange(text) {
   let node;
   while ((node = walker.nextNode())) nodes.push(node);
 
-  // Build a flat string from all text nodes and record each node's start offset
   let pos = 0;
   const offsets = nodes.map(n => { const s = pos; pos += n.textContent.length; return s; });
   const flat = nodes.map(n => n.textContent).join('');
 
-  const idx = flat.indexOf(text);
+  // Determine best occurrence using anchor context (suffix + prefix scoring)
+  const anchorTextIdx = anchor ? anchor.indexOf(text) : -1;
+  let idx = flat.indexOf(text);
   if (idx < 0) return null;
-  const end = idx + text.length;
 
+  if (anchor && anchorTextIdx >= 0) {
+    const anchorPrefix = anchor.slice(0, anchorTextIdx);
+    const anchorSuffix = anchor.slice(anchorTextIdx + text.length);
+    let searchFrom = 0;
+    let bestScore  = -1;
+    while (true) {
+      const cand = flat.indexOf(text, searchFrom);
+      if (cand < 0) break;
+      // Count matching chars in suffix (from start) — heavily weighted
+      const candSfx = flat.slice(cand + text.length, cand + text.length + anchorSuffix.length);
+      let sfxMatch = 0;
+      while (sfxMatch < candSfx.length && candSfx[sfxMatch] === anchorSuffix[sfxMatch]) sfxMatch++;
+      // Count matching chars in prefix (from right end)
+      const candPfx = flat.slice(Math.max(0, cand - anchorPrefix.length), cand);
+      let pfxMatch = 0;
+      for (let k = 1; k <= Math.min(candPfx.length, anchorPrefix.length); k++) {
+        if (candPfx[candPfx.length - k] === anchorPrefix[anchorPrefix.length - k]) pfxMatch++;
+        else break;
+      }
+      const score = sfxMatch * 100 + pfxMatch;
+      if (score > bestScore) { bestScore = score; idx = cand; }
+      searchFrom = cand + 1;
+    }
+  }
+
+  const end = idx + text.length;
   let startNode, startOff, endNode, endOff;
   for (let i = 0; i < nodes.length; i++) {
     const s = offsets[i], e = s + nodes[i].textContent.length;
@@ -1530,7 +1696,7 @@ function _hlRestore() {
   _hlGetPage(list => {
     list.forEach(h => {
       if (document.querySelector(`[data-hl-id="${h.id}"]`)) return;
-      const range = _hlFindRange(h.text);
+      const range = _hlFindRange(h.text, h.anchor || '', h.parentSel || '');
       if (!range) return;
       const segments = _hlGetTextNodes(range);
       if (!segments.length) return;
@@ -1538,6 +1704,7 @@ function _hlRestore() {
         const mark = _hlMark(h.id, h.color);
         if (end < node.length) node.splitText(end);
         const target = start > 0 ? node.splitText(start) : node;
+        if (!target.parentNode) return;
         target.parentNode.insertBefore(mark, target);
         mark.appendChild(target);
       });
@@ -1593,6 +1760,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     _hlPatterns = msg.patterns || [];
     sendResponse({ ok: true });
     return false;
+  }
+  if (msg.type === 'HL_SET_HIDDEN') {
+    document.querySelectorAll(`[data-hl-id="${msg.id}"]`).forEach(m => {
+      m.style.setProperty('background-color', 'transparent', 'important');
+      m.dataset.hlHidden = '1';
+    });
+    sendResponse({ ok: true }); return false;
+  }
+  if (msg.type === 'HL_RESTORE') {
+    document.querySelectorAll(`[data-hl-id="${msg.id}"]`).forEach(m => {
+      delete m.dataset.hlHidden;
+      m.style.setProperty('background-color', _hlBg(m.dataset.hlColor), 'important');
+    });
+    sendResponse({ ok: true }); return false;
+  }
+  if (msg.type === 'HL_UPDATE_COLOR') {
+    document.querySelectorAll(`[data-hl-id="${msg.id}"]`).forEach(m => {
+      m.dataset.hlColor = msg.color;
+      if (!m.dataset.hlHidden) m.style.setProperty('background-color', _hlBg(msg.color), 'important');
+    });
+    sendResponse({ ok: true }); return false;
   }
 });
 

@@ -34,9 +34,15 @@ export function initHighlight() {
   const clearBtn     = document.getElementById('hlClearBtn');
   const urlSelect    = document.getElementById('hlUrlSelect');
   const urlClearBtn  = document.getElementById('hlUrlClearBtn');
+  // Stats — bar IDs (compact) + detail IDs (expanded)
   const statPage     = document.getElementById('hlStatPage');
   const statTotal    = document.getElementById('hlStatTotal');
   const statPages    = document.getElementById('hlStatPages');
+  const statPageD    = document.getElementById('hlStatPageDetail');
+  const statTotalD   = document.getElementById('hlStatTotalDetail');
+  const statPagesD   = document.getElementById('hlStatPagesDetail');
+  const statsDetailBtn = document.getElementById('hlStatsDetailBtn');
+  const statsDetail    = document.getElementById('hlStatsDetail');
   const tabBadge     = document.getElementById('hlTabBadge');
   const currentPage  = document.getElementById('hlCurrentPage');
   const hlPageDomain = document.getElementById('hlPageDomain');
@@ -47,6 +53,12 @@ export function initHighlight() {
   const hlModePill   = document.getElementById('hlModePill');
   const hlModeLabel  = document.getElementById('hlModeLabel');
   const hlExportBtn  = document.getElementById('hlExportBtn');
+  // Manual add form
+  const hlAddTrigger    = document.getElementById('hlAddTrigger');
+  const hlAddForm       = document.getElementById('hlAddForm');
+  const hlAddText       = document.getElementById('hlAddText');
+  const hlAddSubmitBtn  = document.getElementById('hlAddSubmitBtn');
+  const hlAddCancelBtn  = document.getElementById('hlAddCancelBtn');
   // Pattern editor
   const patternHeader      = document.getElementById('hlPatternHeader');
   const patternInput       = document.getElementById('hlPatternInput');
@@ -56,6 +68,8 @@ export function initHighlight() {
   const patternCaret       = document.getElementById('hlPatternCaret');
   const hlPatternCopyAll   = document.getElementById('hlPatternCopyAll');
   const hlValMsg           = document.getElementById('hlValMsg');
+  const hlFromDomainBtn   = document.getElementById('hlFromDomainBtn');
+  const hlFromDomainLabel = document.getElementById('hlFromDomainLabel');
   // URL Builder
   const hlUrlBuilder        = document.getElementById('hlUrlBuilder');
   const hlBuilderTrigger    = document.getElementById('hlBuilderTrigger');
@@ -73,13 +87,17 @@ export function initHighlight() {
   let patterns      = [];
 
   // Builder state
-  let builderDomain = '';
-  let builderSegs   = [];   // raw path segments from current tab
-  let builderStates = [];   // 'exact' | 'any' | 'end' per segment
+  let builderDomain           = '';
+  let builderDomainParts      = []; // hostname split by '.'
+  let builderDomainPartStates = []; // 'exact' | 'wildcard' | 'fixed' per domain part
+  let builderSegs             = []; // path segments
+  let builderStates           = []; // 'exact' | 'any' | 'end' per path segment
 
   // ── URL normalisation (mirrors content.js logic) ──
+  // Supports * in both path segments AND subdomain (e.g. *.myapp.com/path)
   function hlMatchPattern(url, pattern) {
     const strip = s => s.replace(/^https?:\/\//, '');
+    // Escape all regex special chars except *, then convert * → [^/]+
     const escaped = strip(pattern)
       .replace(/[.+?^${}()|[\]\\]/g, c => '\\' + c)
       .replace(/\*/g, '[^/]+');
@@ -128,6 +146,82 @@ export function initHighlight() {
       a.click();
       URL.revokeObjectURL(url);
       showToast('Highlights exported', 'success');
+    });
+  }
+
+  // ── Stats detail toggle ──
+  if (statsDetailBtn && statsDetail) {
+    statsDetailBtn.addEventListener('click', () => {
+      const open = statsDetail.classList.toggle('open');
+      statsDetailBtn.textContent = open ? '▴ Details' : '▾ Details';
+    });
+  }
+
+  // ── Manual add form ──
+  let addSelectedColor = 'yellow';
+
+  if (hlAddTrigger && hlAddForm) {
+    hlAddTrigger.addEventListener('click', () => {
+      hlAddForm.classList.toggle('open');
+      if (hlAddForm.classList.contains('open')) hlAddText?.focus();
+    });
+  }
+
+  if (hlAddForm) {
+    // Color dot selection
+    hlAddForm.querySelectorAll('.hl-add-cdot').forEach(dot => {
+      dot.addEventListener('click', () => {
+        hlAddForm.querySelectorAll('.hl-add-cdot').forEach(d => d.classList.remove('sel'));
+        dot.classList.add('sel');
+        addSelectedColor = dot.dataset.color || 'yellow';
+      });
+    });
+
+    if (hlAddCancelBtn) {
+      hlAddCancelBtn.addEventListener('click', () => {
+        hlAddForm.classList.remove('open');
+        if (hlAddText) hlAddText.value = '';
+      });
+    }
+
+    if (hlAddSubmitBtn) {
+      hlAddSubmitBtn.addEventListener('click', () => {
+        const text = hlAddText?.value.trim();
+        if (!text) { showToast('Enter text to highlight', 'warn'); return; }
+        if (!selectedUrl) { showToast('No page selected', 'warn'); return; }
+        const list = allData[selectedUrl] || [];
+        if (list.some(h => h.text === text)) { showToast('Already exists', 'warn'); return; }
+        list.push({ id: crypto.randomUUID(), text, color: addSelectedColor, createdAt: Date.now() });
+        allData[selectedUrl] = list;
+        chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+          hlAddForm.classList.remove('open');
+          if (hlAddText) hlAddText.value = '';
+          render();
+          updateStats();
+          updateSwatchBadges();
+          showToast('Highlight added', 'success');
+        });
+      });
+    }
+  }
+
+  // ── Pattern: From domain button ──
+  if (hlFromDomainBtn) {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      if (!tab?.url) return;
+      try {
+        const u = new URL(tab.url);
+        if (!['http:', 'https:'].includes(u.protocol)) return;
+        const domain = u.hostname;
+        if (hlFromDomainLabel) hlFromDomainLabel.textContent = domain;
+        hlFromDomainBtn.style.display = '';
+        hlFromDomainBtn.addEventListener('click', () => {
+          if (patternInput) {
+            patternInput.value = domain;
+            patternInput.focus();
+          }
+        });
+      } catch { /* ignore */ }
     });
   }
 
@@ -270,22 +364,26 @@ export function initHighlight() {
     }
 
     builderDomain = u.hostname;
+    const dParts  = builderDomain.split('.');
+    // Only lock the last part (TLD). Everything before it is toggleable.
+    // For single-part hosts (localhost, IP segments handled separately) nothing is locked.
+    const tldIdx = dParts.length - 1;
+    builderDomainParts      = dParts;
+    builderDomainPartStates = dParts.map((_, i) => i < tldIdx ? 'exact' : 'fixed');
     builderSegs   = u.pathname.split('/').filter(Boolean);
     builderStates = builderSegs.map(() => 'exact');
 
-    if (hlBuilderHost) {
-      let host = builderDomain + (builderSegs.length ? '/…' : '');
-      if (host.length > 36) host = host.slice(0, 34) + '…';
-      hlBuilderHost.textContent = host;
-    }
     hlUrlBuilder.style.display = '';
     renderBuilder();
   }
 
   function buildPatternStr() {
-    const endIdx = builderStates.indexOf('end');
-    const active  = endIdx === -1 ? builderSegs.length : endIdx;
-    let pat = builderDomain;
+    const endIdx   = builderStates.indexOf('end');
+    const active   = endIdx === -1 ? builderSegs.length : endIdx;
+    const domainStr = builderDomainParts
+      .map((p, i) => builderDomainPartStates[i] === 'wildcard' ? '*' : p)
+      .join('.');
+    let pat = domainStr;
     for (let i = 0; i < active; i++) {
       pat += '/' + (builderStates[i] === 'any' ? '*' : builderSegs[i]);
     }
@@ -298,13 +396,40 @@ export function initHighlight() {
 
     const endIdx = builderStates.indexOf('end');
 
-    // Domain chip — always literal, not clickable
-    const domChip = document.createElement('span');
-    domChip.className = 'hl-seg hl-seg--domain';
-    domChip.title = builderDomain;
-    domChip.textContent = builderDomain;
-    hlBuilderSegments.appendChild(domChip);
+    // ── Domain parts (split by '.') ──
+    builderDomainParts.forEach((part, i) => {
+      if (i > 0) {
+        const dotSep = document.createElement('span');
+        dotSep.className = 'hl-seg-sep';
+        dotSep.textContent = '.';
+        hlBuilderSegments.appendChild(dotSep);
+      }
 
+      const state = builderDomainPartStates[i];
+
+      if (state === 'fixed') {
+        const chip = document.createElement('span');
+        chip.className = 'hl-seg hl-seg--domain';
+        chip.textContent = part;
+        chip.title = 'TLD — fixed';
+        hlBuilderSegments.appendChild(chip);
+      } else {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = `hl-seg hl-seg--${state === 'wildcard' ? 'any' : 'exact'}`;
+        chip.textContent = state === 'wildcard' ? '*' : part;
+        chip.title = state === 'wildcard'
+          ? `Wildcard (*) — click for exact (${part})`
+          : `${part} — click for wildcard (*)`;
+        chip.addEventListener('click', () => {
+          builderDomainPartStates[i] = state === 'exact' ? 'wildcard' : 'exact';
+          renderBuilder();
+        });
+        hlBuilderSegments.appendChild(chip);
+      }
+    });
+
+    // ── Path segments (split by '/') ──
     builderSegs.forEach((seg, i) => {
       const sep = document.createElement('span');
       sep.className = 'hl-seg-sep';
@@ -339,7 +464,17 @@ export function initHighlight() {
       hlBuilderSegments.appendChild(chip);
     });
 
-    // Update preview
+    // Update trigger host label
+    if (hlBuilderHost) {
+      const domStr = builderDomainParts
+        .map((p, i) => builderDomainPartStates[i] === 'wildcard' ? '*' : p)
+        .join('.');
+      let host = domStr + (builderSegs.length ? '/…' : '');
+      if (host.length > 36) host = host.slice(0, 34) + '…';
+      hlBuilderHost.textContent = host;
+    }
+
+    // Update preview + Use button
     const pat = buildPatternStr();
     if (hlBuilderPreview) hlBuilderPreview.textContent = pat;
     if (hlBuilderUse) {
@@ -425,9 +560,16 @@ export function initHighlight() {
     patterns.forEach((p, idx) => {
       const li = document.createElement('li');
       li.className = 'hl-pattern-item';
-      const matchCount = Object.keys(allData).filter(u => hlMatchPattern(u, p) || u === p).length;
-      const display = p.replace(/\*/g, '<span class="hl-pattern-wildcard">*</span>');
+      const matchCount  = Object.keys(allData).filter(u => hlMatchPattern(u, p) || u === p).length;
+      const isWildcard  = p.includes('*');
+      const isLocalhost = /^(localhost|127\.|0\.0\.0\.)/.test(p);
+      const badgeClass  = isLocalhost ? 'hl-pattern-badge hl-pattern-badge--local'
+                        : isWildcard  ? 'hl-pattern-badge hl-pattern-badge--wildcard'
+                        : 'hl-pattern-badge';
+      const badgeLabel  = isLocalhost ? 'local' : isWildcard ? '* wildcard' : 'exact';
+      const display     = p.replace(/\*/g, '<span class="hl-pattern-wildcard">*</span>');
       li.innerHTML = `
+        <span class="${badgeClass}">${badgeLabel}</span>
         <span class="hl-pattern-item-text">${display}</span>
         ${matchCount ? `<span class="hl-pattern-item-count">${matchCount} URL${matchCount > 1 ? 's' : ''}</span>` : ''}
         <button class="hl-pattern-item-del" data-idx="${idx}" title="Remove pattern">✕</button>`;
@@ -572,82 +714,194 @@ export function initHighlight() {
     emptyEl.style.display = 'none';
 
     const isCurrentTab = selectedUrl === hlNormalizeUrl(activeTabUrl);
+    const otherUrls    = Object.keys(allData)
+      .filter(u => u !== selectedUrl && (allData[u] || []).length > 0);
 
-    listEl.innerHTML = filtered.slice().reverse().map(h => {
-      const cfg     = HL_COLORS[h.color] || HL_COLORS.yellow;
-      const now     = Date.now();
-      const diff    = now - h.createdAt;
-      const relTime = diff < 60000
-        ? 'just now'
-        : diff < 3600000
-          ? `${Math.floor(diff / 60000)}m ago`
-          : diff < 86400000
-            ? `${Math.floor(diff / 3600000)}h ago`
-            : new Date(h.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const preview = h.text.length > 60 ? h.text.slice(0, 60) + '…' : h.text;
-      const excerptHtml = searchQuery ? `<div class="hl-list-excerpt">${buildExcerpt(h.text)}</div>` : '';
-      const remoteLabel = isCurrentTab ? '' : esc(selectedUrl.replace(/^https?:\/\//, '').slice(0, 30)) + ' · ';
+    // Build list using action-list template
+    listEl.innerHTML = '';
+    filtered.slice().reverse().forEach((h, i) => {
+      const cfg      = HL_COLORS[h.color] || HL_COLORS.yellow;
+      const disabled = !!h.disabled;
+      const preview  = h.text.length > 70 ? h.text.slice(0, 70) + '…' : h.text;
 
-      return `
-        <li class="hl-list-item${isCurrentTab ? '' : ' hl-list-item--remote'}" data-hl-id="${h.id}">
-          <div class="hl-list-accent" style="background:${cfg.dot};"></div>
-          <div class="hl-list-body">
-            <div class="hl-list-text">${esc(preview)}</div>
-            ${excerptHtml}
-            <div class="hl-list-meta">
-              ${remoteLabel ? `<span>${remoteLabel}</span><span class="hl-list-meta-sep">·</span>` : ''}
-              <span>${cfg.label}</span>
-              <span class="hl-list-meta-sep">·</span>
-              <span>${relTime}</span>
-            </div>
-          </div>
-          <div class="hl-list-actions">
-            <button class="hl-list-copy" data-text="${esc(h.text)}" title="Copy text">⧉</button>
-            <button class="hl-list-del" data-id="${h.id}" title="Delete">✕</button>
-          </div>
-        </li>`;
-    }).join('');
+      // ── Main li: .index + .type + .value (no btn-row in innerHTML) ──
+      const li = document.createElement('li');
+      li.className = `action hl-${h.color}${disabled ? ' hl-disabled' : ''}`;
+      li.dataset.hlId = h.id;
+      li.innerHTML = `
+        <span class="index">${filtered.length - i}</span>
+        <span class="type">${cfg.label}</span>
+        <span class="value">${searchQuery ? buildExcerpt(h.text) : esc(preview)}</span>`;
 
-    // Scroll-to only for current tab
-    if (isCurrentTab) {
-      listEl.querySelectorAll('.hl-list-item').forEach(item => {
-        item.addEventListener('click', e => {
-          if (e.target.closest('.hl-list-del') || e.target.closest('.hl-list-copy')) return;
-          const id = item.dataset.hlId;
-          chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-            if (!tab?.id) return;
-            chrome.tabs.sendMessage(tab.id, { type: 'HL_SCROLL_TO', id });
-            window.close();
+      // ── btn-row: DOM element, buttons with secondary/danger class ──
+      const btnRow  = document.createElement('div');
+      btnRow.className = 'btn-row';
+
+      const disBtn  = document.createElement('button');
+      disBtn.className   = 'secondary';
+      disBtn.textContent = disabled ? 'Enable' : 'Disable';
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className   = 'secondary';
+      copyBtn.textContent = 'Copy';
+
+      const editBtn = document.createElement('button');
+      editBtn.className   = 'secondary';
+      editBtn.textContent = 'Edit';
+
+      const delBtn  = document.createElement('button');
+      delBtn.className   = 'danger';
+      delBtn.textContent = 'Delete';
+
+      btnRow.append(disBtn, copyBtn, editBtn, delBtn);
+      li.appendChild(btnRow);
+
+      // ── Color picker sub-row ──
+      const colorRow = document.createElement('div');
+      colorRow.className = 'hl-color-picker-row';
+      const colorLabel = document.createElement('span');
+      colorLabel.style.cssText = 'font-size:10px;color:var(--muted)';
+      colorLabel.textContent = 'Color:';
+      colorRow.appendChild(colorLabel);
+      const colorDots = Object.entries(HL_COLORS).map(([c]) => {
+        const dot = document.createElement('div');
+        dot.className = `hl-add-cdot ${c}${c === h.color ? ' sel' : ''}`;
+        dot.title = HL_COLORS[c].label;
+        dot.dataset.color = c;
+        return dot;
+      });
+      colorDots.forEach(d => colorRow.appendChild(d));
+      const colorClose = document.createElement('button');
+      colorClose.className   = 'secondary';
+      colorClose.style.marginLeft = 'auto';
+      colorClose.textContent = '✕';
+      colorRow.appendChild(colorClose);
+
+      // ── Copy-to-URL sub-row ──
+      const copyRow = document.createElement('div');
+      copyRow.className = 'hl-copy-url-row';
+      const copyArrow = document.createElement('span');
+      copyArrow.style.cssText = 'font-size:10px;color:var(--muted)';
+      copyArrow.textContent = '→';
+      const copyRowSel = document.createElement('select');
+      copyRowSel.className = 'copy-url-sel';
+      const defOpt = document.createElement('option');
+      defOpt.value = '';
+      defOpt.textContent = otherUrls.length ? '— Pick page —' : 'No other pages';
+      copyRowSel.appendChild(defOpt);
+      otherUrls.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u;
+        let label = u.replace(/^https?:\/\//, '');
+        if (label.length > 44) label = label.slice(0, 42) + '…';
+        opt.textContent = label;
+        copyRowSel.appendChild(opt);
+      });
+      if (!otherUrls.length) copyRowSel.disabled = true;
+      const copyRowGo = document.createElement('button');
+      copyRowGo.className   = 'secondary';
+      copyRowGo.textContent = 'Add';
+      if (!otherUrls.length) copyRowGo.disabled = true;
+      const copyClose = document.createElement('button');
+      copyClose.className   = 'secondary';
+      copyClose.style.marginLeft = 'auto';
+      copyClose.textContent = '✕';
+      copyRow.append(copyArrow, copyRowSel, copyRowGo, copyClose);
+
+      listEl.appendChild(li);
+      listEl.appendChild(colorRow);
+      listEl.appendChild(copyRow);
+
+      // ── Disable / Enable ──
+      disBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const list = allData[selectedUrl] || [];
+        const item = list.find(x => x.id === h.id);
+        if (!item) return;
+        item.disabled = !item.disabled;
+        chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+          const msgType = item.disabled ? 'HL_SET_HIDDEN' : 'HL_RESTORE';
+          if (isCurrentTab) sendToTab({ type: msgType, id: h.id });
+          render();
+          updateStats();
+        });
+      });
+
+      // ── Edit → open color picker row ──
+      editBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const isOpen = colorRow.classList.contains('open');
+        listEl.querySelectorAll('.hl-color-picker-row.open, .hl-copy-url-row.open').forEach(r => r.classList.remove('open'));
+        if (!isOpen) colorRow.classList.add('open');
+      });
+
+      // Color dot click
+      colorDots.forEach(dot => {
+        dot.addEventListener('click', () => {
+          const newColor = dot.dataset.color;
+          const list = allData[selectedUrl] || [];
+          const item = list.find(x => x.id === h.id);
+          if (!item || item.color === newColor) return;
+          item.color = newColor;
+          chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+            if (isCurrentTab) sendToTab({ type: 'HL_UPDATE_COLOR', id: h.id, color: newColor });
+            colorRow.classList.remove('open');
+            render();
           });
         });
       });
-    }
 
-    // Copy text button
-    listEl.querySelectorAll('.hl-list-copy').forEach(btn => {
-      btn.addEventListener('click', e => {
+      colorClose.addEventListener('click', e => {
         e.stopPropagation();
-        navigator.clipboard.writeText(btn.dataset.text || '').then(() => {
-          showToast('Copied', 'success');
+        colorRow.classList.remove('open');
+      });
+
+      // ── Copy ──
+      copyBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!otherUrls.length) {
+          navigator.clipboard.writeText(h.text).then(() => showToast('Copied', 'success'));
+          return;
+        }
+        const isOpen = copyRow.classList.contains('open');
+        listEl.querySelectorAll('.hl-color-picker-row.open, .hl-copy-url-row.open').forEach(r => r.classList.remove('open'));
+        if (!isOpen) copyRow.classList.add('open');
+      });
+
+      copyRowGo.addEventListener('click', e => {
+        e.stopPropagation();
+        const targetUrl = copyRowSel.value;
+        if (!targetUrl) { showToast('Select a page first', 'warn'); return; }
+        const targetList = allData[targetUrl] || [];
+        if (targetList.some(x => x.text === h.text)) {
+          showToast('Already exists on that page', 'warn');
+          return;
+        }
+        targetList.push({ id: crypto.randomUUID(), text: h.text, color: h.color, createdAt: Date.now() });
+        allData[targetUrl] = targetList;
+        chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+          copyRow.classList.remove('open');
+          showToast('Copied to page', 'success');
+          updateStats();
         });
       });
-    });
 
-    // Delete
-    listEl.querySelectorAll('.hl-list-del').forEach(btn => {
-      btn.addEventListener('click', e => {
+      copyClose.addEventListener('click', e => {
         e.stopPropagation();
-        const id      = btn.dataset.id;
-        const hl      = (allData[selectedUrl] || []).find(h => h.id === id);
-        const preview = hl ? (hl.text.length > 60 ? hl.text.slice(0, 60) + '…' : hl.text) : '';
+        copyRow.classList.remove('open');
+      });
 
+      // ── Delete ──
+      delBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const textPrev = h.text.length > 60 ? h.text.slice(0, 60) + '…' : h.text;
         showConfirm(
-          preview ? `"${preview}"` : 'Remove this highlight?',
+          textPrev ? `"${textPrev}"` : 'Remove this highlight?',
           () => {
             if (isCurrentTab) {
-              sendToTab({ type: 'HL_REMOVE', id }, () => load());
+              sendToTab({ type: 'HL_REMOVE', id: h.id }, () => load());
             } else {
-              const list = (allData[selectedUrl] || []).filter(h => h.id !== id);
+              const list = (allData[selectedUrl] || []).filter(x => x.id !== h.id);
               if (list.length === 0) delete allData[selectedUrl];
               else allData[selectedUrl] = list;
               chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => load());
@@ -657,6 +911,18 @@ export function initHighlight() {
           { title: 'Remove highlight', danger: true, okLabel: 'Remove' }
         );
       });
+
+      // ── Scroll to on click (current tab only) ──
+      if (isCurrentTab) {
+        li.addEventListener('click', e => {
+          if (e.target.closest('.btn-row')) return;
+          chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+            if (!tab?.id) return;
+            chrome.tabs.sendMessage(tab.id, { type: 'HL_SCROLL_TO', id: h.id });
+            window.close();
+          });
+        });
+      }
     });
   }
 
@@ -671,15 +937,23 @@ export function initHighlight() {
   }
 
   function updateStats() {
-    const pageList = allData[selectedUrl] || [];
-    const allKeys  = Object.keys(allData).filter(k => allData[k]?.length > 0);
-    const totalAll = allKeys.reduce((s, k) => s + allData[k].length, 0);
-    statPage.textContent  = pageList.length || '0';
-    statTotal.textContent = totalAll        || '0';
-    statPages.textContent = allKeys.length  || '—';
+    const pageList  = allData[selectedUrl] || [];
+    const allKeys   = Object.keys(allData).filter(k => allData[k]?.length > 0);
+    const totalAll  = allKeys.reduce((s, k) => s + allData[k].length, 0);
+    const pageCount = pageList.length || 0;
+    const pagesCount = allKeys.length || 0;
 
-    renderColorBar('hlStatBarPage', pageList);
+    // Compact bar
+    if (statPage)  statPage.textContent  = pageCount;
+    if (statTotal) statTotal.textContent = totalAll || '0';
+    if (statPages) statPages.textContent = pagesCount || '—';
+    // Detail section
+    if (statPageD)  statPageD.textContent  = pageCount;
+    if (statTotalD) statTotalD.textContent = totalAll || '0';
+    if (statPagesD) statPagesD.textContent = pagesCount || '—';
+
     const allHighlights = allKeys.flatMap(k => allData[k]);
+    renderColorBar('hlStatBarPage',  pageList);
     renderColorBar('hlStatBarTotal', allHighlights);
   }
 

@@ -805,20 +805,29 @@
           </label>
         </div>
 
-        <!-- Stats grid: 3 raised pills -->
-        <div class="hl-stats-grid">
+        <!-- Stats: compact 1-line bar (expandable) -->
+        <div class="hl-stats-bar" id="hlStatsBar">
+          <span>📄 <span class="hl-stats-bar-val" id="hlStatPage">0</span> this page</span>
+          <span class="hl-stats-bar-sep">·</span>
+          <span><span class="hl-stats-bar-val" id="hlStatTotal">0</span> total</span>
+          <span class="hl-stats-bar-sep">·</span>
+          <span><span class="hl-stats-bar-val" id="hlStatPages">—</span> pages</span>
+          <button class="hl-stats-detail-btn" id="hlStatsDetailBtn">▾ Details</button>
+        </div>
+        <!-- Expanded stats detail (hidden by default) -->
+        <div class="hl-stats-detail" id="hlStatsDetail">
           <div class="hl-stat-pill">
-            <div class="hl-stat-num" id="hlStatPage">0</div>
+            <div class="hl-stat-num" id="hlStatPageDetail">0</div>
             <div class="hl-stat-lbl">This page</div>
             <div class="hl-stat-colorbar" id="hlStatBarPage"></div>
           </div>
           <div class="hl-stat-pill">
-            <div class="hl-stat-num" id="hlStatTotal">0</div>
+            <div class="hl-stat-num" id="hlStatTotalDetail">0</div>
             <div class="hl-stat-lbl">Total</div>
             <div class="hl-stat-colorbar" id="hlStatBarTotal"></div>
           </div>
           <div class="hl-stat-pill">
-            <div class="hl-stat-num" id="hlStatPages">—</div>
+            <div class="hl-stat-num" id="hlStatPagesDetail">—</div>
             <div class="hl-stat-lbl">Pages</div>
           </div>
         </div>
@@ -838,7 +847,7 @@
           <button id="hlUrlClearBtn" class="hl-url-clear-btn" title="Clear highlights for this page" style="display:none;">🗑</button>
         </div>
 
-        <!-- Unified search + colour filter -->
+        <!-- Unified search + colour filter + add button -->
         <div class="hl-search-filter">
           <span class="hl-search-icon">🔍</span>
           <input type="text" id="hlSearch" class="hl-search" placeholder="Search highlights…" autocomplete="off">
@@ -853,6 +862,25 @@
               <button class="hl-swatch" data-color="orange" title="Orange"><span class="hl-swatch-badge" id="hlBadgeOrange"></span></button>
             </div>
           </div>
+          <button class="hl-add-trigger" id="hlAddTrigger" title="Add highlight manually">+ Add</button>
+        </div>
+
+        <!-- Manual add form (hidden by default) -->
+        <div class="hl-add-form" id="hlAddForm">
+          <div class="hl-add-form-title">✏ Add highlight manually</div>
+          <textarea id="hlAddText" placeholder="Paste text to highlight…" rows="2"></textarea>
+          <div class="hl-add-color-row">
+            <span>Color:</span>
+            <div class="hl-add-cdot yellow sel" data-color="yellow"></div>
+            <div class="hl-add-cdot green"      data-color="green"></div>
+            <div class="hl-add-cdot pink"       data-color="pink"></div>
+            <div class="hl-add-cdot blue"       data-color="blue"></div>
+            <div class="hl-add-cdot orange"     data-color="orange"></div>
+          </div>
+          <div class="hl-add-footer">
+            <button class="secondary" id="hlAddCancelBtn">Cancel</button>
+            <button id="hlAddSubmitBtn">Add</button>
+          </div>
         </div>
 
         <!-- Empty state -->
@@ -861,8 +889,8 @@
           <div>Select text on the page to highlight</div>
         </div>
 
-        <!-- Highlight list -->
-        <ul class="hl-list" id="hlList"></ul>
+        <!-- Highlight list (uses .actions template) -->
+        <ul class="actions" id="hlList"></ul>
 
         <!-- Clear page highlights -->
         <button id="hlClearBtn" class="danger" style="display:none;width:100%;margin-top:8px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
@@ -886,7 +914,7 @@
               <span class="hl-builder-trigger-caret" id="hlBuilderCaret">▾</span>
             </button>
             <div class="hl-builder-panel" id="hlBuilderPanel" style="display:none;">
-              <div class="hl-builder-hint">Click a segment to toggle: <span class="hl-seg hl-seg--exact hl-seg--sm">exact</span> → <span class="hl-seg hl-seg--any hl-seg--sm">*</span> → <span class="hl-seg hl-seg--end hl-seg--sm">off</span></div>
+              <div class="hl-builder-hint">Click <b>subdomain</b> to toggle exact↔* &nbsp;|&nbsp; Click <b>path</b>: <span class="hl-seg hl-seg--exact hl-seg--sm">exact</span> → <span class="hl-seg hl-seg--any hl-seg--sm">*</span> → <span class="hl-seg hl-seg--end hl-seg--sm">off</span></div>
               <div class="hl-builder-segments" id="hlBuilderSegments"></div>
               <div class="hl-builder-footer">
                 <div class="hl-builder-preview" id="hlBuilderPreview"></div>
@@ -894,13 +922,17 @@
               </div>
             </div>
           </div>
-          <div class="hl-pattern-hint">Use <code>*</code> to match any segment, e.g. <code>site.com/*/settings</code></div>
+          <div class="hl-pattern-hint">Use <code>*</code> in path <em>and</em> subdomain. E.g. <code>site.com/*/settings</code> or <code>*.myapp.com/app/*</code></div>
           <div class="hl-pattern-input-row">
             <input type="text" id="hlPatternInput" class="hl-pattern-input" placeholder="example.com/account/*/settings">
             <button id="hlPatternAddBtn" class="hl-pattern-add-btn">Add</button>
           </div>
           <div class="hl-val-msg" id="hlValMsg" style="display:none;"></div>
           <ul id="hlPatternList" class="hl-pattern-list"></ul>
+          <!-- From current domain -->
+          <button class="hl-from-domain-btn" id="hlFromDomainBtn" style="display:none;">
+            🌐 Add from current domain: <strong id="hlFromDomainLabel"></strong>
+          </button>
         </div>
       </div>
 
