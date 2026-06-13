@@ -53,12 +53,6 @@ export function initHighlight() {
   const hlModePill   = document.getElementById('hlModePill');
   const hlModeLabel  = document.getElementById('hlModeLabel');
   const hlExportBtn  = document.getElementById('hlExportBtn');
-  // Manual add form
-  const hlAddTrigger    = document.getElementById('hlAddTrigger');
-  const hlAddForm       = document.getElementById('hlAddForm');
-  const hlAddText       = document.getElementById('hlAddText');
-  const hlAddSubmitBtn  = document.getElementById('hlAddSubmitBtn');
-  const hlAddCancelBtn  = document.getElementById('hlAddCancelBtn');
   // Pattern editor
   const patternHeader      = document.getElementById('hlPatternHeader');
   const patternInput       = document.getElementById('hlPatternInput');
@@ -83,6 +77,7 @@ export function initHighlight() {
   let activeTabUrl  = '';
   let selectedUrl   = '';
   let patterns      = [];
+  let openEditId    = null;   // highlight id whose Edit row (color + note) is open
 
   // Builder state
   let builderDomain           = '';
@@ -153,54 +148,6 @@ export function initHighlight() {
       const open = statsDetail.classList.toggle('open');
       statsDetailBtn.textContent = open ? '▴ Details' : '▾ Details';
     });
-  }
-
-  // ── Manual add form ──
-  let addSelectedColor = 'yellow';
-
-  if (hlAddTrigger && hlAddForm) {
-    hlAddTrigger.addEventListener('click', () => {
-      hlAddForm.classList.toggle('open');
-      if (hlAddForm.classList.contains('open')) hlAddText?.focus();
-    });
-  }
-
-  if (hlAddForm) {
-    // Color dot selection
-    hlAddForm.querySelectorAll('.hl-add-cdot').forEach(dot => {
-      dot.addEventListener('click', () => {
-        hlAddForm.querySelectorAll('.hl-add-cdot').forEach(d => d.classList.remove('sel'));
-        dot.classList.add('sel');
-        addSelectedColor = dot.dataset.color || 'yellow';
-      });
-    });
-
-    if (hlAddCancelBtn) {
-      hlAddCancelBtn.addEventListener('click', () => {
-        hlAddForm.classList.remove('open');
-        if (hlAddText) hlAddText.value = '';
-      });
-    }
-
-    if (hlAddSubmitBtn) {
-      hlAddSubmitBtn.addEventListener('click', () => {
-        const text = hlAddText?.value.trim();
-        if (!text) { showToast('Enter text to highlight', 'warn'); return; }
-        if (!selectedUrl) { showToast('No page selected', 'warn'); return; }
-        const list = allData[selectedUrl] || [];
-        if (list.some(h => h.text === text)) { showToast('Already exists', 'warn'); return; }
-        list.push({ id: crypto.randomUUID(), text, color: addSelectedColor, createdAt: Date.now() });
-        allData[selectedUrl] = list;
-        chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
-          hlAddForm.classList.remove('open');
-          if (hlAddText) hlAddText.value = '';
-          render();
-          updateStats();
-          updateSwatchBadges();
-          showToast('Highlight added', 'success');
-        });
-      });
-    }
   }
 
   // ── Filter row: "All" pill + color swatches ──
@@ -678,7 +625,8 @@ export function initHighlight() {
 
     if (searchQuery) {
       filtered = filtered.filter(h =>
-        h.text.toLowerCase().includes(searchQuery)
+        h.text.toLowerCase().includes(searchQuery) ||
+        (h.note || '').toLowerCase().includes(searchQuery)
       );
     }
 
@@ -711,7 +659,7 @@ export function initHighlight() {
       li.innerHTML = `
         <span class="index">${i + 1}</span>
         <span class="type">${cfg.label}</span>
-        <span class="value">${searchQuery ? buildExcerpt(h.text) : esc(preview)}</span>`;
+        <span class="value">${searchQuery ? buildExcerpt(h.text) : esc(preview)}${h.note ? `<span class="hl-note-flag" title="${esc(h.note)}">📝</span>` : ''}</span>`;
 
       // ── btn-row: DOM element, buttons with secondary/danger class ──
       const btnRow  = document.createElement('div');
@@ -736,13 +684,18 @@ export function initHighlight() {
       btnRow.append(disBtn, copyBtn, editBtn, delBtn);
       li.appendChild(btnRow);
 
-      // ── Color picker sub-row ──
+      // ── Edit sub-row: color picker + note (opened by the Edit button) ──
       const colorRow = document.createElement('div');
-      colorRow.className = 'hl-color-picker-row';
+      colorRow.className = 'hl-color-picker-row hl-edit-row';
+      if (h.id === openEditId) colorRow.classList.add('open');
+
+      // Line 1: colour swatches
+      const colorLine = document.createElement('div');
+      colorLine.className = 'hl-edit-line';
       const colorLabel = document.createElement('span');
       colorLabel.style.cssText = 'font-size:10px;color:var(--muted)';
       colorLabel.textContent = 'Color:';
-      colorRow.appendChild(colorLabel);
+      colorLine.appendChild(colorLabel);
       const colorDots = Object.keys(HL_COLORS).map(c => {
         const dot = document.createElement('div');
         dot.className = `hl-add-cdot ${c}${c === h.color ? ' sel' : ''}`;
@@ -750,12 +703,29 @@ export function initHighlight() {
         dot.dataset.color = c;
         return dot;
       });
-      colorDots.forEach(d => colorRow.appendChild(d));
+      colorDots.forEach(d => colorLine.appendChild(d));
       const colorClose = document.createElement('button');
       colorClose.className   = 'secondary';
       colorClose.style.marginLeft = 'auto';
       colorClose.textContent = '✕';
-      colorRow.appendChild(colorClose);
+      colorLine.appendChild(colorClose);
+
+      // Line 2: note editor
+      const noteLine = document.createElement('div');
+      noteLine.className = 'hl-edit-line hl-edit-note';
+      const noteLabel = document.createElement('span');
+      noteLabel.style.cssText = 'font-size:10px;color:var(--muted);padding-top:4px;';
+      noteLabel.textContent = 'Note:';
+      const noteInput = document.createElement('textarea');
+      noteInput.className = 'hl-note-input';
+      noteInput.placeholder = 'Add a note for this highlight…';
+      noteInput.value = h.note || '';
+      const noteSave = document.createElement('button');
+      noteSave.className   = 'secondary';
+      noteSave.textContent = 'Save';
+      noteLine.append(noteLabel, noteInput, noteSave);
+
+      colorRow.append(colorLine, noteLine);
 
       // ── Copy-to-URL sub-row ──
       const copyRow = document.createElement('div');
@@ -807,15 +777,16 @@ export function initHighlight() {
         });
       });
 
-      // ── Edit → open color picker row ──
+      // ── Edit → open colour + note row (stays open across colour changes) ──
       editBtn.addEventListener('click', e => {
         e.stopPropagation();
-        const isOpen = colorRow.classList.contains('open');
+        const willOpen = openEditId !== h.id;
         listEl.querySelectorAll('.hl-color-picker-row.open, .hl-copy-url-row.open').forEach(r => r.classList.remove('open'));
-        if (!isOpen) colorRow.classList.add('open');
+        openEditId = willOpen ? h.id : null;
+        if (willOpen) { colorRow.classList.add('open'); noteInput.focus(); }
       });
 
-      // Color dot click
+      // Color dot click — keeps the edit row open so the note can still be edited.
       colorDots.forEach(dot => {
         dot.addEventListener('click', () => {
           const newColor = dot.dataset.color;
@@ -825,7 +796,6 @@ export function initHighlight() {
           item.color = newColor;
           chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
             if (isCurrentTab) sendToTab({ type: 'HL_UPDATE_COLOR', id: h.id, color: newColor });
-            colorRow.classList.remove('open');
             render();
           });
         });
@@ -833,7 +803,24 @@ export function initHighlight() {
 
       colorClose.addEventListener('click', e => {
         e.stopPropagation();
+        openEditId = null;
         colorRow.classList.remove('open');
+      });
+
+      // ── Save note (within the edit row) ──
+      noteSave.addEventListener('click', e => {
+        e.stopPropagation();
+        const list = allData[selectedUrl] || [];
+        const item = list.find(x => x.id === h.id);
+        if (!item) return;
+        const val = noteInput.value.trim();
+        item.note = val;
+        openEditId = null;
+        chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+          if (isCurrentTab) sendToTab({ type: 'HL_UPDATE_NOTE', id: h.id, note: val });
+          showToast(val ? 'Note saved' : 'Note cleared', 'success');
+          render();
+        });
       });
 
       // ── Copy ──
@@ -844,6 +831,7 @@ export function initHighlight() {
           return;
         }
         const isOpen = copyRow.classList.contains('open');
+        openEditId = null;
         listEl.querySelectorAll('.hl-color-picker-row.open, .hl-copy-url-row.open').forEach(r => r.classList.remove('open'));
         if (!isOpen) copyRow.classList.add('open');
       });
@@ -857,7 +845,7 @@ export function initHighlight() {
           showToast('Already exists on that page', 'warn');
           return;
         }
-        targetList.push({ id: crypto.randomUUID(), text: h.text, color: h.color, createdAt: Date.now() });
+        targetList.push({ id: crypto.randomUUID(), text: h.text, color: h.color, note: h.note || '', createdAt: Date.now() });
         allData[targetUrl] = targetList;
         chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
           copyRow.classList.remove('open');

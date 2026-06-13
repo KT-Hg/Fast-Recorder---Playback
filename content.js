@@ -1257,6 +1257,7 @@ function _hlSetEnabled(on) {
       _hlObserver = null;
       _hlHideTip();
     }
+    _hlHideNotePop();
   }
 }
 
@@ -1284,21 +1285,27 @@ function _hlNormalizeUrl(url) {
 function _hlInit() {
   try {
     if (!_hlCtxOk()) { _hlSetEnabled(true); return; }
-    chrome.storage.local.get(['hl_enabled', _HL_PATTERNS_KEY], res => {
+    chrome.storage.local.get(['hl_enabled', _HL_PATTERNS_KEY, 'popupTheme'], res => {
       try {
         void chrome.runtime.lastError;
         _hlPatterns = res[_HL_PATTERNS_KEY] || [];
+        _hlTheme = res.popupTheme === 'dark' ? 'dark' : 'light';
+        _hlApplyTipTheme();
         _hlSetEnabled(res.hl_enabled !== false);
       } catch (_) { _hlSetEnabled(true); }
     });
   } catch (_) { _hlSetEnabled(true); }
 }
 
-// Keep patterns in sync when popup changes them
+// Keep patterns + theme in sync when popup changes them
 try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[_HL_PATTERNS_KEY]) {
       _hlPatterns = changes[_HL_PATTERNS_KEY].newValue || [];
+    }
+    if (area === 'local' && changes.popupTheme) {
+      _hlTheme = changes.popupTheme.newValue === 'dark' ? 'dark' : 'light';
+      _hlApplyTipTheme();
     }
   });
 } catch (_) {}
@@ -1342,6 +1349,27 @@ let _hlRange = null;
 let _hlAnchor = '';
 let _hlParentSel = '';
 
+// Tooltip mode: 'create' (from text selection) or 'edit' (hovering an existing
+// highlight).  Both share one tooltip element — colour swatches + a note field.
+let _hlTipMode    = 'create';
+let _hlTipEditId  = null;
+let _hlColorBtns  = {};     // color → swatch button
+let _hlNoteWrap   = null;
+let _hlNoteInput  = null;
+let _hlNoteSaveBtn = null;
+let _hlNoteHint   = null;
+let _hlDelBtn     = null;
+let _hlNoteBtn    = null;
+let _hlTipLabel   = null;
+let _hlNotePop    = null;   // small bubble showing a highlight's note on hover
+
+// Tooltip colour palettes — mirror the popup's light / dark theme.
+const _HL_TIP_THEMES = {
+  dark:  { bg:'#1e1e2e', border:'rgba(255,255,255,0.12)', text:'#cdd6f4', sub:'rgba(205,214,244,0.55)', taBg:'#11111b', btnBorder:'rgba(255,255,255,0.18)' },
+  light: { bg:'#ffffff', border:'rgba(0,0,0,0.14)',       text:'#1e1e2e', sub:'rgba(60,60,70,0.6)',      taBg:'#f4f4f7', btnBorder:'rgba(0,0,0,0.18)' },
+};
+let _hlTheme = 'dark';
+
 function _hlTipEl() {
   if (_hlTip) return _hlTip;
   const d = document.createElement('div');
@@ -1360,6 +1388,7 @@ function _hlTipEl() {
   const lbl = document.createElement('div');
   lbl.textContent = 'Highlight color:';
   lbl.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;line-height:1;';
+  _hlTipLabel = lbl;
   d.appendChild(lbl);
 
   const row = document.createElement('div');
@@ -1367,6 +1396,7 @@ function _hlTipEl() {
 
   const DOTS = { yellow:'#fde047', green:'#86efac', pink:'#f9a8d4', blue:'#93c5fd', orange:'#fdba74' };
   const LABELS = { yellow:'Yellow', green:'Green', pink:'Pink', blue:'Blue', orange:'Orange' };
+  _hlColorBtns = {};
   Object.keys(DOTS).forEach(color => {
     const btn = document.createElement('button');
     btn.style.cssText = [
@@ -1379,21 +1409,161 @@ function _hlTipEl() {
     ].join(';');
     btn.title = LABELS[color];
     btn.addEventListener('mouseenter', () => { btn.style.transform = 'scale(1.25)'; btn.style.borderColor = 'rgba(255,255,255,0.7)'; });
-    btn.addEventListener('mouseleave', () => { btn.style.transform = ''; btn.style.borderColor = 'transparent'; });
+    btn.addEventListener('mouseleave', () => { btn.style.transform = ''; btn.style.borderColor = btn.dataset.sel === '1' ? 'rgba(255,255,255,0.9)' : 'transparent'; });
     btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
-    btn.addEventListener('click', e => { e.stopPropagation(); _hlApply(color); });
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      if (_hlTipMode === 'edit') _hlEditSetColor(color);
+      else _hlApply(color);
+    });
+    _hlColorBtns[color] = btn;
     row.appendChild(btn);
   });
+
+  // Note toggle button — placed after the orange swatch.
+  const noteBtn = document.createElement('button');
+  noteBtn.textContent = '📝';
+  noteBtn.title = 'Note';
+  noteBtn.style.cssText = [
+    'all:initial', 'cursor:pointer', 'font-size:16px', 'line-height:1',
+    'width:24px', 'height:24px', 'border-radius:6px', 'text-align:center',
+    'border:1px solid rgba(255,255,255,0.18)', 'box-sizing:border-box',
+    'margin-left:2px', 'transition:background 0.1s',
+  ].join(';');
+  noteBtn.addEventListener('mouseenter', () => { noteBtn.style.background = 'rgba(255,255,255,0.12)'; });
+  noteBtn.addEventListener('mouseleave', () => { noteBtn.style.background = 'transparent'; });
+  noteBtn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+  noteBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = _hlNoteWrap.style.display !== 'none';
+    _hlNoteWrap.style.display = open ? 'none' : 'flex';
+    if (!open) _hlNoteInput.focus();
+  });
+  _hlNoteBtn = noteBtn;
+  row.appendChild(noteBtn);
+
+  // Delete button — shown only in edit mode (existing highlight).
+  // Solid red with a white SVG icon so it stays clearly visible in both themes
+  // (the 🗑 emoji renders dark and gets lost on the dark tooltip).
+  const delBtn = document.createElement('button');
+  delBtn.title = 'Delete highlight';
+  delBtn.innerHTML = [
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff"',
+    ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">',
+    '<polyline points="3 6 5 6 21 6"></polyline>',
+    '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>',
+    '<line x1="10" y1="11" x2="10" y2="17"></line>',
+    '<line x1="14" y1="11" x2="14" y2="17"></line>',
+    '<path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>',
+    '</svg>',
+  ].join('');
+  delBtn.style.cssText = [
+    'all:initial', 'cursor:pointer', 'line-height:0',
+    'display:none', 'align-items:center', 'justify-content:center',
+    'width:26px', 'height:26px', 'border-radius:6px',
+    'background:#ef4444', 'border:1px solid #ef4444',
+    'box-sizing:border-box', 'margin-left:auto', 'transition:background 0.1s',
+  ].join(';');
+  delBtn.addEventListener('mouseenter', () => { delBtn.style.background = '#dc2626'; });
+  delBtn.addEventListener('mouseleave', () => { delBtn.style.background = '#ef4444'; });
+  delBtn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+  delBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    if (_hlTipMode === 'edit' && _hlTipEditId) {
+      _hlRemove(_hlTipEditId);
+      _hlHideTip();
+    }
+  });
+  row.appendChild(delBtn);
   d.appendChild(row);
+
+  // Note editor (collapsible).
+  const nw = document.createElement('div');
+  nw.style.cssText = 'display:none;flex-direction:column;gap:4px;margin-top:2px;font-family:inherit;';
+
+  const ta = document.createElement('textarea');
+  ta.placeholder = 'Add a note…';
+  ta.rows = 2;
+  ta.style.cssText = [
+    'all:initial', 'box-sizing:border-box', 'width:180px', 'resize:vertical',
+    'min-height:38px', 'padding:5px 6px', 'border-radius:6px',
+    'border:1px solid rgba(255,255,255,0.18)', 'background:#11111b',
+    'color:#cdd6f4', 'font-family:inherit', 'font-size:11px', 'line-height:1.4',
+  ].join(';');
+  ta.addEventListener('mousedown', e => e.stopPropagation());
+  ta.addEventListener('mouseup',   e => e.stopPropagation());
+  ta.addEventListener('click',     e => e.stopPropagation());
+  ta.addEventListener('keydown',   e => e.stopPropagation());
+  nw.appendChild(ta);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;font-family:inherit;';
+
+  const hint = document.createElement('span');
+  hint.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save note';
+  saveBtn.style.cssText = [
+    'all:initial', 'cursor:pointer', 'font-family:inherit', 'font-size:11px',
+    'padding:3px 10px', 'border-radius:6px', 'color:#fff',
+    'background:#4f46e5', 'border:1px solid rgba(255,255,255,0.15)',
+  ].join(';');
+  saveBtn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
+  saveBtn.addEventListener('click', e => { e.stopPropagation(); if (_hlTipMode === 'edit') _hlEditSaveNote(); });
+
+  actions.appendChild(hint);
+  actions.appendChild(saveBtn);
+  nw.appendChild(actions);
+  d.appendChild(nw);
+
   document.documentElement.appendChild(d);
   _hlTip = d;
+  _hlNoteWrap = nw;
+  _hlNoteInput = ta;
+  _hlNoteSaveBtn = saveBtn;
+  _hlNoteHint = hint;
+  _hlDelBtn = delBtn;
+  _hlApplyTipTheme();
   return d;
 }
 
-function _hlShowTip(rect) {
-  const tt = _hlTipEl();
-  tt.style.display = 'flex';
-  const tw = tt.offsetWidth || 195, th = tt.offsetHeight || 70;
+// ── Apply the current theme's palette to the tooltip + note bubble ──
+function _hlApplyTipTheme() {
+  const t = _HL_TIP_THEMES[_hlTheme] || _HL_TIP_THEMES.dark;
+  if (_hlTip) {
+    _hlTip.style.background  = t.bg;
+    _hlTip.style.borderColor = t.border;
+    _hlTip.style.color       = t.text;
+    _hlTip.style.boxShadow   = _hlTheme === 'light'
+      ? '0 4px 24px rgba(0,0,0,0.18)' : '0 4px 24px rgba(0,0,0,0.45)';
+  }
+  if (_hlTipLabel)  _hlTipLabel.style.color = t.sub;
+  if (_hlNoteHint)  _hlNoteHint.style.color = t.sub;
+  if (_hlNoteInput) {
+    _hlNoteInput.style.background  = t.taBg;
+    _hlNoteInput.style.color       = t.text;
+    _hlNoteInput.style.borderColor = t.btnBorder;
+  }
+  if (_hlNoteBtn) _hlNoteBtn.style.borderColor = t.btnBorder;
+  if (_hlNotePop) {
+    _hlNotePop.style.background  = t.bg;
+    _hlNotePop.style.borderColor = t.border;
+    _hlNotePop.style.color       = t.text;
+    _hlNotePop.style.boxShadow   = _hlTheme === 'light'
+      ? '0 6px 22px rgba(0,0,0,0.18)' : '0 6px 22px rgba(0,0,0,0.45)';
+    if (_hlNotePop._arrow) {
+      const arrow = _hlNotePop._arrow;
+      arrow.style.background = t.bg;
+      // Stash the themed border shorthand for _hlPositionNotePop's two sides.
+      arrow._border = `1px solid ${t.border}`;
+    }
+  }
+}
+
+function _hlPositionTip(rect) {
+  const tt = _hlTip;
+  const tw = tt.offsetWidth || 200, th = tt.offsetHeight || 80;
   let top  = rect.top - th - 10;
   let left = rect.left + rect.width / 2 - tw / 2;
   if (top < 8) top = rect.bottom + 10;
@@ -1402,11 +1572,87 @@ function _hlShowTip(rect) {
   tt.style.left = left + 'px';
 }
 
+// Configure swatch selection rings; pass null to clear all (create mode).
+function _hlSetSwatchSel(color) {
+  Object.entries(_hlColorBtns).forEach(([c, b]) => {
+    const sel = c === color;
+    b.dataset.sel = sel ? '1' : '';
+    b.style.borderColor = sel ? 'rgba(255,255,255,0.9)' : 'transparent';
+  });
+}
+
+// ── Show tooltip for a fresh selection (create mode) ──
+function _hlShowTip(rect) {
+  _hlTipEl();
+  _hlTipMode   = 'create';
+  _hlTipEditId = null;
+  _hlNoteInput.value      = '';
+  _hlNoteWrap.style.display = 'none';
+  _hlNoteHint.textContent = 'Pick a color to apply';
+  _hlNoteSaveBtn.style.display = 'none';
+  _hlDelBtn.style.display = 'none';
+  _hlHideNotePop();
+  _hlSetSwatchSel(null);
+  _hlTip.style.display = 'flex';
+  _hlPositionTip(rect);
+}
+
+// ── Show tooltip for an existing highlight (edit mode) — opened by clicking it ──
+function _hlShowEditTipFor(mark) {
+  const id = mark.dataset.hlId;
+  if (!id) return;
+  _hlGetPage(list => {
+    const h = list.find(x => x.id === id);
+    if (!h) return;
+    _hlTipEl();
+    _hlTipMode   = 'edit';
+    _hlTipEditId = id;
+    _hlNoteInput.value        = h.note || '';
+    _hlNoteWrap.style.display = h.note ? 'flex' : 'none';
+    _hlNoteHint.textContent   = '';
+    _hlNoteSaveBtn.style.display = '';
+    _hlDelBtn.style.display   = 'inline-flex';
+    _hlSetSwatchSel(h.color);
+    _hlHideNotePop();
+    _hlTip.style.display = 'flex';
+    _hlPositionTip(mark.getBoundingClientRect());
+  });
+}
+
+// ── Edit-mode actions ──
+function _hlEditSetColor(color) {
+  if (!_hlTipEditId) return;
+  const id = _hlTipEditId;
+  document.querySelectorAll(`[data-hl-id="${id}"]`).forEach(m => {
+    m.dataset.hlColor = color;
+    if (!m.dataset.hlHidden) m.style.setProperty('background-color', _hlBg(color), 'important');
+  });
+  _hlSetSwatchSel(color);
+  _hlGetPage(list => {
+    const item = list.find(h => h.id === id);
+    if (item) { item.color = color; _hlSavePage(list); }
+  });
+}
+
+function _hlEditSaveNote() {
+  if (!_hlTipEditId) return;
+  const id = _hlTipEditId;
+  const note = (_hlNoteInput.value || '').trim();
+  _hlApplyNote(id, note);
+  _hlGetPage(list => {
+    const item = list.find(h => h.id === id);
+    if (item) { item.note = note; _hlSavePage(list, () => _hlHideTip()); }
+    else _hlHideTip();
+  });
+}
+
 function _hlHideTip() {
   if (_hlTip) _hlTip.style.display = 'none';
   _hlRange = null;
   _hlAnchor = '';
   _hlParentSel = '';
+  _hlTipMode   = 'create';
+  _hlTipEditId = null;
 }
 
 document.addEventListener('mouseup', e => {
@@ -1416,7 +1662,7 @@ document.addEventListener('mouseup', e => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) { _hlHideTip(); return; }
     const text = sel.toString().trim();
-    if (!text || text.length < 2) { _hlHideTip(); return; }
+    if (!text) { _hlHideTip(); return; }
     const range = sel.getRangeAt(0);
     if (e.target?.closest?.('[data-hl-ui]')) return;
     _hlRange = range.cloneRange();
@@ -1428,6 +1674,189 @@ document.addEventListener('mouseup', e => {
 
 document.addEventListener('mousedown', e => {
   if (!e.target?.closest?.('[data-hl-ui]')) _hlHideTip();
+}, true);
+
+/* ── Note hover bubble — shows ONLY the note text (not the edit tooltip) ──
+   Features: fade in/out, hover-intent delay, an arrow pointing at the mark,
+   and an interactive body (hover in to select/copy text or click links). */
+const _HL_NOTE_SHOW_DELAY = 280;   // ms of hover before the bubble appears
+const _HL_NOTE_HIDE_DELAY = 200;   // ms grace to cross the gap into the bubble
+let _hlNotePopMark = null;          // mark the bubble is currently showing for
+let _hlNotePopShowT = null;
+let _hlNotePopHideT = null;
+
+function _hlNotePopEl() {
+  if (_hlNotePop) return _hlNotePop;
+  const d = document.createElement('div');
+  d.setAttribute('data-hl-ui', '1');
+  d.style.cssText = [
+    'all:initial', 'box-sizing:border-box', 'position:fixed',
+    'z-index:2147483646', 'display:none', 'opacity:0',
+    'transform:translateY(4px)',
+    'transition:opacity 0.14s ease, transform 0.14s ease',
+    'max-width:300px', 'background:#1e1e2e',
+    'border:1px solid rgba(255,255,255,0.12)', 'border-radius:9px',
+    'padding:7px 10px 8px', 'box-shadow:0 6px 22px rgba(0,0,0,0.45)',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'color:#cdd6f4', 'pointer-events:auto',
+  ].join(';');
+
+  // Header label "📝 Note"
+  const head = document.createElement('div');
+  head.textContent = '📝 Note';
+  head.style.cssText = [
+    'all:initial', 'display:block', 'font-family:inherit',
+    'font-size:10px', 'font-weight:600', 'letter-spacing:0.4px',
+    'text-transform:uppercase', 'opacity:0.55', 'margin:0 0 4px',
+    'user-select:none', 'pointer-events:none',
+  ].join(';');
+
+  // Scrollable body holding the note text (and any linkified URLs)
+  const body = document.createElement('div');
+  body.style.cssText = [
+    'all:initial', 'display:block', 'font-family:inherit',
+    'white-space:pre-wrap', 'word-break:break-word', 'font-size:12.5px',
+    'line-height:1.5', 'color:inherit', 'max-height:200px',
+    'overflow-y:auto', 'user-select:text', 'cursor:text',
+  ].join(';');
+
+  // Arrow pointing at the highlighted mark (a rotated square)
+  const arrow = document.createElement('div');
+  arrow.style.cssText = [
+    'all:initial', 'position:absolute', 'width:9px', 'height:9px',
+    'background:#1e1e2e', 'transform:rotate(45deg)', 'pointer-events:none',
+  ].join(';');
+
+  d.appendChild(head);
+  d.appendChild(body);
+  d.appendChild(arrow);
+  d._body = body;
+  d._arrow = arrow;
+
+  // Keep the bubble open while the pointer is inside it.
+  d.addEventListener('mouseenter', () => { clearTimeout(_hlNotePopHideT); });
+  d.addEventListener('mouseleave', _hlScheduleHideNotePop);
+
+  document.documentElement.appendChild(d);
+  _hlNotePop = d;
+  _hlApplyTipTheme();
+  return d;
+}
+
+function _hlPositionNotePop(pop, mark) {
+  const r  = mark.getBoundingClientRect();
+  const pw = pop.offsetWidth || 220, ph = pop.offsetHeight || 48;
+  const markCx = r.left + r.width / 2;
+
+  let above = true;
+  let top = r.top - ph - 9;
+  if (top < 8) { top = r.bottom + 9; above = false; }
+  let left = Math.max(8, Math.min(markCx - pw / 2, window.innerWidth - pw - 8));
+  pop.style.top  = top  + 'px';
+  pop.style.left = left + 'px';
+
+  // Point the arrow at the mark's centre, clamped to the bubble's edges.
+  const arrow = pop._arrow;
+  const border = arrow._border || '1px solid rgba(255,255,255,0.12)';
+  const ax = Math.max(10, Math.min(markCx - left - 4.5, pw - 19));
+  arrow.style.left = ax + 'px';
+  if (above) {
+    arrow.style.top = '';
+    arrow.style.bottom = '-5px';
+    arrow.style.borderRight  = border;
+    arrow.style.borderBottom = border;
+    arrow.style.borderTop = arrow.style.borderLeft = 'none';
+  } else {
+    arrow.style.bottom = '';
+    arrow.style.top = '-5px';
+    arrow.style.borderLeft = border;
+    arrow.style.borderTop  = border;
+    arrow.style.borderBottom = arrow.style.borderRight = 'none';
+  }
+}
+
+// Turn bare URLs in the note text into clickable links; everything else
+// stays as plain text. Returns a DocumentFragment safe to insert.
+function _hlLinkifyNote(text) {
+  const frag = document.createDocumentFragment();
+  const re = /(https?:\/\/[^\s]+)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const a = document.createElement('a');
+    a.href = m[0];
+    a.textContent = m[0];
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.style.cssText = 'color:#89b4fa;text-decoration:underline;word-break:break-all';
+    frag.appendChild(a);
+    last = re.lastIndex;
+  }
+  if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
+function _hlShowNotePop(mark) {
+  const note = mark.dataset.hlNoteText;
+  if (!note) return;
+  const pop = _hlNotePopEl();
+  _hlNotePopMark = mark;
+  pop._body.textContent = '';
+  pop._body.appendChild(_hlLinkifyNote(note));
+  pop.style.display = 'block';
+  _hlPositionNotePop(pop, mark);
+  // Trigger the fade/slide-in on the next frame.
+  requestAnimationFrame(() => {
+    pop.style.opacity = '1';
+    pop.style.transform = 'translateY(0)';
+  });
+}
+
+// Show after a short hover so a quick mouse pass doesn't flicker the bubble.
+function _hlScheduleShowNotePop(mark) {
+  clearTimeout(_hlNotePopHideT);
+  if (_hlNotePopMark === mark && _hlNotePop?.style.display === 'block') return;
+  clearTimeout(_hlNotePopShowT);
+  _hlNotePopShowT = setTimeout(() => _hlShowNotePop(mark), _HL_NOTE_SHOW_DELAY);
+}
+
+function _hlScheduleHideNotePop() {
+  clearTimeout(_hlNotePopShowT);
+  clearTimeout(_hlNotePopHideT);
+  _hlNotePopHideT = setTimeout(_hlHideNotePop, _HL_NOTE_HIDE_DELAY);
+}
+
+function _hlHideNotePop() {
+  clearTimeout(_hlNotePopShowT);
+  clearTimeout(_hlNotePopHideT);
+  _hlNotePopMark = null;
+  if (!_hlNotePop) return;
+  const pop = _hlNotePop;
+  pop.style.opacity = '0';
+  pop.style.transform = 'translateY(4px)';
+  setTimeout(() => { if (pop.style.opacity === '0') pop.style.display = 'none'; }, 150);
+}
+
+// Hover a highlight that has a note → show the note bubble (unless the edit
+// tooltip is already open for it).
+document.addEventListener('mouseover', e => {
+  if (!_hlEnabled) return;
+  const mark = e.target?.closest?.('mark[data-hl-note="1"]');
+  if (!mark) return;
+  if (_hlTipMode === 'edit' && _hlTip?.style.display === 'flex' &&
+      _hlTipEditId === mark.dataset.hlId) return;
+  _hlScheduleShowNotePop(mark);
+}, true);
+
+document.addEventListener('mouseout', e => {
+  const from = e.target?.closest?.('mark[data-hl-note="1"]');
+  if (!from) return;
+  const to = e.relatedTarget?.closest?.('mark[data-hl-note="1"]');
+  if (to && to === from) return;   // still within the same mark's children
+  // Moving into the bubble itself? Its own mouseenter keeps it open.
+  if (e.relatedTarget && _hlNotePop?.contains(e.relatedTarget)) return;
+  // Also cancels any pending show, so a quick pass never flickers the bubble.
+  _hlScheduleHideNotePop();
 }, true);
 
 // ── Build CSS selector for the element containing the selection ──
@@ -1527,6 +1956,7 @@ function _hlApply(color) {
   const id        = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   const anchor    = _hlAnchor;
   const parentSel = _hlParentSel;
+  const note      = (_hlNoteInput?.value || '').trim();
 
   const _anchorNode = _hlRange.commonAncestorContainer;
   const _containerEl = _anchorNode.nodeType === Node.TEXT_NODE ? _anchorNode.parentElement : _anchorNode;
@@ -1546,7 +1976,7 @@ function _hlApply(color) {
   if (!segments.length) { _hlHideTip(); return; }
 
   segments.forEach(({ node, start, end }) => {
-    const mark = _hlMark(id, color);
+    const mark = _hlMark(id, color, note);
     if (end < node.length) node.splitText(end);
     const target = start > 0 ? node.splitText(start) : node;
     if (!target.parentNode) return;
@@ -1555,12 +1985,27 @@ function _hlApply(color) {
   });
 
   window.getSelection().removeAllRanges();
-  _hlHideTip();
 
   _hlGetPage(list => {
-    list.push({ id, text, color, createdAt: Date.now(), anchor, parentSel, containerSelectors });
+    list.push({ id, text, color, note, createdAt: Date.now(), anchor, parentSel, containerSelectors });
     _hlSavePage(list);
   });
+
+  // Keep the tooltip open in edit mode on the highlight just created, so the
+  // user can add a note if they want — but leave the note field collapsed until
+  // they click the 📝 button.
+  _hlRange = null;
+  _hlAnchor = '';
+  _hlParentSel = '';
+  _hlTipMode   = 'edit';
+  _hlTipEditId = id;
+  _hlNoteWrap.style.display    = 'none';
+  _hlNoteHint.textContent      = '';
+  _hlNoteSaveBtn.style.display = '';
+  _hlDelBtn.style.display      = 'inline-flex';
+  _hlSetSwatchSel(color);
+  const newMark = document.querySelector(`[data-hl-id="${id}"]`);
+  if (newMark) _hlPositionTip(newMark.getBoundingClientRect());
 }
 
 // ── Collect text nodes within a Range, skipping existing highlights/UI ──
@@ -1586,14 +2031,45 @@ function _hlGetTextNodes(range) {
   return nodes;
 }
 
-function _hlMark(id, color) {
+function _hlMark(id, color, note) {
   const m = document.createElement('mark');
   m.setAttribute('data-hl-id', id);
   m.setAttribute('data-hl-color', color);
   m.setAttribute('data-hl-ui', '1');
-  m.style.cssText = `background-color:${_hlBg(color)} !important;background-image:none !important;color:inherit !important;border-radius:2px;padding:0 !important;margin:0 !important;cursor:pointer;`;
-  m.addEventListener('click', () => _hlRemove(id));
+  let css = `background-color:${_hlBg(color)} !important;background-image:none !important;color:inherit !important;border-radius:2px;padding:0 !important;margin:0 !important;cursor:pointer;`;
+  // A note is surfaced as a dotted underline; the text shows in a hover bubble.
+  if (note) {
+    css += 'text-decoration:underline dotted !important;text-underline-offset:2px;';
+    m.dataset.hlNote = '1';
+    m.dataset.hlNoteText = note;
+  }
+  m.style.cssText = css;
+  // Click an existing highlight → open the edit tooltip (colour / note / delete).
+  m.addEventListener('click', (e) => {
+    if (!_hlEnabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _hlShowEditTipFor(m);
+  });
   return m;
+}
+
+// ── Apply / clear a note's visual cue on all marks of one highlight ──
+// Note text lives in data-hl-note-text and is shown via a hover bubble.
+function _hlApplyNote(id, note) {
+  document.querySelectorAll(`[data-hl-id="${id}"]`).forEach(m => {
+    if (note) {
+      m.dataset.hlNote = '1';
+      m.dataset.hlNoteText = note;
+      m.style.setProperty('text-decoration', 'underline dotted', 'important');
+      m.style.setProperty('text-underline-offset', '2px');
+    } else {
+      delete m.dataset.hlNote;
+      delete m.dataset.hlNoteText;
+      m.style.removeProperty('text-decoration');
+      m.style.removeProperty('text-underline-offset');
+    }
+  });
 }
 
 // ── Remove — handles multiple marks from text-node wrapping ──
@@ -1724,7 +2200,7 @@ async function _hlRestoreOne(h) {
     const segments = _hlGetTextNodes(range);
     if (!segments.length) return;
     segments.forEach(({ node, start, end }) => {
-      const mark = _hlMark(h.id, h.color);
+      const mark = _hlMark(h.id, h.color, h.note);
       if (end < node.length) node.splitText(end);
       const target = start > 0 ? node.splitText(start) : node;
       if (!target.parentNode) return;
@@ -1809,6 +2285,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       m.dataset.hlColor = msg.color;
       if (!m.dataset.hlHidden) m.style.setProperty('background-color', _hlBg(msg.color), 'important');
     });
+    sendResponse({ ok: true }); return false;
+  }
+  if (msg.type === 'HL_UPDATE_NOTE') {
+    _hlApplyNote(msg.id, msg.note);
     sendResponse({ ok: true }); return false;
   }
 });

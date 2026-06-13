@@ -4948,48 +4948,51 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   flex-shrink: 0;
 }
 
-/* ── Manual Add form ── */
-.hl-add-form {
-  display: none;
+/* ── Edit sub-row: colour swatches + note (column layout) ── */
+.hl-color-picker-row.hl-edit-row {
   flex-direction: column;
-  gap: 7px;
-  background: var(--hl-inner-bg);
-  border: 1.5px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 8px;
-  flex-shrink: 0;
+  align-items: stretch;
+  gap: 6px;
+  padding: 6px 8px 6px 34px;
 }
-.hl-add-form.open { display: flex; }
-.hl-add-form-title {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.hl-edit-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-.hl-add-form textarea {
-  width: auto;
+.hl-edit-line.hl-edit-note { align-items: flex-start; }
+.hl-edit-line .hl-note-input {
+  flex: 1;
+  min-width: 0;
   margin-top: 0;
-  padding: 6px 8px;
-  font-size: 11px;
-  min-height: 50px;
-  border: 1.5px solid var(--border);
-  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 10px;
+  font-family: inherit;
+  line-height: 1.4;
+  border-radius: 4px;
+  border: 1px solid var(--border);
   background: var(--card);
   color: var(--text);
   resize: vertical;
-  font-family: inherit;
-  transition: border-color 0.12s;
+  min-height: 34px;
 }
-.hl-add-form textarea:focus { outline: none; border-color: var(--primary); box-shadow: none; }
-.hl-add-color-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+.hl-edit-line button {
+  width: auto !important;
+  margin-top: 0 !important;
+  font-size: 9px !important;
+  height: 20px !important;
+  padding: 0 7px !important;
+  border-radius: 3px !important;
+  flex-shrink: 0;
+}
+.hl-note-flag {
+  margin-left: 4px;
   font-size: 10px;
-  color: var(--muted);
+  opacity: 0.85;
+  cursor: help;
 }
+
+/* ── Color dots (edit color picker) ── */
 .hl-add-cdot {
   width: 20px;
   height: 20px;
@@ -5006,38 +5009,6 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 .hl-add-cdot.pink   { background: #f9a8d4; }
 .hl-add-cdot.blue   { background: #93c5fd; }
 .hl-add-cdot.orange { background: #fdba74; }
-.hl-add-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-}
-.hl-add-footer button {
-  width: auto !important;
-  margin-top: 0 !important;
-  padding: 5px 12px !important;
-  font-size: 11px !important;
-  border-radius: 6px !important;
-}
-
-/* Add button (next to search) */
-.hl-add-trigger {
-  flex-shrink: 0;
-  width: auto;
-  margin-top: 0;
-  padding: 2px 9px;
-  font-size: 10px;
-  font-weight: 600;
-  border-radius: 6px;
-  border: 1.5px solid color-mix(in srgb, var(--primary) 40%, transparent);
-  background: color-mix(in srgb, var(--primary) 8%, transparent);
-  color: var(--primary);
-  cursor: pointer;
-  font-family: inherit;
-  white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
-}
-.hl-add-trigger:hover { background: color-mix(in srgb, var(--primary) 14%, transparent); border-color: var(--primary); transform: none; }
-.hl-add-trigger.open  { background: var(--primary); color: white; border-color: var(--primary); }
 
 /* ── Pattern item — domain badge ── */
 .hl-pattern-badge {
