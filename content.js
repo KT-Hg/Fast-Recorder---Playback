@@ -1527,6 +1527,13 @@ function _hlApply(color) {
   const id        = 'hl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
   const anchor    = _hlAnchor;
   const parentSel = _hlParentSel;
+
+  const _anchorNode = _hlRange.commonAncestorContainer;
+  const _containerEl = _anchorNode.nodeType === Node.TEXT_NODE ? _anchorNode.parentElement : _anchorNode;
+  const containerSelectors = (_containerEl && _containerEl !== document.body && _containerEl !== document.documentElement)
+    ? getAllSelectors(_containerEl)
+    : null;
+
   let segments = _hlGetTextNodes(_hlRange);
 
   // Range có thể bị stale nếu trang thay đổi DOM sau khi user chọn text.
@@ -1551,7 +1558,7 @@ function _hlApply(color) {
   _hlHideTip();
 
   _hlGetPage(list => {
-    list.push({ id, text, color, createdAt: Date.now(), anchor, parentSel });
+    list.push({ id, text, color, createdAt: Date.now(), anchor, parentSel, containerSelectors });
     _hlSavePage(list);
   });
 }
@@ -1584,7 +1591,7 @@ function _hlMark(id, color) {
   m.setAttribute('data-hl-id', id);
   m.setAttribute('data-hl-color', color);
   m.setAttribute('data-hl-ui', '1');
-  m.style.cssText = `background-color:${_hlBg(color)} !important;background-image:none !important;color:inherit;border-radius:2px;padding:0;cursor:pointer;`;
+  m.style.cssText = `background-color:${_hlBg(color)} !important;background-image:none !important;color:inherit !important;border-radius:2px;padding:0 !important;margin:0 !important;cursor:pointer;`;
   m.addEventListener('click', () => _hlRemove(id));
   return m;
 }
@@ -1691,25 +1698,47 @@ function _hlFindRange(text, anchor = '', parentSel = '') {
   return range;
 }
 
-// ── Restore — uses same text-node wrapping as _hlApply ──
-function _hlRestore() {
-  _hlGetPage(list => {
-    list.forEach(h => {
-      if (document.querySelector(`[data-hl-id="${h.id}"]`)) return;
-      const range = _hlFindRange(h.text, h.anchor || '', h.parentSel || '');
-      if (!range) return;
-      const segments = _hlGetTextNodes(range);
-      if (!segments.length) return;
-      segments.forEach(({ node, start, end }) => {
-        const mark = _hlMark(h.id, h.color);
-        if (end < node.length) node.splitText(end);
-        const target = start > 0 ? node.splitText(start) : node;
-        if (!target.parentNode) return;
-        target.parentNode.insertBefore(mark, target);
-        mark.appendChild(target);
-      });
+// ── Restore one highlight — tries containerSelectors first, falls back to parentSel / anchor ──
+const _hlRestoringIds = new Set();
+
+async function _hlRestoreOne(h) {
+  if (document.querySelector(`[data-hl-id="${h.id}"]`)) return;
+  if (_hlRestoringIds.has(h.id)) return;
+  _hlRestoringIds.add(h.id);
+
+  try {
+    let range = null;
+
+    // Strategy 1: element-finder with stored selectors (fullXpath → id → xpath → css …)
+    if (h.containerSelectors) {
+      try {
+        const el = await findElementWithFallback(h.containerSelectors, 2000);
+        if (el) range = _hlFindRangeIn(el, h.text);
+      } catch (_) {}
+    }
+
+    // Strategy 2: parentSel + anchor (legacy / fallback)
+    if (!range) range = _hlFindRange(h.text, h.anchor || '', h.parentSel || '');
+    if (!range) return;
+
+    const segments = _hlGetTextNodes(range);
+    if (!segments.length) return;
+    segments.forEach(({ node, start, end }) => {
+      const mark = _hlMark(h.id, h.color);
+      if (end < node.length) node.splitText(end);
+      const target = start > 0 ? node.splitText(start) : node;
+      if (!target.parentNode) return;
+      target.parentNode.insertBefore(mark, target);
+      mark.appendChild(target);
     });
-  });
+  } finally {
+    _hlRestoringIds.delete(h.id);
+  }
+}
+
+// ── Restore all highlights for the current page ──
+function _hlRestore() {
+  _hlGetPage(list => { list.forEach(h => _hlRestoreOne(h)); });
 }
 
 // ── Scroll to ──

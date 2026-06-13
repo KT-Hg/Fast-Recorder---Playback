@@ -4157,23 +4157,25 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 #tabHighlight.active .card:first-child {
   display: flex;
   flex-direction: column;
-  height: calc(600px - var(--header-h, 72px) - 20px);
   flex-shrink: 0;
-  overflow: hidden;
+  overflow: visible;
   margin-bottom: 10px;
 }
 #tabHighlight.active .hl-pattern-card {
   flex-shrink: 0;
   margin-bottom: 0;
 }
-#tabHighlight .hl-list {
-  flex: 1;
-  max-height: none;
+
+/* ── Fixed-height list slot (empty state + list share this space) ── */
+.hl-list-slot {
+  height: 210px;
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 /* ── Empty state ── */
 .hl-empty {
-  flex: 1;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -4776,7 +4778,9 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 
 /* ── Highlight list — action-list template overrides ── */
 #hlList {
-  /* Inherit .actions scrollbar styles */
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
@@ -4858,8 +4862,8 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 .hl-color-picker-row {
   display: none;
   align-items: center;
-  gap: 5px;
-  padding: 5px 8px 5px 34px;
+  gap: 4px;
+  padding: 3px 8px 3px 34px;
   background: var(--secondary-bg);
   border: 1px solid var(--border);
   border-top: none;
@@ -4867,6 +4871,10 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   font-size: 10px;
   color: var(--muted);
   margin-bottom: 2px;
+}
+.hl-color-picker-row .hl-add-cdot {
+  width: 16px;
+  height: 16px;
 }
 .hl-color-picker-row.open { display: flex; }
 .hl-cpicker-dot {
@@ -5140,22 +5148,3 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   border-radius: 3px !important;
 }
 
-/* From-domain button */
-.hl-from-domain-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 0;
-  padding: 6px 9px;
-  border: 1.5px dashed var(--border);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: border-color 0.12s, color 0.12s;
-  text-align: left;
-}
-.hl-from-domain-btn:hover { border-color: var(--primary); color: var(--primary); transform: none; }

@@ -68,8 +68,6 @@ export function initHighlight() {
   const patternCaret       = document.getElementById('hlPatternCaret');
   const hlPatternCopyAll   = document.getElementById('hlPatternCopyAll');
   const hlValMsg           = document.getElementById('hlValMsg');
-  const hlFromDomainBtn   = document.getElementById('hlFromDomainBtn');
-  const hlFromDomainLabel = document.getElementById('hlFromDomainLabel');
   // URL Builder
   const hlUrlBuilder        = document.getElementById('hlUrlBuilder');
   const hlBuilderTrigger    = document.getElementById('hlBuilderTrigger');
@@ -203,26 +201,6 @@ export function initHighlight() {
         });
       });
     }
-  }
-
-  // ── Pattern: From domain button ──
-  if (hlFromDomainBtn) {
-    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-      if (!tab?.url) return;
-      try {
-        const u = new URL(tab.url);
-        if (!['http:', 'https:'].includes(u.protocol)) return;
-        const domain = u.hostname;
-        if (hlFromDomainLabel) hlFromDomainLabel.textContent = domain;
-        hlFromDomainBtn.style.display = '';
-        hlFromDomainBtn.addEventListener('click', () => {
-          if (patternInput) {
-            patternInput.value = domain;
-            patternInput.focus();
-          }
-        });
-      } catch { /* ignore */ }
-    });
   }
 
   // ── Filter row: "All" pill + color swatches ──
@@ -704,7 +682,9 @@ export function initHighlight() {
       );
     }
 
-    clearBtn.style.display = 'none';
+    // Toggle visibility (not display) so the button's slot is always reserved —
+    // showing/hiding it must not shift the URL card below.
+    clearBtn.style.visibility = filtered.length ? 'visible' : 'hidden';
 
     if (filtered.length === 0) {
       listEl.innerHTML = '';
@@ -719,7 +699,7 @@ export function initHighlight() {
 
     // Build list using action-list template
     listEl.innerHTML = '';
-    filtered.slice().reverse().forEach((h, i) => {
+    filtered.forEach((h, i) => {
       const cfg      = HL_COLORS[h.color] || HL_COLORS.yellow;
       const disabled = !!h.disabled;
       const preview  = h.text.length > 70 ? h.text.slice(0, 70) + '…' : h.text;
@@ -729,7 +709,7 @@ export function initHighlight() {
       li.className = `action hl-${h.color}${disabled ? ' hl-disabled' : ''}`;
       li.dataset.hlId = h.id;
       li.innerHTML = `
-        <span class="index">${filtered.length - i}</span>
+        <span class="index">${i + 1}</span>
         <span class="type">${cfg.label}</span>
         <span class="value">${searchQuery ? buildExcerpt(h.text) : esc(preview)}</span>`;
 
@@ -763,7 +743,7 @@ export function initHighlight() {
       colorLabel.style.cssText = 'font-size:10px;color:var(--muted)';
       colorLabel.textContent = 'Color:';
       colorRow.appendChild(colorLabel);
-      const colorDots = Object.entries(HL_COLORS).map(([c]) => {
+      const colorDots = Object.keys(HL_COLORS).map(c => {
         const dot = document.createElement('div');
         dot.className = `hl-add-cdot ${c}${c === h.color ? ' sel' : ''}`;
         dot.title = HL_COLORS[c].label;
@@ -898,14 +878,16 @@ export function initHighlight() {
         showConfirm(
           textPrev ? `"${textPrev}"` : 'Remove this highlight?',
           () => {
-            if (isCurrentTab) {
-              sendToTab({ type: 'HL_REMOVE', id: h.id }, () => load());
-            } else {
-              const list = (allData[selectedUrl] || []).filter(x => x.id !== h.id);
-              if (list.length === 0) delete allData[selectedUrl];
-              else allData[selectedUrl] = list;
-              chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => load());
-            }
+            // Storage is the source of truth — update it directly so deletion
+            // works even on pages without a content script (e.g. file:// URLs).
+            const list = (allData[selectedUrl] || []).filter(x => x.id !== h.id);
+            if (list.length === 0) delete allData[selectedUrl];
+            else allData[selectedUrl] = list;
+            chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
+              // Notify the content script to unwrap the DOM mark when present.
+              if (isCurrentTab) sendToTab({ type: 'HL_REMOVE', id: h.id });
+              load();
+            });
             showToast('Highlight removed', 'success');
           },
           { title: 'Remove highlight', danger: true, okLabel: 'Remove' }

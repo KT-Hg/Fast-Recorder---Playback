@@ -883,17 +883,17 @@
           </div>
         </div>
 
-        <!-- Empty state -->
-        <div class="hl-empty" id="hlEmpty">
-          <div class="hl-empty-icon">✎</div>
-          <div>Select text on the page to highlight</div>
+        <!-- Fixed-height slot: empty state + list share the same space -->
+        <div class="hl-list-slot">
+          <div class="hl-empty" id="hlEmpty">
+            <div class="hl-empty-icon">✎</div>
+            <div>Select text on the page to highlight</div>
+          </div>
+          <ul class="actions" id="hlList"></ul>
         </div>
 
-        <!-- Highlight list (uses .actions template) -->
-        <ul class="actions" id="hlList"></ul>
-
         <!-- Clear page highlights -->
-        <button id="hlClearBtn" class="danger" style="display:none;width:100%;margin-top:8px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
+        <button id="hlClearBtn" class="danger" style="visibility:hidden;width:100%;margin-top:4px;font-size:12px;padding:6px;">🗑 Clear page highlights</button>
 
       </div>
 
@@ -929,10 +929,6 @@
           </div>
           <div class="hl-val-msg" id="hlValMsg" style="display:none;"></div>
           <ul id="hlPatternList" class="hl-pattern-list"></ul>
-          <!-- From current domain -->
-          <button class="hl-from-domain-btn" id="hlFromDomainBtn" style="display:none;">
-            🌐 Add from current domain: <strong id="hlFromDomainLabel"></strong>
-          </button>
         </div>
       </div>
 
