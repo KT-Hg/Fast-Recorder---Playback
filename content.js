@@ -963,6 +963,21 @@ function getKeyCombo(e) {
 let _countdownActive = false;
 let _countdownTimer  = null;
 
+// True while the background is running a (cancellable) full-page / scroll capture.
+// Set via FULL_CAPTURE_STATE messages so the ESC key can abort a long capture on a
+// super-tall page. A safety timer clears it in case the "off" message never arrives,
+// so ESC never stays hijacked from the page.
+let _fullCaptureActive = false;
+let _fullCaptureSafetyTimer = null;
+
+function _setFullCaptureActive(active) {
+  _fullCaptureActive = active;
+  clearTimeout(_fullCaptureSafetyTimer);
+  if (active) {
+    _fullCaptureSafetyTimer = setTimeout(() => { _fullCaptureActive = false; }, 120000);
+  }
+}
+
 function _startVisibleCountdown(seconds, crop) {
   if (_countdownActive) return;
   _countdownActive = true;
@@ -1030,10 +1045,18 @@ function _cancelCountdown() {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'START_VISIBLE_COUNTDOWN') {
     _startVisibleCountdown(msg.seconds || 3, !!msg.crop);
+  } else if (msg.type === 'FULL_CAPTURE_STATE') {
+    _setFullCaptureActive(!!msg.active);
   }
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _fullCaptureActive) {
+    e.preventDefault();
+    _setFullCaptureActive(false);
+    safeSend({ type: 'CANCEL_FULL_SCREENSHOT' });
+    return;
+  }
   if (e.key === 'Escape' && _countdownActive) { e.preventDefault(); _cancelCountdown(); return; }
   if (pickerMode && e.key === 'Escape') {
     e.preventDefault(); pickerMode = false; clearPickerUI();
@@ -1365,7 +1388,7 @@ let _hlNotePop    = null;   // small bubble showing a highlight's note on hover
 
 // Tooltip colour palettes — mirror the popup's light / dark theme.
 const _HL_TIP_THEMES = {
-  dark:  { bg:'#1e1e2e', border:'rgba(255,255,255,0.12)', text:'#cdd6f4', sub:'rgba(205,214,244,0.55)', taBg:'#11111b', btnBorder:'rgba(255,255,255,0.18)' },
+  dark:  { bg:'#1e1e2e', border:'rgba(255,255,255,0.22)', text:'#cdd6f4', sub:'rgba(205,214,244,0.55)', taBg:'#11111b', btnBorder:'rgba(255,255,255,0.18)' },
   light: { bg:'#ffffff', border:'rgba(0,0,0,0.14)',       text:'#1e1e2e', sub:'rgba(60,60,70,0.6)',      taBg:'#f4f4f7', btnBorder:'rgba(0,0,0,0.18)' },
 };
 let _hlTheme = 'dark';
@@ -1535,8 +1558,11 @@ function _hlApplyTipTheme() {
     _hlTip.style.background  = t.bg;
     _hlTip.style.borderColor = t.border;
     _hlTip.style.color       = t.text;
+    // Add a contrasting hairline ring so the panel keeps a visible edge even
+    // when it sits on a same-toned page (e.g. dark bubble on a dark site).
     _hlTip.style.boxShadow   = _hlTheme === 'light'
-      ? '0 4px 24px rgba(0,0,0,0.18)' : '0 4px 24px rgba(0,0,0,0.45)';
+      ? '0 0 0 1px rgba(0,0,0,0.10), 0 4px 24px rgba(0,0,0,0.18)'
+      : '0 0 0 1px rgba(255,255,255,0.22), 0 4px 24px rgba(0,0,0,0.55)';
   }
   if (_hlTipLabel)  _hlTipLabel.style.color = t.sub;
   if (_hlNoteHint)  _hlNoteHint.style.color = t.sub;
@@ -1551,7 +1577,10 @@ function _hlApplyTipTheme() {
     _hlNotePop.style.borderColor = t.border;
     _hlNotePop.style.color       = t.text;
     _hlNotePop.style.boxShadow   = _hlTheme === 'light'
-      ? '0 6px 22px rgba(0,0,0,0.18)' : '0 6px 22px rgba(0,0,0,0.45)';
+      ? '0 0 0 1px rgba(0,0,0,0.10), 0 8px 28px rgba(0,0,0,0.20)'
+      : '0 0 0 1px rgba(255,255,255,0.22), 0 8px 28px rgba(0,0,0,0.6)';
+    if (_hlNotePop._dot) _hlNotePop._dot.style.boxShadow =
+      `0 0 0 2px ${_hlTheme === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'}`;
     if (_hlNotePop._arrow) {
       const arrow = _hlNotePop._arrow;
       arrow.style.background = t.bg;
@@ -1681,50 +1710,88 @@ document.addEventListener('mousedown', e => {
    and an interactive body (hover in to select/copy text or click links). */
 const _HL_NOTE_SHOW_DELAY = 280;   // ms of hover before the bubble appears
 const _HL_NOTE_HIDE_DELAY = 200;   // ms grace to cross the gap into the bubble
+// Solid swatch colours (mirror the tooltip dots) for the bubble's accent —
+// links the bubble visually to the highlight it belongs to.
+const _HL_NOTE_ACCENT = { yellow:'#fde047', green:'#86efac', pink:'#f9a8d4', blue:'#93c5fd', orange:'#fdba74' };
 let _hlNotePopMark = null;          // mark the bubble is currently showing for
 let _hlNotePopShowT = null;
 let _hlNotePopHideT = null;
 
 function _hlNotePopEl() {
   if (_hlNotePop) return _hlNotePop;
+
+  // One-time thin scrollbar styling for the (scoped) note body.
+  if (!document.getElementById('hl-note-pop-style')) {
+    const st = document.createElement('style');
+    st.id = 'hl-note-pop-style';
+    st.textContent = [
+      '[data-hl-note-body]::-webkit-scrollbar{width:7px}',
+      '[data-hl-note-body]::-webkit-scrollbar-thumb{',
+      'background:rgba(128,128,128,0.4);border-radius:7px;',
+      'background-clip:padding-box;border:2px solid transparent}',
+      '[data-hl-note-body]::-webkit-scrollbar-thumb:hover{background:rgba(128,128,128,0.6);background-clip:padding-box;border:2px solid transparent}',
+      '[data-hl-note-body]::-webkit-scrollbar-track{background:transparent}',
+    ].join('');
+    (document.head || document.documentElement).appendChild(st);
+  }
+
   const d = document.createElement('div');
   d.setAttribute('data-hl-ui', '1');
   d.style.cssText = [
     'all:initial', 'box-sizing:border-box', 'position:fixed',
     'z-index:2147483646', 'display:none', 'opacity:0',
-    'transform:translateY(4px)',
-    'transition:opacity 0.14s ease, transform 0.14s ease',
-    'max-width:300px', 'background:#1e1e2e',
-    'border:1px solid rgba(255,255,255,0.12)', 'border-radius:9px',
-    'padding:7px 10px 8px', 'box-shadow:0 6px 22px rgba(0,0,0,0.45)',
+    'transform:translateY(6px) scale(0.96)', 'transform-origin:top center',
+    'transition:opacity 0.16s cubic-bezier(0.16,1,0.3,1), transform 0.16s cubic-bezier(0.16,1,0.3,1)',
+    'max-width:320px', 'min-width:120px', 'background:#1e1e2e',
+    'border:1px solid rgba(255,255,255,0.12)', 'border-radius:11px',
+    'padding:9px 12px 10px', 'box-shadow:0 8px 28px rgba(0,0,0,0.5)',
     'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
     'color:#cdd6f4', 'pointer-events:auto',
   ].join(';');
 
-  // Header label "📝 Note"
+  // Header row: a colour dot matching the highlight + a "Note" label.
   const head = document.createElement('div');
-  head.textContent = '📝 Note';
   head.style.cssText = [
-    'all:initial', 'display:block', 'font-family:inherit',
-    'font-size:10px', 'font-weight:600', 'letter-spacing:0.4px',
-    'text-transform:uppercase', 'opacity:0.55', 'margin:0 0 4px',
+    'all:initial', 'display:flex', 'align-items:center', 'gap:6px',
+    'font-family:inherit', 'color:inherit', 'margin:0 0 6px',
     'user-select:none', 'pointer-events:none',
   ].join(';');
 
+  const dot = document.createElement('span');
+  dot.style.cssText = [
+    'all:initial', 'display:inline-block', 'width:9px', 'height:9px',
+    'border-radius:50%', 'background:#fde047', 'flex:0 0 auto',
+    'box-shadow:0 0 0 2px rgba(255,255,255,0.08)',
+  ].join(';');
+
+  const lbl = document.createElement('span');
+  lbl.textContent = 'Note';
+  lbl.style.cssText = [
+    'all:initial', 'font-family:inherit', 'font-size:10px', 'font-weight:700',
+    'letter-spacing:0.6px', 'text-transform:uppercase', 'opacity:0.85',
+    'color:inherit',
+  ].join(';');
+
+  head.appendChild(dot);
+  head.appendChild(lbl);
+
   // Scrollable body holding the note text (and any linkified URLs)
   const body = document.createElement('div');
+  body.setAttribute('data-hl-note-body', '1');
   body.style.cssText = [
     'all:initial', 'display:block', 'font-family:inherit',
-    'white-space:pre-wrap', 'word-break:break-word', 'font-size:12.5px',
-    'line-height:1.5', 'color:inherit', 'max-height:200px',
+    'white-space:pre-wrap', 'word-break:break-word', 'font-size:13px',
+    'line-height:1.55', 'color:inherit', 'max-height:220px',
     'overflow-y:auto', 'user-select:text', 'cursor:text',
+    'scrollbar-width:thin', 'scrollbar-color:rgba(128,128,128,0.4) transparent',
   ].join(';');
 
   // Arrow pointing at the highlighted mark (a rotated square)
   const arrow = document.createElement('div');
   arrow.style.cssText = [
-    'all:initial', 'position:absolute', 'width:9px', 'height:9px',
+    'all:initial', 'position:absolute', 'width:10px', 'height:10px',
     'background:#1e1e2e', 'transform:rotate(45deg)', 'pointer-events:none',
+    'border-radius:2px',
   ].join(';');
 
   d.appendChild(head);
@@ -1732,6 +1799,7 @@ function _hlNotePopEl() {
   d.appendChild(arrow);
   d._body = body;
   d._arrow = arrow;
+  d._dot = dot;
 
   // Keep the bubble open while the pointer is inside it.
   d.addEventListener('mouseenter', () => { clearTimeout(_hlNotePopHideT); });
@@ -1758,7 +1826,7 @@ function _hlPositionNotePop(pop, mark) {
   // Point the arrow at the mark's centre, clamped to the bubble's edges.
   const arrow = pop._arrow;
   const border = arrow._border || '1px solid rgba(255,255,255,0.12)';
-  const ax = Math.max(10, Math.min(markCx - left - 4.5, pw - 19));
+  const ax = Math.max(10, Math.min(markCx - left - 5, pw - 20));
   arrow.style.left = ax + 'px';
   if (above) {
     arrow.style.top = '';
@@ -1803,12 +1871,14 @@ function _hlShowNotePop(mark) {
   _hlNotePopMark = mark;
   pop._body.textContent = '';
   pop._body.appendChild(_hlLinkifyNote(note));
+  // Tint the header dot to match the highlight's colour.
+  if (pop._dot) pop._dot.style.background = _HL_NOTE_ACCENT[mark.dataset.hlColor] || _HL_NOTE_ACCENT.yellow;
   pop.style.display = 'block';
   _hlPositionNotePop(pop, mark);
   // Trigger the fade/slide-in on the next frame.
   requestAnimationFrame(() => {
     pop.style.opacity = '1';
-    pop.style.transform = 'translateY(0)';
+    pop.style.transform = 'translateY(0) scale(1)';
   });
 }
 
@@ -1833,8 +1903,8 @@ function _hlHideNotePop() {
   if (!_hlNotePop) return;
   const pop = _hlNotePop;
   pop.style.opacity = '0';
-  pop.style.transform = 'translateY(4px)';
-  setTimeout(() => { if (pop.style.opacity === '0') pop.style.display = 'none'; }, 150);
+  pop.style.transform = 'translateY(6px) scale(0.96)';
+  setTimeout(() => { if (pop.style.opacity === '0') pop.style.display = 'none'; }, 160);
 }
 
 // Hover a highlight that has a note → show the note bubble (unless the edit

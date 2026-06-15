@@ -1033,8 +1033,12 @@ document.querySelectorAll(".sub-card h4").forEach((h4) => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== "SCREENSHOT_RESULT") return;
   const { result } = msg;
-  if (result?.error) {
+  if (result?.cancelled) {
+    showToast('✕ Capture cancelled', 'error');
+  } else if (result?.error) {
     showToast('✗ ' + result.error, 'error');
+  } else if (result?.partial) {
+    showToast('✓ Saved partial capture: ' + (result.filename || 'screenshot'), 'success');
   } else if (result?.success) {
     showToast('✓ Saved: ' + (result.filename || 'screenshot'), 'success');
   }

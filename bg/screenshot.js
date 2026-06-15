@@ -40,6 +40,54 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   _screenshotQueues.delete(tabId);
 });
 
+/* ── Cancellation ───────────────────────────────────────────────────────────────
+ * A full-page capture can be aborted two ways, both of which must end the SAME
+ * way — a clean "cancelled" result, page restored, no error toast:
+ *
+ *   1. ESC on the page → content script sends CANCEL_FULL_SCREENSHOT → the capture
+ *      loop checks this set at safe points and throws _CaptureCancelled.
+ *   2. The debugger detaches mid-capture — most commonly the user pressing ESC /
+ *      clicking "Cancel" on Chrome's "is debugging this browser" banner, which
+ *      steals focus so ESC dismisses the banner instead of reaching the page.
+ *      onDetach marks the tab cancelled too, so the in-flight CDP command's
+ *      rejection is treated as a cancel rather than surfaced as an error.
+ *
+ * Membership is cleared at the start of every capture, so a stray mark left when
+ * no capture is running is harmless.
+ * ────────────────────────────────────────────────────────────────────────────── */
+const _cancelledCaptures = new Set();
+
+class _CaptureCancelled extends Error {
+  constructor() { super('Capture cancelled'); this.name = 'CaptureCancelled'; }
+}
+
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (request?.type !== 'CANCEL_FULL_SCREENSHOT') return;
+  const tabId = request.tabId || sender.tab?.id;
+  if (tabId != null) _cancelledCaptures.add(tabId);
+});
+
+/* ── Debugger detach safety net ─────────────────────────────────────────────────
+ * When the debugger detaches for a reason outside our control (banner Cancel,
+ * DevTools opening), the capture's cdpEval-based restore can no longer reach the
+ * page — the scrollbar-hide style, documentElement transform, and hidden fixed
+ * elements would stay applied, leaving the tab scaled and unscrollable. Restore via
+ * chrome.scripting, which doesn't need the debugger, and mark the capture cancelled
+ * so it resolves cleanly (see the Cancellation block above).
+ *
+ * Skipped when the tab itself is gone (nothing left to restore). Does not fire for
+ * our own end-of-capture detach() calls, so it only triggers on real interruptions.
+ * ────────────────────────────────────────────────────────────────────────────── */
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (source.tabId == null) return;
+  markSessionClosed(source.tabId);
+  if (reason === 'target_closed') return;
+  _cancelledCaptures.add(source.tabId);
+  restorePageDom(source.tabId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => { _cancelledCaptures.delete(tabId); });
+
 /* ── Utilities ──────────────────────────────────────────────────────────────── */
 
 /**
@@ -227,6 +275,36 @@ const _hideScrollbarFn = () => {
 const _showScrollbarFn = () => { document.getElementById('__ext_no_scroll')?.remove(); };
 
 /**
+ * Undo every DOM mutation a CDP capture applies to the page — hidden scrollbar,
+ * documentElement/body transforms (tile-stitch shift), and hidden fixed/sticky
+ * elements. Runs via chrome.scripting, so it works even after the debugger has
+ * detached (when cdpEval can no longer reach the page). See _restorePageDom.
+ */
+const _restoreDomFn = () => {
+  document.getElementById('__ext_no_scroll')?.remove();
+  document.documentElement.style.transform = '';
+  document.documentElement.style.transformOrigin = '';
+  document.body.style.transform = '';
+  document.body.style.transformOrigin = '';
+  document.querySelectorAll('[data-fxhide]').forEach((el) => {
+    el.style.visibility = el.getAttribute('data-fxhide') || '';
+    el.removeAttribute('data-fxhide');
+  });
+};
+
+/**
+ * Restore the page to its pre-capture state via the Scripting API.
+ *
+ * Unlike the cdpEval-based restore in the capture functions, this does NOT need
+ * an attached debugger — essential when the user presses ESC (or clicks Cancel
+ * on Chrome's "is debugging this browser" banner) mid-capture, which force-detaches
+ * the session and would otherwise leave the page transformed / unscrollable.
+ */
+export function restorePageDom(tabId) {
+  return scriptingExec(tabId, _restoreDomFn);
+}
+
+/**
  * Inject and run `fn` in the tab's main-frame context via the Scripting API.
  * Errors are swallowed — callers that need the result should use `tabMsg` instead.
  */
@@ -262,21 +340,9 @@ const CDP_HIDE_SCROLLBAR = `(function(){
 
 const CDP_SHOW_SCROLLBAR = `document.getElementById('__ext_no_scroll')?.remove()`;
 
-// Capped at 3 000 elements: on DOM-heavy SPAs (10 000+ nodes) the unbounded
-// querySelectorAll + getComputedStyle blocks the main thread for 1-2 s per call.
-const CDP_HIDE_FIXED = `(function(){
-  const els = document.querySelectorAll('*');
-  const limit = Math.min(els.length, 3000);
-  for (let i = 0; i < limit; i++) {
-    const el = els[i];
-    const p = getComputedStyle(el).position;
-    if ((p === 'fixed' || p === 'sticky') && !el.hasAttribute('data-fxhide')) {
-      el.setAttribute('data-fxhide', el.style.visibility);
-      el.style.visibility = 'hidden';
-    }
-  }
-})()`;
-
+// Restores fixed/sticky elements hidden by the element-capture path (it tags them
+// `data-fxhide`). The full-page tile-stitch path no longer hides anything — see the
+// tiling loop for why fixed/sticky render correctly there on their own.
 const CDP_SHOW_FIXED = `document.querySelectorAll('[data-fxhide]').forEach(el=>{
   el.style.visibility=el.getAttribute('data-fxhide');
   el.removeAttribute('data-fxhide');
@@ -385,6 +451,11 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
   const suffix   = requestedFilename ? '' : suffixMap[effectiveDir] || '_full';
   const filename = buildScreenshotFilename(prefix + suffix, requestedFilename);
 
+  // Clear any stale cancel request from a prior capture, then expose a checker the
+  // capture loop calls at safe points to abort cooperatively on ESC.
+  _cancelledCaptures.delete(tabId);
+  const _checkCancel = () => { if (_cancelledCaptures.has(tabId)) throw new _CaptureCancelled(); };
+
   if (!segmentClip && scrollDir === 'full') {
     // Clear any leftover transforms from a previous interrupted tile-stitch pass.
     // A non-zero scroll position or a residual translateX/Y would offset the
@@ -435,6 +506,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     // commands. Sending commands immediately after attach can silently fail on
     // slow machines or when the tab is mid-navigation.
     await new Promise(r => setTimeout(r, 1200));
+    _checkCancel();
 
     await new Promise((resolve, reject) => {
       chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
@@ -486,8 +558,12 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     const needsStitch = (clipWidth * dpr > MAX_CAPTURE_DIM) || (clipHeight * dpr > MAX_CAPTURE_DIM);
 
     let result;
+    // Set when a tiled capture is cancelled partway: we keep the rows captured so
+    // far and save that partial image instead of discarding the whole capture.
+    let partialCapture = false;
 
     if (!needsStitch) {
+      _checkCancel();
       result = await new Promise((resolve, reject) => {
         chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', {
           format: 'png', captureBeyondViewport: true,
@@ -505,9 +581,6 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
         }, () => resolve());
       });
 
-      await cdpEval(tabId, CDP_HIDE_FIXED);
-      await cdpRafLocal();
-
       const chunkW = Math.min(4000, viewportWidth);
       const chunkH = Math.min(4000, viewportHeight);
       const tiles  = [];
@@ -516,15 +589,28 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       await cdpRafLocal();
 
       // Tile the page by shifting `documentElement` with CSS transform rather than
-      // scrolling. Scrolling would reposition fixed/sticky elements on each tile;
-      // the transform approach keeps the layout static so each tile aligns correctly
-      // when stitched. Fixed/sticky elements were hidden above for the same reason.
+      // scrolling. Scrolling would reposition fixed/sticky elements on each tile; the
+      // transform approach keeps the layout static so each tile aligns when stitched.
+      //
+      // Fixed and sticky elements are deliberately NOT hidden here. A transform on
+      // documentElement makes it the containing block for its fixed descendants, so a
+      // fixed header is positioned relative to (and translates with) the page — it
+      // renders once at the top instead of repeating per tile. Sticky elements never
+      // enter their stuck state at scroll 0, so they likewise render once in flow.
+      // Hiding either would simply drop them from the screenshot (e.g. a site's main
+      // header losing its background bar).
       let rowY = 0;
+      let aborted = false;
       while (rowY < clipHeight) {
         const tileH  = Math.min(chunkH, clipHeight - rowY);
         const rowTiles = [];
         let colX = 0;
         while (colX < clipWidth) {
+          // On cancel — ESC on the page, or an external detach (banner Cancel →
+          // onDetach marks the tab) — stop and keep the rows captured so far rather
+          // than discarding everything. Breaking before the current (incomplete) row
+          // is pushed keeps the partial image a clean rectangle.
+          if (_cancelledCaptures.has(tabId)) { aborted = true; break; }
           const tileW = Math.min(chunkW, clipWidth - colX);
           await cdpEval(tabId, `document.documentElement.style.transform='translate(${-(clipX+colX)}px,${-(clipY+rowY)}px)'`);
           await cdpRafLocal();
@@ -540,8 +626,18 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
           if (cap?.data) rowTiles.push({ dataUrl: `data:image/png;base64,${cap.data}`, dx: colX, dy: rowY, tileW, tileH });
           colX += tileW;
         }
+        if (aborted) break;
         tiles.push(rowTiles);
         rowY += tileH;
+      }
+
+      // Height actually captured: the full clip, or how far we got before a cancel.
+      // If nothing was captured (cancelled on the very first row), there is no partial
+      // image to keep — fall back to a clean cancel via the catch.
+      const captHeight = aborted ? rowY : clipHeight;
+      if (aborted) {
+        partialCapture = true;
+        if (captHeight === 0) throw new _CaptureCancelled();
       }
 
       await cdpEval(tabId, `document.documentElement.style.transform=''`);
@@ -555,8 +651,8 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       const bandSections = [];
       let bandY = 0;
 
-      while (bandY < clipHeight) {
-        const bandH   = Math.min(BAND_H, clipHeight - bandY);
+      while (bandY < captHeight) {
+        const bandH   = Math.min(BAND_H, captHeight - bandY);
         const bandEnd = bandY + bandH;
         const bandTiles = allTiles.filter(t => t.dy < bandEnd && (t.dy + t.tileH) > bandY);
 
@@ -586,7 +682,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       if (bandSections.length === 1) {
         result = { data: bandSections[0].data };
       } else {
-        const finalCanvas = new OffscreenCanvas(Math.round(clipWidth * dpr), Math.round(clipHeight * dpr));
+        const finalCanvas = new OffscreenCanvas(Math.round(clipWidth * dpr), Math.round(captHeight * dpr));
         const finalCtx    = finalCanvas.getContext('2d');
         let yPos = 0;
         for (const band of bandSections) {
@@ -618,18 +714,31 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       if (id == null) return { error: 'Download failed' };
     }
     const r = { success: true, filename };
+    if (partialCapture) r.partial = true;
     if (returnBase64) r.base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
     return r;
 
   } catch (e) {
-    await cdpEval(tabId, `document.documentElement.style.transform=''`).catch(() => {});
+    // Cancelled either cooperatively (ESC on page → _CaptureCancelled) or by an
+    // external debugger detach (banner Cancel → onDetach marks _cancelledCaptures,
+    // and the in-flight CDP call rejects into here). Both resolve as a clean cancel.
+    const cancelled = e instanceof _CaptureCancelled || _cancelledCaptures.has(tabId);
+    // On a cooperative cancel the debugger is still attached, so undo the page
+    // mutations via CDP first (clean path). These cdpEval/sendCommand calls are
+    // best-effort no-ops if the debugger already went away (e.g. ESC dismissed
+    // Chrome's banner); restorePageDom via chrome.scripting is then the guaranteed
+    // path that resets transform / scrollbar / hidden fixed elements without it.
+    await cdpEval(tabId, `document.documentElement.style.transform='';document.body.style.transform='';`).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_FIXED).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR).catch(() => {});
+    await cdpEval(tabId, `window.scrollTo(${scrollX}, ${scrollY})`).catch(() => {});
     await new Promise((resolve) => {
-      chrome.debugger.sendCommand({ tabId }, 'Emulation.clearDeviceMetricsOverride', {}, resolve);
-    }).catch(() => {});
-    await new Promise((resolve) => chrome.debugger.detach({ tabId }, resolve)).catch(() => {});
-    return { error: e.message || 'Screenshot failed' };
+      chrome.debugger.sendCommand({ tabId }, 'Emulation.clearDeviceMetricsOverride', {}, () => { void chrome.runtime.lastError; resolve(); });
+    });
+    await new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }));
+    markSessionClosed(tabId);
+    await restorePageDom(tabId);
+    return cancelled ? { cancelled: true } : { error: e.message || 'Screenshot failed' };
   }
 }
 
@@ -829,9 +938,11 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     return r;
 
   } catch (e) {
-    await cdpEval(tabId, CDP_SHOW_FIXED).catch(() => {});
-    await cdpEval(tabId, CDP_SHOW_SCROLLBAR).catch(() => {});
-    await new Promise((r) => chrome.debugger.detach({ tabId }, r)).catch(() => {});
+    // See _takeFullPageScreenshot's catch: restore via chrome.scripting so the
+    // page recovers even if the debugger detached mid-capture (e.g. ESC / banner).
+    await new Promise((r) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; r(); }));
+    markSessionClosed(tabId);
+    await restorePageDom(tabId);
     if (Math.abs(origZoom - 1) > 0.01) {
       await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r)).catch(() => {});
     }
@@ -871,13 +982,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       TAKE_SCREENSHOT_SCROLL_V: 'vertical',
       TAKE_SCREENSHOT_SCROLL_H: 'horizontal',
     };
-    const task = FULL_TYPES.includes(request.type)
+    const isFull = FULL_TYPES.includes(request.type);
+    // Tell the page a cancellable capture is running so ESC can abort it. Toggled
+    // off when the task settles — done at this single choke point so every exit
+    // path (success, error, cancel) clears it.
+    if (isFull) tabMsg(tabId, { type: 'FULL_CAPTURE_STATE', active: true }).catch(() => {});
+    const task = isFull
       ? takeFullPageScreenshot(tabId, saveMode, prefix, request.filename, crop, dirMap[request.type])
       : takeVisibleScreenshot(tabId, saveMode, prefix, request.filename, crop);
     task.then((result) => {
       sendResponse(result);
       chrome.runtime.sendMessage({ type: 'SCREENSHOT_RESULT', result }).catch(() => {});
-    }).catch(e => sendResponse({ error: e.message }));
+    }).catch(e => sendResponse({ error: e.message }))
+      .finally(() => { if (isFull) tabMsg(tabId, { type: 'FULL_CAPTURE_STATE', active: false }).catch(() => {}); });
   });
 
   return true;
