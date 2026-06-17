@@ -456,6 +456,31 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
   _cancelledCaptures.delete(tabId);
   const _checkCancel = () => { if (_cancelledCaptures.has(tabId)) throw new _CaptureCancelled(); };
 
+  // Full/scroll captures are normalised to 100% zoom before measuring so the saved
+  // image is the standard desktop layout (and so the page dimensions read below are not
+  // distorted by the zoom factor). The user's zoom is restored in both the success and
+  // catch paths. Mirrors the element-capture path. Declared out here so catch can see it.
+  //
+  // Skipped for segment captures: the segmentClip rect was measured at the current zoom,
+  // so resetting zoom (which reflows the layout) would make the clip point at the wrong
+  // content. Segments instead keep the zoom and capture faithfully via the tile path
+  // (see the needsStitch note below).
+  const origZoom = await new Promise(r => chrome.tabs.getZoom(tabId, r));
+  const zoomAdjusted = !segmentClip && Math.abs(origZoom - 1) > 0.01;
+  if (zoomAdjusted) {
+    // setZoom resolves as soon as the change is QUEUED, not when the renderer has
+    // reflowed at the new zoom. If we measure too early the viewport is still the zoomed
+    // (narrow) one. Poll getZoom until the reset has actually taken effect before measuring.
+    await new Promise(r => chrome.tabs.setZoom(tabId, 1, r));
+    for (let i = 0; i < 25; i++) {
+      const z = await new Promise(r => chrome.tabs.getZoom(tabId, r));
+      if (Math.abs(z - 1) < 0.01) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    // A little extra settle time for the post-reset layout reflow.
+    await new Promise(r => setTimeout(r, 250));
+  }
+
   if (!segmentClip && scrollDir === 'full') {
     // Clear any leftover transforms from a previous interrupted tile-stitch pass.
     // A non-zero scroll position or a residual translateX/Y would offset the
@@ -476,7 +501,11 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
   const dims = await tabMsg(tabId, { type: 'GET_PAGE_DIMENSIONS' });
   if (!dims || dims.failed) return { error: 'Could not get page dimensions' };
 
-  const { fullWidth, fullHeight, viewportWidth, viewportHeight, scrollX, scrollY, devicePixelRatio: dpr = 1 } = dims;
+  const { viewportWidth, viewportHeight, scrollX, scrollY, devicePixelRatio: dpr = 1 } = dims;
+  // Mutable: the full content size from the content script is only a fallback. Once the
+  // debugger is attached we replace it with CDP's own Page.getLayoutMetrics value, which
+  // is authoritative and zoom-safe (see below).
+  let { fullWidth, fullHeight } = dims;
 
   try {
     // Always detach before attaching — Chrome rejects a second attach with
@@ -508,14 +537,15 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     await new Promise(r => setTimeout(r, 1200));
     _checkCancel();
 
-    await new Promise((resolve, reject) => {
-      chrome.debugger.sendCommand({ tabId }, 'Emulation.setDeviceMetricsOverride', {
-        width: viewportWidth, height: viewportHeight, deviceScaleFactor: dpr, mobile: false,
-      }, () => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve();
-      });
-    });
+    // NOTE: we deliberately do NOT call Emulation.setDeviceMetricsOverride here.
+    // The override establishes its own emulated viewport, but it does NOT cancel the
+    // tab's browser zoom — the two compound, so on a zoomed page the emulated layout
+    // viewport shrank (width ÷ zoom), flipping the site into its narrow/mobile
+    // responsive layout and throwing the tile coordinates off (overlapping strips).
+    // captureBeyondViewport already renders the full page beyond the visible area on
+    // its own, so the override was never needed. Capturing at the page's natural
+    // devicePixelRatio keeps the clip math and the rendered pixels in agreement at any
+    // zoom — the same approach the element-capture path uses successfully.
 
     await new Promise((resolve, reject) => {
       chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
@@ -541,6 +571,43 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     });
     await new Promise(r => setTimeout(r, 300));
 
+    // Authoritative full-page size, straight from CDP. The content-script
+    // window.scrollHeight/innerWidth read earlier can lag the zoom reset, so a zoomed
+    // page may report a smaller content box than Page.captureScreenshot actually
+    // renders — the clip then cuts the page short. Page.getLayoutMetrics.cssContentSize
+    // reports the exact CSS-px content box the capture will produce, so the clip can
+    // never disagree with the rendered pixels. Falls back to the content-script dims if
+    // the command is unavailable. Only the full-page size is taken from here; the
+    // viewport (used for per-tile clips) stays the content-script value.
+    // Effective capture viewport, measured AFTER attach. The content-script innerWidth/
+    // innerHeight read before attaching does not account for the "...is debugging this
+    // browser" info-bar Chrome shows once the debugger is attached, which shaves ~40px
+    // off the top of the page. Tiling the page against that taller pre-attach height made
+    // every captureBeyondViewport:false tile clip exceed the real viewport, leaving a
+    // blank band at each row seam. cssVisualViewport is the true visible box.
+    let vpW = viewportWidth, vpH = viewportHeight;
+    try {
+      const lm = await new Promise((resolve, reject) => {
+        chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics', {}, (res) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(res);
+        });
+      });
+      const vv = lm?.cssVisualViewport || lm?.visualViewport;
+      if (vv && vv.clientWidth > 0 && vv.clientHeight > 0) {
+        vpW = Math.floor(vv.clientWidth);
+        vpH = Math.floor(vv.clientHeight);
+      }
+      // Authoritative full-page box (segment captures supply their own clip instead).
+      if (!segmentClip) {
+        const cs = lm?.cssContentSize || lm?.contentSize;
+        if (cs && cs.width > 0 && cs.height > 0) {
+          fullWidth  = Math.ceil(cs.width);
+          fullHeight = Math.ceil(cs.height);
+        }
+      }
+    } catch (_) { /* keep the content-script dims */ }
+
     let clipX, clipY, clipWidth, clipHeight;
     if (segmentClip) {
       ({ x: clipX, y: clipY, width: clipWidth, height: clipHeight } = segmentClip);
@@ -554,8 +621,16 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     // CDP Page.captureScreenshot with captureBeyondViewport silently corrupts or
     // returns empty data for regions whose physical pixel dimension exceeds ~4 000.
     // Exceeding regions must be tiled and stitched instead.
+    //
+    // Segment captures additionally ALWAYS take the tile path, even for small regions.
+    // The one-shot path uses captureBeyondViewport:true, which makes Chrome re-render
+    // the page against its default layout viewport — on a zoomed page that reflows the
+    // site into its narrow/mobile layout. The tile path uses captureBeyondViewport:false
+    // and shifts the page with a CSS transform, so it captures exactly what is rendered
+    // on screen at the current zoom — the "keep zoom, capture faithfully" behaviour.
     const MAX_CAPTURE_DIM = 4000;
-    const needsStitch = (clipWidth * dpr > MAX_CAPTURE_DIM) || (clipHeight * dpr > MAX_CAPTURE_DIM);
+    const needsStitch = !!segmentClip
+      || (clipWidth * dpr > MAX_CAPTURE_DIM) || (clipHeight * dpr > MAX_CAPTURE_DIM);
 
     let result;
     // Set when a tiled capture is cancelled partway: we keep the rows captured so
@@ -581,8 +656,8 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
         }, () => resolve());
       });
 
-      const chunkW = Math.min(4000, viewportWidth);
-      const chunkH = Math.min(4000, viewportHeight);
+      const chunkW = Math.min(4000, vpW);
+      const chunkH = Math.min(4000, vpH);
       const tiles  = [];
 
       await cdpEval(tabId, `window.scrollTo(0, 0)`);
@@ -648,6 +723,21 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       // Process strips sequentially — release each GPU texture after drawing.
       const BAND_H    = 4000;
       const allTiles  = tiles.flat();
+
+      // Derive the real device-pixel scale from an actual captured tile rather than
+      // trusting window.devicePixelRatio. Without setDeviceMetricsOverride the CDP
+      // screenshot renders at the monitor's native scale, which on a browser-zoomed
+      // page differs from window.devicePixelRatio (= display scale × browser zoom).
+      // Using the reported dpr would size the stitch canvas too wide (or too narrow) and
+      // leave half the image blank. Measuring the captured pixels keeps canvas and tiles
+      // in lockstep at any zoom — the same approach the element-capture path uses.
+      let stitchDpr = dpr;
+      if (allTiles.length > 0 && allTiles[0].tileW > 0) {
+        const probe = await createImageBitmap(await fetch(allTiles[0].dataUrl).then(r => r.blob()));
+        if (probe.width > 0) stitchDpr = probe.width / allTiles[0].tileW;
+        probe.close();
+      }
+
       const bandSections = [];
       let bandY = 0;
 
@@ -657,7 +747,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
         const bandTiles = allTiles.filter(t => t.dy < bandEnd && (t.dy + t.tileH) > bandY);
 
         if (bandTiles.length > 0) {
-          const canvas = new OffscreenCanvas(Math.round(clipWidth * dpr), Math.round(bandH * dpr));
+          const canvas = new OffscreenCanvas(Math.round(clipWidth * stitchDpr), Math.round(bandH * stitchDpr));
           const ctx    = canvas.getContext('2d');
 
           for (const tile of bandTiles) {
@@ -668,8 +758,8 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
             if (srcH <= 0) { bmp.close(); continue; }
             const destY = Math.max(0, tile.dy - bandY);
             ctx.drawImage(bmp,
-              0, Math.round(srcYStart * dpr), Math.round(tile.tileW * dpr), Math.round(srcH * dpr),
-              Math.round(tile.dx * dpr), Math.round(destY * dpr), Math.round(tile.tileW * dpr), Math.round(srcH * dpr));
+              0, Math.round(srcYStart * stitchDpr), Math.round(tile.tileW * stitchDpr), Math.round(srcH * stitchDpr),
+              Math.round(tile.dx * stitchDpr), Math.round(destY * stitchDpr), Math.round(tile.tileW * stitchDpr), Math.round(srcH * stitchDpr));
             bmp.close();
           }
 
@@ -682,12 +772,12 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
       if (bandSections.length === 1) {
         result = { data: bandSections[0].data };
       } else {
-        const finalCanvas = new OffscreenCanvas(Math.round(clipWidth * dpr), Math.round(captHeight * dpr));
+        const finalCanvas = new OffscreenCanvas(Math.round(clipWidth * stitchDpr), Math.round(captHeight * stitchDpr));
         const finalCtx    = finalCanvas.getContext('2d');
         let yPos = 0;
         for (const band of bandSections) {
           const bmp = await createImageBitmap(await fetch(`data:image/png;base64,${band.data}`).then(r => r.blob()));
-          finalCtx.drawImage(bmp, 0, Math.round(yPos * dpr));
+          finalCtx.drawImage(bmp, 0, Math.round(yPos * stitchDpr));
           bmp.close();
           yPos += band.h;
         }
@@ -702,6 +792,12 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     });
     await new Promise((resolve) => chrome.debugger.detach({ tabId }, resolve));
     await new Promise(r => setTimeout(r, 300));
+
+    // Restore the user's browser zoom now that the CDP capture (which required 100%)
+    // is done. Detach has run, so this can no longer affect the screenshot.
+    if (zoomAdjusted) {
+      await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r));
+    }
 
     if (!result?.data) return { error: 'CDP capture returned no data' };
 
@@ -738,6 +834,9 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     await new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }));
     markSessionClosed(tabId);
     await restorePageDom(tabId);
+    if (zoomAdjusted) {
+      await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r)).catch(() => {});
+    }
     return cancelled ? { cancelled: true } : { error: e.message || 'Screenshot failed' };
   }
 }

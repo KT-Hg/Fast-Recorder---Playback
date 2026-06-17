@@ -921,8 +921,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (type === "HOTKEY_SEG_START") {
     const tabId = sender.tab?.id;
     if (!tabId) return;
-    state.segmentCapture = { active: true, tabId, dir: request.dir, crop: false };
-    chrome.tabs.sendMessage(tabId, { type: "START_SEGMENT_TAB", dir: request.dir });
+    // Reset to 100% for the whole session, same as the popup-initiated path below.
+    chrome.tabs.getZoom(tabId, (origZoom) => {
+      void chrome.runtime.lastError;
+      const needReset = typeof origZoom === 'number' && Math.abs(origZoom - 1) > 0.01;
+      state.segmentCapture = { active: true, tabId, dir: request.dir, crop: false, origZoom: needReset ? origZoom : null };
+      const startSelection = () => chrome.tabs.sendMessage(tabId, { type: "START_SEGMENT_TAB", dir: request.dir });
+      if (needReset) chrome.tabs.setZoom(tabId, 1, () => { void chrome.runtime.lastError; setTimeout(startSelection, 300); });
+      else startSelection();
+    });
     sendResponse({ ok: true });
     return;
   }
@@ -941,16 +948,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- Segment capture: start --- */
   if (type === "START_SEGMENT_CAPTURE") {
-    state.segmentCapture = { active: true, tabId: request.tabId, dir: request.dir, crop: !!request.crop };
-    chrome.tabs.sendMessage(request.tabId, { type: "START_SEGMENT_TAB", dir: request.dir });
+    const segTabId = request.tabId;
+    // Reset browser zoom to 100% for the WHOLE segment session before the on-page
+    // selection starts. The selection rect is recorded from scrollX/Y + innerWidth/Height
+    // (CSS px at the current zoom), so it must be selected AND captured at the same zoom.
+    // Resetting up-front means both happen at 100% — the segment image then matches the
+    // Full/Scroll/Element captures. origZoom is restored when the session ends.
+    chrome.tabs.getZoom(segTabId, (origZoom) => {
+      void chrome.runtime.lastError;
+      const needReset = typeof origZoom === 'number' && Math.abs(origZoom - 1) > 0.01;
+      state.segmentCapture = { active: true, tabId: segTabId, dir: request.dir, crop: !!request.crop, origZoom: needReset ? origZoom : null };
+      const startSelection = () => chrome.tabs.sendMessage(segTabId, { type: "START_SEGMENT_TAB", dir: request.dir });
+      if (needReset) {
+        chrome.tabs.setZoom(segTabId, 1, () => { void chrome.runtime.lastError; setTimeout(startSelection, 300); });
+      } else {
+        startSelection();
+      }
+    });
     sendResponse({ ok: true });
     return;
   }
 
   /* --- Segment capture: stop & capture --- */
   if (type === "CAPTURE_SEGMENT") {
-    const { tabId, dir, crop } = state.segmentCapture;
+    const { tabId, dir, crop, origZoom } = state.segmentCapture;
     state.segmentCapture = { active: false, tabId: null, dir: null, crop: false };
+    // Restore the user's zoom once the capture settles (success or error).
+    const restoreZoom = () => { if (origZoom != null && tabId != null) chrome.tabs.setZoom(tabId, origZoom, () => { void chrome.runtime.lastError; }); };
     chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
       const saveMode = settings.screenshotSaveMode || "auto";
       const prefix   = settings.screenshotPrefix   || "screenshot";
@@ -962,7 +986,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         })
         .catch(e => {
           chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result: { error: e.message } }).catch(() => {});
-        });
+        })
+        .finally(restoreZoom);
     });
     sendResponse({ ok: true });
     return;
@@ -970,6 +995,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- Segment capture: cancel --- */
   if (type === "CANCEL_SEGMENT_CAPTURE") {
+    const { tabId, origZoom } = state.segmentCapture;
+    if (origZoom != null && tabId != null) chrome.tabs.setZoom(tabId, origZoom, () => { void chrome.runtime.lastError; });
     state.segmentCapture = { active: false, tabId: null, dir: null };
     sendResponse({ ok: true });
     return;
