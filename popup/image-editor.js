@@ -45,7 +45,7 @@ export function initImageEditor() {
 
   clipBtn.addEventListener('click', () => {
     pasteCapture.focus({ preventScroll: true });
-    showToast('Nhấn Ctrl+V để dán ảnh từ clipboard', 'info');
+    showToast('Press Ctrl+V to paste an image from the clipboard', 'info');
   });
 
   dropZone.addEventListener('click', () => fileInput.click());
@@ -60,7 +60,7 @@ export function initImageEditor() {
     dropZone.classList.remove('drag-over');
     const file = e.dataTransfer?.files?.[0];
     if (!file || !file.type.startsWith('image/')) {
-      showToast('Chỉ hỗ trợ file ảnh', 'error');
+      showToast('Only image files are supported', 'error');
       return;
     }
     fileToDataUrl(file).then(url => launchEditor(url, file.name));

@@ -290,6 +290,10 @@ const _restoreDomFn = () => {
     el.style.visibility = el.getAttribute('data-fxhide') || '';
     el.removeAttribute('data-fxhide');
   });
+  document.querySelectorAll('[data-exthide]').forEach((el) => {
+    el.style.visibility = el.getAttribute('data-exthide') || '';
+    el.removeAttribute('data-exthide');
+  });
 };
 
 /**
@@ -346,6 +350,24 @@ const CDP_SHOW_SCROLLBAR = `document.getElementById('__ext_no_scroll')?.remove()
 const CDP_SHOW_FIXED = `document.querySelectorAll('[data-fxhide]').forEach(el=>{
   el.style.visibility=el.getAttribute('data-fxhide');
   el.removeAttribute('data-fxhide');
+})`;
+
+// Our own injected chrome (picker bar, segment bar, countdown pill, highlight
+// tooltip) is tagged `data-ext-overlay` in the content script. Hide the whole
+// family for the duration of a capture: the tiling path deliberately leaves
+// fixed elements visible so a site's header renders once, which would otherwise
+// bake our bars into the image too. Restored on every exit path, including
+// _restoreDomFn for the case where the debugger is already gone.
+const CDP_HIDE_EXT_OVERLAYS = `document.querySelectorAll('[data-ext-overlay]').forEach(el=>{
+  if(!el.hasAttribute('data-exthide')){
+    el.setAttribute('data-exthide',el.style.visibility);
+    el.style.visibility='hidden';
+  }
+})`;
+
+const CDP_SHOW_EXT_OVERLAYS = `document.querySelectorAll('[data-exthide]').forEach(el=>{
+  el.style.visibility=el.getAttribute('data-exthide');
+  el.removeAttribute('data-exthide');
 })`;
 
 /* ── Download & Crop ────────────────────────────────────────────────────────── */
@@ -558,6 +580,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     });
 
     await cdpEval(tabId, CDP_HIDE_SCROLLBAR);
+    await cdpEval(tabId, CDP_HIDE_EXT_OVERLAYS);
 
     if (effectiveDir === 'full') {
       await cdpEval(tabId, `document.documentElement.style.transform='';document.body.style.transform='';window.scrollTo(0,0);`);
@@ -787,6 +810,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     }
 
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR);
+    await cdpEval(tabId, CDP_SHOW_EXT_OVERLAYS);
     await new Promise((resolve) => {
       chrome.debugger.sendCommand({ tabId }, 'Emulation.clearDeviceMetricsOverride', {}, resolve);
     });
@@ -826,6 +850,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     // path that resets transform / scrollbar / hidden fixed elements without it.
     await cdpEval(tabId, `document.documentElement.style.transform='';document.body.style.transform='';`).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_FIXED).catch(() => {});
+    await cdpEval(tabId, CDP_SHOW_EXT_OVERLAYS).catch(() => {});
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR).catch(() => {});
     await cdpEval(tabId, `window.scrollTo(${scrollX}, ${scrollY})`).catch(() => {});
     await new Promise((resolve) => {
@@ -958,7 +983,7 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     await cdpRaf();
     await cdpEval(tabId, CDP_HIDE_SCROLLBAR);
     await cdpRaf();
-    await cdpEval(tabId, `document.getElementById('__picker_bar')?.remove(); document.getElementById('__picker_overlay')?.remove();`);
+    await cdpEval(tabId, CDP_HIDE_EXT_OVERLAYS);
     await cdpRaf();
 
     const rect = await cdpGetRect(selector, selectors) || rect0;
@@ -1014,6 +1039,7 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
 
     await cdpEval(tabId, `window.scrollTo(${origScrollX}, ${origScrollY})`);
     await cdpEval(tabId, CDP_SHOW_FIXED);
+    await cdpEval(tabId, CDP_SHOW_EXT_OVERLAYS);
 
     let dataUrl = await stitchStrips(strips, rect.width, rect.height);
 

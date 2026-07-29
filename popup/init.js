@@ -18,6 +18,7 @@ import { initExportBookmarklet } from './export-bookmarklet.js';
 import { initExportSelenium } from './export-selenium.js';
 import { initImageEditor } from './image-editor.js';
 import { initHighlight } from './highlight.js';
+import { initUpdateBanner } from './update-banner.js';
 
 /**
  * Keep a spacer div below the sticky header the same height as the header.
@@ -37,7 +38,8 @@ function initHeaderSpacer() {
   sync();
   new MutationObserver(sync).observe(header, {
     childList: true, subtree: true, attributes: true,
-    attributeFilter: ['class', 'style']
+    // 'hidden' — the update banner shows/hides via the attribute, not style
+    attributeFilter: ['class', 'style', 'hidden']
   });
   window.addEventListener('resize', sync);
 }
@@ -146,4 +148,5 @@ initExportBookmarklet();
 initExportSelenium();
 initImageEditor();
 initHighlight();
+initUpdateBanner();
 startConnectionCheck();

@@ -6,6 +6,43 @@
  * Shortcuts: fully customisable, stored in chrome.storage.local
  */
 /* === Confirm Modal === */
+
+// Mirrors trapFocus() in popup/utils.js — the editor is a standalone page and
+// does not import the popup modules, so the behaviour is restated here.
+const CM_FOCUSABLE_SEL = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function cmTrapFocus(modalEl) {
+  const prevActive = document.activeElement;
+  const getFocusable = () => Array.from(modalEl.querySelectorAll(CM_FOCUSABLE_SEL))
+    .filter(el => el.offsetParent !== null || el === document.activeElement);
+
+  const focusable = getFocusable();
+  if (focusable.length) focusable[0].focus();
+
+  const handler = (e) => {
+    if (e.key !== 'Tab') return;
+    const items = getFocusable();
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+  modalEl.addEventListener('keydown', handler);
+
+  return () => {
+    modalEl.removeEventListener('keydown', handler);
+    if (prevActive && typeof prevActive.focus === 'function') {
+      try { prevActive.focus(); } catch (_) {}
+    }
+  };
+}
+
 function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabel } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('cmTitle').textContent = title;
@@ -16,9 +53,25 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   okBtn.className = danger ? 'danger' : '';
   cancelBtn.style.display = '';
   modal.classList.add('show');
-  const close = () => modal.classList.remove('show');
-  cancelBtn.onclick = close;
-  okBtn.onclick = () => { close(); onConfirm(); };
+  modal.setAttribute('aria-hidden', 'false');
+
+  const releaseFocus = cmTrapFocus(modal);
+  const close = () => {
+    // Blur before hiding — leaving focus inside an aria-hidden subtree is what
+    // makes screen readers announce nothing at all afterwards.
+    if (modal.contains(document.activeElement)) document.activeElement.blur();
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+    releaseFocus();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); cleanup(); close(); }
+  };
+  const cleanup = () => modal.removeEventListener('keydown', onKey);
+  modal.addEventListener('keydown', onKey);
+
+  cancelBtn.onclick = () => { cleanup(); close(); };
+  okBtn.onclick = () => { cleanup(); close(); onConfirm(); };
 }
 
 (async () => {

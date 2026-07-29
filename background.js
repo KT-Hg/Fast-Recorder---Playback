@@ -19,6 +19,10 @@ import {
   openCropUI, buildScreenshotFilename,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
+import {
+  UPDATE_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
+  initUpdateAvailableListener, applyUpdate,
+} from './bg/update-check.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -71,6 +75,11 @@ chrome.storage.local.get(["schedules"], (res) => {
   });
 });
 
+// Weekly Web Store version check (see bg/update-check.js).
+ensureUpdateAlarm();
+scheduleCatchUpCheck();
+initUpdateAvailableListener();
+
 // Restore an in-progress recording if the SW was suspended mid-session.
 restoreRecordingState().then(() => { if (state.recording) updateBadge(); });
 
@@ -98,6 +107,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     }
     return;
   }
+  if (alarm.name === UPDATE_ALARM) { runUpdateCheck(); return; }
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   const id = alarm.name.slice(ALARM_PREFIX.length);
   chrome.storage.local.get(["schedules"], (res) => {
@@ -155,6 +165,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     sendResponse({ received: true });
     return;
+  }
+
+  /* --- Web Store update check --- */
+  if (type === "CHECK_FOR_UPDATE") {
+    runUpdateCheck().then(() => chrome.storage.local.get(["updateStatus"], (res) => {
+      sendResponse({ updateStatus: res?.updateStatus || null });
+    }));
+    return true;
+  }
+
+  if (type === "APPLY_UPDATE") {
+    const busy = state.recording || state.playback.active ||
+                 state.sequencePlayback.active || state.csvPlayback.active;
+    applyUpdate({ busy }).then(sendResponse);
+    return true;
   }
 
   // Content script needs its own frameId to tag recorded actions for correct

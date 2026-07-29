@@ -687,7 +687,7 @@ async function _copy() {
     const btn = document.getElementById('exportBmCopy');
     if (btn) {
       const orig = btn.textContent;
-      btn.textContent = '✓ Copied!';
+      btn.textContent = 'Copied';
       btn.classList.add('copied');
       setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
     }

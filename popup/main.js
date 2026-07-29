@@ -1,6 +1,6 @@
 // All logic lives inside initMain() — a single closure so DOM queries run after
 // document ready and UI state stays local rather than module-level.
-import { escHtml, getActionIcon, showToast, showConfirm, showAlert,
+import { escHtml, getActionIcon, showToast, showConfirm, showAlert, showPrompt,
          lockScroll, unlockScroll, validateNumberInput,
          safeSendTabMessage, isEligibleTab, debounce } from './utils.js';
 import { updateRangeFill } from './settings.js';
@@ -1034,13 +1034,13 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== "SCREENSHOT_RESULT") return;
   const { result } = msg;
   if (result?.cancelled) {
-    showToast('✕ Capture cancelled', 'error');
+    showToast('Capture cancelled', 'error');
   } else if (result?.error) {
-    showToast('✗ ' + result.error, 'error');
+    showToast(result.error, 'error');
   } else if (result?.partial) {
-    showToast('✓ Saved partial capture: ' + (result.filename || 'screenshot'), 'success');
+    showToast('Saved partial capture: ' + (result.filename || 'screenshot'), 'success');
   } else if (result?.success) {
-    showToast('✓ Saved: ' + (result.filename || 'screenshot'), 'success');
+    showToast('Saved: ' + (result.filename || 'screenshot'), 'success');
   }
 });
 
@@ -1050,7 +1050,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type !== "ACTION_FAILED") return;
   const label = msg.action?.type ? `[${msg.action.type}]` : "";
   const reason = msg.reason || "element not found";
-  showToast(`✗ Action ${msg.index + 1} failed ${label} — ${reason}`, "error");
+  showToast(`Action ${msg.index + 1} failed ${label} — ${reason}`, "error");
 });
 
 // Notify user when a Switch action branches to another scenario
@@ -1064,9 +1064,9 @@ chrome.runtime.onMessage.addListener((msg) => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "STORAGE_WARNING") {
     const pct = Math.round((msg.bytes / msg.limit) * 100);
-    showToast(`⚠ Storage ${pct}% full — consider exporting old scenarios`, "error");
+    showToast(`Storage ${pct}% full — consider exporting old scenarios`, "warn");
   } else if (msg.type === "STORAGE_ERROR") {
-    showToast(`✗ Storage error: ${msg.msg}`, "error");
+    showToast(`Storage error: ${msg.msg}`, "error");
   }
 });
 
@@ -1157,7 +1157,7 @@ if (startRecordCompact) {
     // Query current tab directly to ensure we have the correct tabId
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tab = tabs[0];
-      if (!tab) { showToast("Không tìm thấy tab hiện tại", "error"); return; }
+      if (!tab) { showToast("No active tab found", "error"); return; }
 
       const tabId = tab.id;
 
@@ -1217,16 +1217,12 @@ document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
     chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop"]);
     chrome.storage.local.set({
       dragdropTargetPickPending: true,
+      // Full snapshot — the popup closes below, so a partial save would drop
+      // everything outside the dragdrop fields.
       dragdropTargetPickState: {
+        ...collectManualFormState(),
         scenarioId: scenarioList.value || null,
         editingIndex: editing ? editing.index : null,
-        sourceSelector: manualSelector.value?.trim() || "",
-        sourceSelectors: currentPickedSelectors || null,
-        existingTarget: document.getElementById("dragdropTarget")?.value?.trim() || "",
-        targetSelectorType: document.getElementById("dragdropTargetSelectorType")?.value || "css",
-        actionType: manualActionType.value,
-        delay: manualDelay.value,
-        label: document.getElementById("manualLabel")?.value?.trim() || "",
       }
     });
     safeSendTabMessage(tab.id, { type: "START_PICK_MODE" });
@@ -1431,6 +1427,19 @@ function displayPickedSelectors(selectors) {
   });
 }
 
+/* Switching the selector flavour swaps in the matching picked selector rather
+   than leaving a stale one from the previous flavour in the box. */
+selectorType?.addEventListener('change', () => {
+  const picked = currentPickedSelectors?.[selectorType.value];
+  if (picked) manualSelector.value = picked;
+});
+
+document.getElementById('dragdropTargetSelectorType')?.addEventListener('change', (e) => {
+  const picked = currentPickedDragdropTargetSelectors?.[e.target.value];
+  const target = document.getElementById('dragdropTarget');
+  if (picked && target) target.value = picked;
+});
+
 // Display picked selectors for drag & drop TARGET
 function displayPickedDragdropTargetSelectors(selectors) {
   const info = document.getElementById('pickedDragdropTargetInfo');
@@ -1494,16 +1503,9 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
       addManualAction.textContent = "Save Edit";
       cancelEdit.style.display = "inline-block";
     }
-    manualActionType.value = pe.actionType || "";
-    manualValue.value = pe.actionValue || "";
-    setManualDelayUI(pe.actionDelay || DEFAULT_DELAY_MS);
-    if (pe.actionDelayPreset) {
-      const presetEl = document.getElementById("manualDelayPreset");
-      if (presetEl) presetEl.value = pe.actionDelayPreset;
-    }
-
-    // Trigger onchange to restore all field visibility correctly
-    manualActionType.onchange?.();
+    // Restores every field + all wrapper visibility (also handles the legacy
+    // actionValue/actionDelay shape written by older versions).
+    applyManualFormState(pe);
 
     // Open the collapsible card
     const card = document.getElementById("addManualActionCard");
@@ -1519,31 +1521,26 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
     chrome.storage.local.remove(["dragdropTargetPickPending", "dragdropTargetPickState", "lastPickedSelector", "lastPickedSelectors"]);
     const picked = res.lastPickedSelectors?.css || res.lastPickedSelector || "";
     const st = res.dragdropTargetPickState || {};
-    // Restore form state
-    manualActionType.value = "dragdrop";
-    manualSelector.value = st.sourceSelector || "";
-    manualActionType.onchange?.();  // trigger show/hide
+    // Restore the whole form, then lay the freshly picked target on top.
+    // `sourceSelector`/`existingTarget`/`targetSelectorType` = legacy key names.
+    const targetType = st.dragdropTargetSelectorType || st.targetSelectorType || "css";
+    applyManualFormState({
+      ...st,
+      actionType:     "dragdrop",
+      selector:       st.selector       ?? st.sourceSelector  ?? "",
+      pickedSelectors: st.pickedSelectors ?? st.sourceSelectors ?? null,
+      dragdropTarget: st.dragdropTarget ?? st.existingTarget ?? "",
+      dragdropTargetSelectorType: targetType,
+    });
     // Restore target selector with full selector display
     const ddPickedSelectors = res.lastPickedSelectors || (picked ? { css: picked } : null);
     const dtSelectorType = document.getElementById("dragdropTargetSelectorType");
     if (ddPickedSelectors) {
       displayPickedDragdropTargetSelectors(ddPickedSelectors);
-      if (dtSelectorType) dtSelectorType.value = st.targetSelectorType || "css";
+      if (dtSelectorType) dtSelectorType.value = targetType;
       const ddTarget = document.getElementById("dragdropTarget");
-      if (ddTarget) ddTarget.value = ddPickedSelectors[st.targetSelectorType || "css"] || picked;
-    } else {
-      const ddTarget = document.getElementById("dragdropTarget");
-      if (ddTarget) ddTarget.value = st.existingTarget || "";
+      if (ddTarget) ddTarget.value = ddPickedSelectors[targetType] || picked;
     }
-    if (st.sourceSelectors) {
-      currentPickedSelectors = st.sourceSelectors;
-      displayPickedSelectors(currentPickedSelectors);
-    }
-    setManualDelayUI(st.delay || DEFAULT_DELAY_MS);
-    const lblEl = document.getElementById("manualLabel");
-    const lblW  = document.getElementById("manualLabelWrapper");
-    if (lblEl) lblEl.value = st.label || "";
-    if (st.label && lblW) lblW.style.display = "block";
     if (st.editingIndex != null) {
       editing = { scenarioId: st.scenarioId, index: st.editingIndex };
       addManualAction.textContent = "Save Edit";
@@ -1609,7 +1606,7 @@ function showLockOverlay(which, type) {
     if (btn) btn.hidden = false;
   }
   overlay.classList.add('is-visible');
-  document.body.style.overflow = 'hidden';
+  lockScroll();
 }
 
 function hideLockOverlay() {
@@ -1617,7 +1614,7 @@ function hideLockOverlay() {
   const d = document.getElementById('lockOverlayData');
   if (r) r.classList.remove('is-visible');
   if (d) d.classList.remove('is-visible');
-  document.body.style.overflow = '';
+  unlockScroll();
 }
 
 function checkTabActivation() {
@@ -1695,13 +1692,14 @@ if (activateTab) {
         checkTabActivation();
         connectionRetryCount = 0;
 
-        activationStatus.textContent = "✓ Activated successfully!";
+        activationStatus.textContent = "Activated successfully";
         activationStatus.style.color = "var(--success)";
         setTimeout(() => checkTabActivation(), 1500);
       } catch (err) {
-        activationStatus.textContent = "❌ Activation failed";
+        // Reported inline only — the success path does the same, and a toast on
+        // top of it would announce the same failure twice.
+        activationStatus.textContent = "Activation failed";
         activationStatus.style.color = "var(--danger)";
-        showToast("✗ Kích hoạt tab thất bại", "error");
       }
     });
   });
@@ -1759,7 +1757,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 startRecord.addEventListener('click', async () => {
   chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     const tab = tabs[0];
-    if (!tab) { showToast("Không tìm thấy tab hiện tại", "error"); return; }
+    if (!tab) { showToast("No active tab found", "error"); return; }
 
     const tabId = tab.id;
 
@@ -1786,7 +1784,7 @@ startRecord.addEventListener('click', async () => {
 stopRecord.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: "STOP_RECORD" }, (res) => {
     if (chrome.runtime.lastError) {
-      showToast("✗ Không thể dừng ghi: " + chrome.runtime.lastError.message, "error");
+      showToast("Could not stop recording: " + chrome.runtime.lastError.message, "error");
       return;
     }
     if (res?.scenarioId && scenarioList) {
@@ -1937,7 +1935,7 @@ function createActionListItem(a, i, scenarioId) {
   copyBtn.setAttribute("aria-label", `Copy action ${i + 1}: ${actionLabel}`);
   copyBtn.addEventListener("click", () => {
     actionClipboard = JSON.parse(JSON.stringify(a));
-    showToast("Action copied to clipboard", "success");
+    showToast("Action copied", "success");
     previewActions();
   });
 
@@ -2115,8 +2113,46 @@ function setManualDelayUI(ms) {
 
 /* === ADD MANUAL ACTION === */
 
+/* === VALUE FIELD MEMORY (per action type) ===
+ * #manualValue is a single textarea shared by input / navigate / script /
+ * screenshot, where it means four different things (value, URL, JS code,
+ * filename). Keep one stashed copy per action type so switching the type never
+ * destroys what was already typed for another type — and never leaks JS code
+ * into the "value" of an input action.
+ * Every other field has its own dedicated element, so it survives a type switch
+ * on its own (the wrappers are only hidden, never cleared).
+ */
+const _valueByType = Object.create(null);
+let _valueMemoryType = "";   // action type the textarea currently holds
+
+function _rememberManualValue() {
+  if (_valueMemoryType) _valueByType[_valueMemoryType] = manualValue.value;
+}
+
+/** Point the textarea at `type`, stashing the outgoing value first. */
+function _syncManualValueForType(type) {
+  if ((type || "") === _valueMemoryType) return;
+  _rememberManualValue();
+  manualValue.value = _valueByType[type] ?? "";
+  _valueMemoryType = type || "";
+}
+
+/** Seed from a restored/edited action so the next onchange won't blank it. */
+function _seedManualValueMemory(type, value, map) {
+  if (map) Object.assign(_valueByType, map);
+  _valueMemoryType = type || "";
+  if (type) _valueByType[type] = value ?? "";
+}
+
+function _resetManualValueMemory() {
+  for (const k of Object.keys(_valueByType)) delete _valueByType[k];
+  _valueMemoryType = "";
+}
+
 manualActionType.onchange = () => {
   const type = manualActionType.value;
+  // Carry the value textarea over to the new type without losing the old text.
+  _syncManualValueForType(type);
   const manualValueWrapper = document.getElementById("manualValueWrapper");
   const manualDelayWrapper = document.getElementById("manualDelayWrapper");
   const selectorSection    = document.getElementById("selectorSection");
@@ -2227,15 +2263,14 @@ pickElement.addEventListener('click', () => {
   pickElement.textContent = pickerMode ? "✓ Pick Mode" : "🎯";
   pickElement.classList.toggle('picker-active', pickerMode);
 
-  // Save form state before picking so it can be restored when popup reopens
+  // Save the WHOLE form before picking — the popup is closed and rebuilt below,
+  // so anything not snapshotted here (child condition, condition, readdom,
+  // upload, switch, dragdrop, label…) would be gone when it reopens.
   if (pickerMode) {
     chrome.storage.local.set({
       pendingEdit: {
         ...(editing || {}),
-        actionType: manualActionType.value,
-        actionValue: manualValue.value,
-        actionDelay: manualDelay.value,
-        actionDelayPreset: document.getElementById("manualDelayPreset")?.value || "500",
+        ...collectManualFormState(),
         isNew: !editing,
       }
     });
@@ -2641,6 +2676,10 @@ function startEdit(index, action) {
     if (manualDelayWrapper) manualDelayWrapper.style.display = "block";
     manualValue.value = "";
   }
+  // Tie the textarea contents to this action's type so a later type switch
+  // stashes it instead of discarding it.
+  _seedManualValueMemory(action.type, manualValue.value);
+
   // For wait: support old actions that stored duration in action.value
   const delayForUI = action.type === "wait"
     ? String(action.delay || action.value || DEFAULT_DELAY_MS)
@@ -2690,6 +2729,7 @@ function clearEditState() {
   manualSelector.value = "";
   manualActionType.value = "";
   manualValue.value = "";
+  _resetManualValueMemory();
   setManualDelayUI(DEFAULT_DELAY_MS);
   manualValue.style.display = "none";
   addManualAction.textContent = "Add Action";
@@ -2795,27 +2835,23 @@ cancelEdit.addEventListener('click', () => {
   chrome.storage.local.remove("manualFormDraft");
 });
 
-/* === DRAFT: persist Add Manual Action card across popup close/reopen === */
+/* === FORM STATE SNAPSHOT ===
+ * One shared shape for every place that has to put the Add Action card away and
+ * bring it back: the draft (popup close/reopen) and the 🎯 pick round-trip.
+ * Both collect and apply cover EVERY field regardless of the selected action
+ * type, so nothing typed under one type is lost by switching to another.
+ */
 
-function saveDraft() {
-  // Don't overwrite pick-mode saves (those use pendingEdit)
-  if (pickerMode) return;
+function collectManualFormState() {
+  _rememberManualValue(); // flush the live textarea into the per-type map
 
-  const card = document.getElementById("addManualActionCard");
-  const cardOpen = card && !card.classList.contains("collapsed");
-  const type = manualActionType.value;
-
-  // Only save if card is open or we're in edit mode
-  if (!cardOpen && !editing) return;
-  // Don't save if nothing meaningful is in the form
-  if (!type && !editing) return;
-
-  const draft = {
-    actionType:  type,
+  return {
+    actionType:  manualActionType.value,
     selector:    manualSelector.value?.trim() || "",
     selectorType: document.getElementById("selectorType")?.value || "css",
     pickedSelectors: currentPickedSelectors || null,
     value:       manualValue.value || "",
+    valueByType: { ..._valueByType },
     delay:       (() => {
       const preset = document.getElementById("manualDelayPreset");
       return preset?.value === "custom"
@@ -2824,7 +2860,6 @@ function saveDraft() {
     })(),
     delayPreset: document.getElementById("manualDelayPreset")?.value || "500",
     label:       document.getElementById("manualLabel")?.value?.trim() || "",
-    cardOpen,
 
     // dragdrop
     dragdropTarget:            document.getElementById("dragdropTarget")?.value?.trim() || "",
@@ -2843,6 +2878,7 @@ function saveDraft() {
       classContains: document.getElementById("condChildClassContains")?.value?.trim() || "",
       childType:     document.getElementById("condChildType")?.value?.trim() || "",
     },
+    childCondExpanded: document.getElementById("childConditionToggle")?.getAttribute("aria-expanded") === "true",
 
     // readdom
     readdomVarName:  document.getElementById("readdomVarName")?.value?.trim() || "",
@@ -2860,7 +2896,113 @@ function saveDraft() {
     uploadMode:       document.getElementById("uploadMode")?.value               || "input",
     uploadFolderPath: document.getElementById("uploadFolderPath")?.value?.trim() || "",
     uploadFileNames:  document.getElementById("uploadFileNames")?.value          || "",
+  };
+}
 
+function applyManualFormState(state) {
+  if (!state) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ""; };
+  // `actionValue` / `actionDelay*` = legacy pendingEdit shape from older versions
+  const value = state.value ?? state.actionValue ?? "";
+  const type  = state.actionType || "";
+
+  /* --- Type-specific fields first: manualActionType.onchange reads
+         conditionType / screenshotTovarTarget to decide selector visibility. --- */
+
+  // dragdrop
+  set("dragdropTarget", state.dragdropTarget);
+  set("dragdropTargetSelectorType", state.dragdropTargetSelectorType || "css");
+  if (state.pickedDragdropTargetSelectors) {
+    currentPickedDragdropTargetSelectors = state.pickedDragdropTargetSelectors;
+    displayPickedDragdropTargetSelectors(currentPickedDragdropTargetSelectors);
+  }
+
+  // condition
+  set("conditionType", state.conditionType || "elementExists");
+  set("conditionExpectedValue", state.conditionExpectedValue);
+  set("conditionSkipCount", state.conditionSkipCount || "1");
+
+  // child condition
+  const cc = state.childCond || {};
+  const radioAny = document.getElementById("condChildMatchAny");
+  const radioAll = document.getElementById("condChildMatchAll");
+  if (radioAny) radioAny.checked = cc.matchAny !== false;
+  if (radioAll) radioAll.checked = cc.matchAny === false;
+  set("condChildValueEquals",   cc.valueEquals);
+  set("condChildTextContains",  cc.textContains);
+  set("condChildIdContains",    cc.idContains);
+  set("condChildClassContains", cc.classContains);
+  set("condChildType",          cc.childType);
+
+  // readdom
+  set("readdomVarName",  state.readdomVarName);
+  set("readdomReadFrom", state.readdomReadFrom || "text");
+  set("readdomAttrName", state.readdomAttrName);
+
+  // screenshot_tovar
+  set("screenshotTovarVarName", state.screenshotTovarVarName);
+  set("screenshotTovarTarget",  state.screenshotTovarTarget || "page");
+
+  // switch
+  set("switchVar", state.switchVar);
+  _switchCases = state.switchCases ? state.switchCases.map(c => ({ ...c })) : [];
+
+  // uploadFile — uploadFileName = legacy single-name field
+  set("uploadMode",       state.uploadMode || "input");
+  set("uploadFolderPath", state.uploadFolderPath);
+  set("uploadFileNames",  state.uploadFileNames ?? state.uploadFileName ?? "");
+
+  // label
+  set("manualLabel", state.label);
+
+  /* --- Core fields --- */
+  manualSelector.value   = state.selector || "";
+  manualActionType.value = type;
+  manualValue.value      = value;
+  _seedManualValueMemory(type, value, state.valueByType);
+  setManualDelayUI(state.delay ?? state.actionDelay ?? DEFAULT_DELAY_MS);
+  const presetEl = document.getElementById("manualDelayPreset");
+  const preset   = state.delayPreset ?? state.actionDelayPreset;
+  if (presetEl && preset) presetEl.value = preset;
+
+  // Drives all wrapper visibility off the now fully-populated fields
+  manualActionType.onchange?.();
+
+  /* --- Post-visibility touch-ups ---
+     onchange above already resolved every wrapper's display from the populated
+     fields; #pickedSelectorsWrap lives inside #selectorSection so it follows. */
+  if (state.selectorType) set("selectorType", state.selectorType);
+  if (state.pickedSelectors) {
+    currentPickedSelectors = state.pickedSelectors;
+    displayPickedSelectors(currentPickedSelectors);
+  }
+  const attrEl = document.getElementById("readdomAttrName");
+  if (attrEl) attrEl.style.display = (state.readdomReadFrom === "attr") ? "block" : "none";
+  if (type === "condition") updateConditionFieldsVisibility?.();
+  if (type === "switch") { populateSwitchScenarioSelect?.(); renderSwitchCaseList?.(); }
+  _setChildCondExpanded(state.childCondExpanded ?? _hasChildCondData());
+  _updateChildCondBadge?.();
+  _updateStepLabels?.();
+}
+
+/* === DRAFT: persist Add Manual Action card across popup close/reopen === */
+
+function saveDraft() {
+  // Don't overwrite pick-mode saves (those use pendingEdit)
+  if (pickerMode) return;
+
+  const card = document.getElementById("addManualActionCard");
+  const cardOpen = card && !card.classList.contains("collapsed");
+  const type = manualActionType.value;
+
+  // Only save if card is open or we're in edit mode
+  if (!cardOpen && !editing) return;
+  // Don't save if nothing meaningful is in the form
+  if (!type && !editing) return;
+
+  const draft = {
+    ...collectManualFormState(),
+    cardOpen,
     // editing state
     editing: editing ? { scenarioId: editing.scenarioId, index: editing.index } : null,
     scenarioId: document.getElementById("scenarioList")?.value || null,
@@ -2885,113 +3027,7 @@ function restoreDraft(draft) {
     if (sl) sl.value = draft.scenarioId;
   }
 
-  // Core fields
-  manualActionType.value = draft.actionType || "";
-  manualSelector.value   = draft.selector || "";
-  manualValue.value      = draft.value || "";
-  setManualDelayUI(draft.delay || DEFAULT_DELAY_MS);
-  if (draft.delayPreset) {
-    const presetEl = document.getElementById("manualDelayPreset");
-    if (presetEl) presetEl.value = draft.delayPreset;
-  }
-
-  // Trigger visibility
-  manualActionType.onchange?.();
-
-  // Restore selector type + picked selectors panel
-  if (draft.selectorType) {
-    const st = document.getElementById("selectorType");
-    if (st) st.value = draft.selectorType;
-  }
-  if (draft.pickedSelectors) {
-    currentPickedSelectors = draft.pickedSelectors;
-    displayPickedSelectors(currentPickedSelectors);
-    const selectorSection = document.getElementById("selectorSection");
-    if (selectorSection && draft.selector) selectorSection.style.display = "block";
-  }
-
-  // Label
-  const lblEl = document.getElementById("manualLabel");
-  const lblW  = document.getElementById("manualLabelWrapper");
-  if (lblEl) lblEl.value = draft.label || "";
-  if (draft.label && lblW) lblW.style.display = "block";
-
-  // Dragdrop
-  if (draft.actionType === "dragdrop") {
-    const ddTarget   = document.getElementById("dragdropTarget");
-    const ddTypeEl   = document.getElementById("dragdropTargetSelectorType");
-    if (ddTarget)  ddTarget.value  = draft.dragdropTarget || "";
-    if (ddTypeEl)  ddTypeEl.value  = draft.dragdropTargetSelectorType || "css";
-    if (draft.pickedDragdropTargetSelectors) {
-      currentPickedDragdropTargetSelectors = draft.pickedDragdropTargetSelectors;
-      displayPickedDragdropTargetSelectors(currentPickedDragdropTargetSelectors);
-    }
-  }
-
-  // Condition
-  if (draft.actionType === "condition") {
-    const ctEl  = document.getElementById("conditionType");
-    const cevEl = document.getElementById("conditionExpectedValue");
-    const cscEl = document.getElementById("conditionSkipCount");
-    if (ctEl)  ctEl.value  = draft.conditionType || "elementExists";
-    if (cevEl) cevEl.value = draft.conditionExpectedValue || "";
-    if (cscEl) cscEl.value = draft.conditionSkipCount || "1";
-    updateConditionFieldsVisibility?.();
-
-    if (draft.childCond) {
-      const cc = draft.childCond;
-      const radioAny = document.getElementById("condChildMatchAny");
-      const radioAll = document.getElementById("condChildMatchAll");
-      if (radioAny) radioAny.checked = cc.matchAny !== false;
-      if (radioAll) radioAll.checked = cc.matchAny === false;
-      const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
-      set("condChildValueEquals", cc.valueEquals);
-      set("condChildTextContains", cc.textContains);
-      set("condChildIdContains", cc.idContains);
-      set("condChildClassContains", cc.classContains);
-      set("condChildType", cc.childType);
-      _updateChildCondBadge?.();
-    }
-  }
-
-  // Readdom
-  if (draft.actionType === "readdom") {
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ""; };
-    set("readdomVarName",  draft.readdomVarName);
-    set("readdomReadFrom", draft.readdomReadFrom || "text");
-    set("readdomAttrName", draft.readdomAttrName);
-    const attrEl = document.getElementById("readdomAttrName");
-    if (attrEl) attrEl.style.display = (draft.readdomReadFrom === "attr") ? "inline-block" : "none";
-  }
-
-  // Screenshot_tovar
-  if (draft.actionType === "screenshot_tovar") {
-    const vEl = document.getElementById("screenshotTovarVarName");
-    const tEl = document.getElementById("screenshotTovarTarget");
-    if (vEl) vEl.value = draft.screenshotTovarVarName || "";
-    if (tEl) { tEl.value = draft.screenshotTovarTarget || "page"; tEl.onchange?.(); }
-  }
-
-  // Switch
-  if (draft.actionType === "switch") {
-    const svEl = document.getElementById("switchVar");
-    if (svEl) svEl.value = draft.switchVar || "";
-    _switchCases = draft.switchCases ? [...draft.switchCases] : [];
-    renderSwitchCaseList?.();
-  }
-
-  // UploadFile
-  if (draft.actionType === "uploadFile") {
-    const modeEl = document.getElementById("uploadMode");
-    const fpEl   = document.getElementById("uploadFolderPath");
-    const fnsEl  = document.getElementById("uploadFileNames");
-    if (modeEl) modeEl.value = draft.uploadMode || "input";
-    if (fpEl)   fpEl.value   = draft.uploadFolderPath || "";
-    if (fnsEl)  fnsEl.value  = draft.uploadFileNames
-      ?? (draft.uploadFileName ?? ""); // uploadFileName = legacy field name
-  }
-
-  _updateStepLabels?.();
+  applyManualFormState(draft);
 
   // Open card
   if (draft.cardOpen || draft.editing) {
@@ -3048,8 +3084,8 @@ saveFlow.addEventListener('click', () => {
     scenarioName.value = "";
     scenarioFolder.value = "";
     loadScenarios();
-    if (res?.success) showToast("✓ Đã lưu scenario", "success");
-    else showToast("✗ Lưu scenario thất bại", "error");
+    if (res?.success) showToast("Scenario saved", "success");
+    else showToast("Failed to save scenario", "error");
   });
 });
 
@@ -3060,6 +3096,7 @@ newFlow.addEventListener('click', () => {
     manualSelector.value = "";
     manualActionType.value = "";
     manualValue.value = "";
+    _resetManualValueMemory();
     manualValue.style.display = "none";
     try {
       scenarioList.value = "";
@@ -3458,7 +3495,7 @@ function renderFoldersManagementUI() {
         }
         chrome.runtime.sendMessage({ type: "RENAME_FOLDER", folderId: currentFolderId, name: newName }, () => {
           loadScenarios(); // Refresh caches and all folder-dependent UI immediately
-          showToast("✓ Đã đổi tên thư mục", "success");
+          showToast("Folder renamed", "success");
         });
       } else {
         // Edit mode
@@ -3484,7 +3521,7 @@ function renderFoldersManagementUI() {
       showConfirm(`Delete folder "${folder.name}"? Scenarios will be moved to "No Folder"`, () => {
         chrome.runtime.sendMessage({ type: "DELETE_FOLDER", folderId }, () => {
           loadScenarios(); // Refresh caches after delete so lists update instantly
-          showToast("✓ Đã xóa thư mục", "success");
+          showToast("Folder deleted", "success");
         });
       }, { title: 'Delete Folder', danger: true });
     };
@@ -3508,7 +3545,7 @@ if (createFolderAction) {
     chrome.runtime.sendMessage({ type: "CREATE_FOLDER", name }, () => {
       newFolderInput.value = "";
       loadScenarios(); // Reload to reflect new folder everywhere without reopening popup
-      showToast("✓ Đã tạo thư mục", "success");
+      showToast("Folder created", "success");
     });
   };
 }
@@ -3617,8 +3654,8 @@ if (duplicateScenarioBtn) {
     if (!scenarioId) return;
     chrome.runtime.sendMessage({ type: "DUPLICATE_SCENARIO", scenarioId }, (res) => {
       loadScenarios();
-      if (res?.success) showToast("✓ Đã nhân bản scenario", "success");
-      else showToast("✗ Nhân bản thất bại", "error");
+      if (res?.success) showToast("Scenario duplicated", "success");
+      else showToast("Failed to duplicate scenario", "error");
     });
   };
 }
@@ -3632,7 +3669,7 @@ deleteScenario.onclick = () => {
   showConfirm("Delete this scenario?", () => {
     chrome.runtime.sendMessage({ type: "DELETE_SCENARIO", scenarioId }, () => {
       actionsEl.innerHTML = "";
-      showToast("✓ Đã xóa scenario", "success");
+      showToast("Scenario deleted", "success");
       // If the deleted scenario was the last selected scenario, remove persisted selection
       chrome.storage.local.get(["lastSelectedScenario"], (res) => {
         if (res?.lastSelectedScenario === scenarioId) {
@@ -3669,7 +3706,7 @@ exportScenario.onclick = () => {
   if (!scenarioId) return;
 
   chrome.runtime.sendMessage({ type: "EXPORT_SCENARIO", scenarioId }, (res) => {
-    if (!res?.scenario) { showToast("✗ Xuất scenario thất bại", "error"); return; }
+    if (!res?.scenario) { showToast("Failed to export scenario", "error"); return; }
 
     const blob = new Blob([JSON.stringify(res.scenario, null, 2)], {
       type: "application/json",
@@ -3681,7 +3718,7 @@ exportScenario.onclick = () => {
     a.download = `${res.scenario.name}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast(`✓ Đã xuất "${res.scenario.name}"`, "success");
+    showToast(`Exported "${res.scenario.name}"`, "success");
   });
 };
 
@@ -3693,7 +3730,7 @@ if (exportFolder) {
 
     chrome.runtime.sendMessage({ type: 'EXPORT_FOLDER', folderId }, (res) => {
       const folderData = res?.folder;
-      if (!folderData) { showToast("✗ Xuất thư mục thất bại", "error"); return; }
+      if (!folderData) { showToast("Failed to export folder", "error"); return; }
       const nameSafe = (folderData.name || 'folder').replace(/\s+/g, '-');
       const blob = new Blob([JSON.stringify(folderData, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -3702,7 +3739,7 @@ if (exportFolder) {
       a.download = `folder-${nameSafe}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showToast(`✓ Đã xuất thư mục "${folderData.name}"`, "success");
+      showToast(`Exported folder "${folderData.name}"`, "success");
     });
   };
 }
@@ -3726,7 +3763,7 @@ importScenario.onclick = () => {
           done++;
           if (done === items.length) {
             loadScenarios();
-            showToast(`✓ Imported ${items.length} scenario${items.length > 1 ? "s" : ""}`, "success");
+            showToast(`Imported ${items.length} scenario${items.length > 1 ? "s" : ""}`, "success");
           }
         });
       });
@@ -3747,7 +3784,7 @@ if (backupAllBtn) {
   backupAllBtn.onclick = () => {
     chrome.runtime.sendMessage({ type: "GET_ALL_DATA" }, (res) => {
       if (chrome.runtime.lastError || !res?.data) {
-        showToast("✗ Backup failed", "error");
+        showToast("Backup failed", "error");
         return;
       }
       const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
@@ -3757,14 +3794,14 @@ if (backupAllBtn) {
       a.download = `fast-recorder-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-      showToast("✓ Backup downloaded", "success");
+      showToast("Backup downloaded", "success");
     });
   };
 }
 
 function _doRestore(file) {
   if (!file || !file.name.endsWith('.json')) {
-    showToast("✗ Please select a .json backup file", "error");
+    showToast("Please select a .json backup file", "error");
     return;
   }
   const reader = new FileReader();
@@ -3776,21 +3813,21 @@ function _doRestore(file) {
         () => {
           chrome.runtime.sendMessage({ type: "RESTORE_ALL_DATA", data }, (res) => {
             if (chrome.runtime.lastError) {
-              showToast("✗ Restore failed: " + chrome.runtime.lastError.message, "error");
+              showToast("Restore failed: " + chrome.runtime.lastError.message, "error");
               return;
             }
             if (res?.success) {
-              showToast("✓ Data restored — reloading…", "success");
+              showToast("Data restored — reloading…", "success");
               setTimeout(() => location.reload(), 1200);
             } else {
-              showToast("✗ Restore failed: " + (res?.error || "unknown"), "error");
+              showToast("Restore failed: " + (res?.error || "unknown"), "error");
             }
           });
         },
         { title: "Restore All Data", okLabel: "Restore" }
       );
     } catch {
-      showToast("✗ Invalid backup file", "error");
+      showToast("Invalid backup file", "error");
     }
   };
   reader.readAsText(file);
@@ -3937,11 +3974,15 @@ function updateRunListDisplay() {
     editBtn.textContent = "Edit";
     editBtn.className = "secondary";
     editBtn.onclick = () => {
-      const newDelay = prompt("Delay (ms):", String(scenarioItem.delay));
-      if (newDelay === null) return;
-      const v = parseInt(newDelay, 10);
-      if (!isNaN(v) && v >= 0) scenarioItem.delay = v;
-      updateRunListDisplay();
+      showPrompt("Delay before this scenario runs, in milliseconds.", (newDelay) => {
+        const v = parseInt(newDelay, 10);
+        if (isNaN(v) || v < 0) {
+          showToast("Enter a delay of 0 or more", "error");
+          return;
+        }
+        scenarioItem.delay = v;
+        updateRunListDisplay();
+      }, { title: "Edit Delay", value: String(scenarioItem.delay), type: "number" });
     };
 
     const delBtn = document.createElement("button");
@@ -4006,8 +4047,8 @@ saveSequenceAsScenario.onclick = () => {
       runList = [];
       updateRunListDisplay();
       loadScenarios();
-      if (res?.success) showToast("✓ Đã lưu thành scenario", "success");
-      else showToast("✗ Lưu thất bại", "error");
+      if (res?.success) showToast("Saved as scenario", "success");
+      else showToast("Save failed", "error");
     }
   );
 };
@@ -4923,7 +4964,7 @@ document.getElementById("startCsvRun")?.addEventListener("click", () => {
   const csvHeaderSet = new Set(csvParsed.headers);
   const missingCols = [...inputVars].filter(v => !csvHeaderSet.has(v));
   if (missingCols.length > 0) {
-    showToast(`⚠ CSV missing columns used by scenario: ${missingCols.join(", ")}`, "error");
+    showToast(`CSV missing columns used by scenario: ${missingCols.join(", ")}`, "warn");
   }
 
   _updateCsvBadges(0, csvParsed.rows.length, 0, false);

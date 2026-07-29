@@ -665,18 +665,306 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   SHARED IN-PAGE OVERLAY CHROME
+
+   Every overlay this content script injects — picker bar, screenshot countdown,
+   segment capture bar, highlight tooltip, note bubble — is one `_extOverlay()`
+   call built from the tokens below. Shape, palette, spacing, theme switching,
+   the ESC affordance and teardown all live in the template; a call site says
+   only what its overlay says and what its buttons do. Add an overlay by adding
+   a call, not a stylesheet.
+
+   Each surface is built with `all:initial` so the host page's stylesheet cannot
+   reach in and restyle it. That reset also strips the browser's own button
+   rendering, so `_extButton` restates every visual property explicitly.
+───────────────────────────────────────────────────────────────────────────── */
+
+const _EXT_FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+const _EXT_ACCENT = '#4f46e5';  // brand indigo — picker affordances
+const _EXT_DANGER = '#ef4444';  // destructive / stop actions
+
+// Geometry shared by every overlay, so two surfaces can never drift apart on
+// padding, spacing or shadow depth.
+const _EXT_PAD    = '8px 16px';
+const _EXT_GAP    = '12px';
+const _EXT_RADIUS = '10px';
+const _EXT_BAR_SHADOW = '0 2px 8px rgba(0,0,0,0.35)';
+// Popovers pack more into less space than a bar does, so they get their own
+// (single) pair of density tokens rather than one bespoke value per widget.
+const _EXT_PANEL_PAD = '8px 10px';
+const _EXT_PANEL_GAP = '6px';
+
+const _EXT_THEMES = {
+  dark: {
+    bg: '#1e1e2e', border: 'rgba(255,255,255,0.22)', text: '#cdd6f4',
+    sub: 'rgba(205,214,244,0.55)', taBg: '#11111b',
+    btnBorder: 'rgba(255,255,255,0.18)', btnBg: 'rgba(255,255,255,0.12)',
+    shadow: '0 0 0 1px rgba(255,255,255,0.22), 0 4px 24px rgba(0,0,0,0.55)',
+  },
+  light: {
+    bg: '#ffffff', border: 'rgba(0,0,0,0.14)', text: '#1e1e2e',
+    sub: 'rgba(60,60,70,0.6)', taBg: '#f4f4f7',
+    btnBorder: 'rgba(0,0,0,0.18)', btnBg: 'rgba(0,0,0,0.06)',
+    shadow: '0 0 0 1px rgba(0,0,0,0.10), 0 4px 24px rgba(0,0,0,0.18)',
+  },
+};
+
+let _extTheme = 'dark';
+
+// Overlays that should restyle themselves when the popup theme changes. Entries
+// are plain { apply(tokens) } objects; they unregister on teardown.
+const _extThemed = new Set();
+
+function _extTokens() { return _EXT_THEMES[_extTheme] || _EXT_THEMES.dark; }
+
+function _extRegisterThemed(apply) {
+  const entry = { apply };
+  _extThemed.add(entry);
+  apply(_extTokens());
+  return () => _extThemed.delete(entry);
+}
+
+function _extApplyTheme() {
+  const t = _extTokens();
+  _extThemed.forEach((e) => { try { e.apply(t); } catch (_) {} });
+  // Overlay surfaces are repainted by their own registry entry above; this
+  // repaints the highlight panels' inner parts (swatches, note field, arrow),
+  // which the template has no way to know about.
+  try { _hlApplyTipTheme(); } catch (_) {}
+}
+
+// Load the popup's theme once, up front. Owned here rather than by the
+// highlight bootstrap so the capture overlays are themed even when the
+// highlight engine bails out early (e.g. invalidated extension context).
+try {
+  chrome.storage.local.get(['popupTheme'], (res) => {
+    try {
+      void chrome.runtime.lastError;
+      _extTheme = res?.popupTheme === 'dark' ? 'dark' : 'light';
+      _extApplyTheme();
+    } catch (_) {}
+  });
+} catch (_) {}
+
+// Base declarations for a floating overlay panel. `extra` is appended last so
+// callers can override any of the defaults (e.g. a non-neutral background).
+function _extSurface(extra = []) {
+  const t = _extTokens();
+  return [
+    'all:initial', 'box-sizing:border-box', 'position:fixed',
+    `font-family:${_EXT_FONT}`, 'font-size:13px', 'line-height:1.4',
+    `color:${t.text}`, `background:${t.bg}`,
+    `box-shadow:${t.shadow}`,
+    ...extra,
+  ].join(';');
+}
+
+function _extButton(label, { bg, color, border, bold = false } = {}) {
+  const t = _extTokens();
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.style.cssText = [
+    'all:initial', 'box-sizing:border-box', 'cursor:pointer',
+    `font-family:${_EXT_FONT}`, 'font-size:12px',
+    `font-weight:${bold ? '600' : '400'}`, 'line-height:1.4',
+    'padding:5px 10px', 'border-radius:6px', 'text-align:center',
+    'user-select:none', 'flex:0 0 auto',
+    `background:${bg || t.btnBg}`, `color:${color || t.text}`,
+    `border:1px solid ${border || t.btnBorder}`,
+  ].join(';');
+  return b;
+}
+
+// Inline text span inside an overlay — `all:initial` again, since the host page
+// may well have rules on plain spans.
+function _extSpan(text, extra = []) {
+  const s = document.createElement('span');
+  if (text != null) s.textContent = text;
+  s.style.cssText = [
+    'all:initial', 'font-family:inherit', 'font-size:inherit',
+    'line-height:inherit', 'color:inherit', ...extra,
+  ].join(';');
+  return s;
+}
+
+// Tag an injected node as extension chrome. The capture paths hide everything
+// carrying this attribute for the duration of a screenshot, so no overlay can
+// be baked into the image. Every overlay must be marked — the full-page path
+// deliberately keeps fixed elements visible and cannot tell ours from the
+// page's own header.
+const _EXT_OVERLAY_ATTR = 'data-ext-overlay';
+function _extMarkOverlay(el) { el.setAttribute(_EXT_OVERLAY_ATTR, '1'); return el; }
+
+/* ── THE OVERLAY TEMPLATE ─────────────────────────────────────────────────────
+
+   Every overlay is one `_extOverlay()` call. The template owns the surface, the
+   variant's footprint, theme registration and repaint, the ESC affordance and
+   teardown. A call site declares only what its overlay *says* and what its
+   buttons *do* — no call site sets a colour, a padding or a shadow.
+
+   Variants differ in footprint only; surface, type and spacing are identical:
+     bar   — full-width, pinned to the top edge. Announces a mode the whole page
+             is in (element picker, segment capture).
+     pill  — floating top-right. Transient status that must not cover the page
+             content it is about to capture (screenshot countdown).
+     panel — free-positioned, caller drives top/left and display. Content-owning
+             surfaces (highlight tooltip, note bubble).
+
+   Content slots, in render order:
+     lead → label → detail → trail → hint → cancel button → extra buttons → content
+─────────────────────────────────────────────────────────────────────────── */
+
+const _EXT_VARIANTS = {
+  bar: [
+    'top:0', 'left:0', 'right:0',
+    'display:flex', 'align-items:center',
+    `gap:${_EXT_GAP}`, `padding:${_EXT_PAD}`,
+    'border-bottom-width:1px', 'border-bottom-style:solid',
+    // Bars sit flush against the viewport edge, so they carry a directional
+    // drop shadow instead of the surface token's all-round ring.
+    `box-shadow:${_EXT_BAR_SHADOW}`,
+  ],
+  pill: [
+    'top:12px', 'right:12px',
+    'display:flex', 'align-items:center',
+    `gap:${_EXT_GAP}`, `padding:${_EXT_PAD}`, `border-radius:${_EXT_RADIUS}`,
+    'border-width:1px', 'border-style:solid',
+  ],
+  panel: [
+    'display:none', 'flex-direction:column',
+    `gap:${_EXT_PANEL_GAP}`, `padding:${_EXT_PANEL_PAD}`, `border-radius:${_EXT_RADIUS}`,
+    'border-width:1px', 'border-style:solid',
+  ],
+};
+
+// Topmost-first ESC dismissal. Every overlay that declares `onCancel` registers
+// here, so one key handler serves all of them and the most recently opened wins
+// — no overlay hand-rolls its own Escape branch.
+const _extEscStack = [];
+
+function _extDismissTop() {
+  const top = _extEscStack[_extEscStack.length - 1];
+  if (!top) return false;
+  top.cancel();
+  return true;
+}
+
+function _extOverlay({
+  id,
+  variant  = 'bar',
+  lead     = null,           // arbitrary node rendered before the text
+  label    = null,
+  detail   = null,           // secondary text that takes the free space
+  trail    = null,           // arbitrary node rendered after the text (countdown digit)
+  hint     = 'ESC to cancel',
+  onCancel = null,           // adds the ✕ affordance and binds ESC
+  compactCancel = false,     // icon-only ✕, for footprints too narrow for a label
+  buttons  = [],             // [{ key, label, tone:'danger', onClick }]
+  content  = [],             // panel children
+  extra    = [],             // footprint-level overrides (position, animation)
+} = {}) {
+  const el = _extMarkOverlay(document.createElement('div'));
+  if (id) el.id = id;
+  el.style.cssText = _extSurface([
+    'z-index:2147483647',
+    ...(_EXT_VARIANTS[variant] || _EXT_VARIANTS.bar),
+    ...extra,
+  ]);
+
+  // A label sharing the row with `detail` sizes to its text; alone it takes the
+  // free space so the hint and buttons stay pinned to the right.
+  const labelEl  = label  != null ? _extSpan(label,  [detail != null ? 'flex:0 0 auto' : 'flex:1 1 auto']) : null;
+  const detailEl = detail != null ? _extSpan(detail, ['flex:1 1 auto']) : null;
+  const hintEl   = hint   ? _extSpan(hint, ['font-size:12px', 'flex:0 0 auto', 'white-space:nowrap']) : null;
+
+  // Buttons the template repaints from the theme. Danger buttons keep their
+  // fixed palette in both themes and are deliberately left out.
+  const themedBtns = [];
+  const btns = {};
+
+  if (onCancel) {
+    const b = _extButton(compactCancel ? '✕' : '✕ Cancel');
+    b.title = 'Cancel (ESC)';
+    if (compactCancel) b.style.padding = '4px 8px';
+    b.addEventListener('click', () => handle.cancel());
+    themedBtns.push(b);
+    btns.cancel = b;
+  }
+
+  buttons.forEach((spec) => {
+    const danger = spec.tone === 'danger';
+    const b = _extButton(spec.label, danger
+      ? { bg: _EXT_DANGER, color: '#ffffff', border: _EXT_DANGER, bold: true }
+      : {});
+    if (spec.onClick) b.addEventListener('click', spec.onClick);
+    if (!danger) themedBtns.push(b);
+    btns[spec.key || spec.label] = b;
+  });
+
+  // Repaint touches only the themed properties — never the whole cssText — so a
+  // theme change can't wipe a panel's position or a hidden overlay's display.
+  const unregisterTheme = _extRegisterThemed((t) => {
+    el.style.background  = t.bg;
+    el.style.color       = t.text;
+    el.style.borderColor = t.border;
+    if (variant !== 'bar') el.style.boxShadow = t.shadow;
+    if (hintEl) hintEl.style.color = t.sub;
+    themedBtns.forEach((b) => {
+      b.style.background  = t.btnBg;
+      b.style.color       = t.text;
+      b.style.borderColor = t.btnBorder;
+    });
+  });
+
+  [lead, labelEl, detailEl, trail, hintEl, btns.cancel,
+   ...buttons.map((s) => btns[s.key || s.label]), ...content]
+    .forEach((node) => { if (node) el.appendChild(node); });
+
+  const handle = {
+    el,
+    buttons: btns,
+    setLabel(text)  { if (labelEl)  labelEl.textContent  = text; },
+    setDetail(text) { if (detailEl) detailEl.textContent = text; },
+    mount(parent = document.documentElement) { parent.appendChild(el); return handle; },
+    // Idempotent: overlays tear down from several entry points (button, ESC,
+    // timer expiry, a second capture starting) and any of them may run twice.
+    destroy() {
+      const i = _extEscStack.indexOf(handle);
+      if (i !== -1) _extEscStack.splice(i, 1);
+      unregisterTheme();
+      el.remove();
+    },
+    cancel() { handle.destroy(); onCancel?.(); },
+  };
+
+  if (onCancel) _extEscStack.push(handle);
+  return handle;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    ELEMENT PICKER
 ───────────────────────────────────────────────────────────────────────────── */
 
+let _pickerBar = null;
+
 function showPickerBar() {
-  if (document.getElementById('__picker_bar')) return;
-  const bar = document.createElement('div');
-  bar.id = '__picker_bar';
-  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:rgba(79,70,229,0.95);color:#fff;font:13px/1.4 system-ui,sans-serif;text-align:center;padding:8px 16px;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-  bar.textContent = '🎯 Click an element to select it. Press ESC to cancel.';
-  document.documentElement.appendChild(bar);
+  if (_pickerBar) return;
+  _pickerBar = _extOverlay({
+    id: '__picker_bar',
+    variant: 'bar',
+    label: '🎯 Click an element to select it',
+    onCancel: () => {
+      pickerMode = false;
+      clearPickerUI();
+      safeSend({ type: 'STOP_PICK_MODE' });
+    },
+  }).mount();
 }
-function hidePickerBar() { document.getElementById('__picker_bar')?.remove(); }
+
+function hidePickerBar() {
+  _pickerBar?.destroy();
+  _pickerBar = null;
+}
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'START_PICK_MODE') {
@@ -696,11 +984,13 @@ function _updatePickerOverlay(el) {
   _pickerTarget = el;
   let overlay = document.getElementById('__picker_overlay');
   if (!overlay) {
-    overlay = document.createElement('div');
+    overlay = _extMarkOverlay(document.createElement('div'));
     overlay.id = '__picker_overlay';
     overlay.style.cssText = [
-      'position:fixed', 'pointer-events:none', 'z-index:2147483646', 'box-sizing:border-box',
-      'border:2px solid #4f46e5', 'background:rgba(79,70,229,0.08)', 'transition:none',
+      'all:initial', 'position:fixed', 'pointer-events:none',
+      'z-index:2147483646', 'box-sizing:border-box', 'display:block',
+      `border:2px solid ${_EXT_ACCENT}`, 'background:rgba(79,70,229,0.08)',
+      'transition:none',
     ].join(';');
     document.documentElement.appendChild(overlay);
   }
@@ -711,13 +1001,14 @@ function _updatePickerOverlay(el) {
   overlay.style.height = r.height + 'px';
   overlay.style.display = '';
 
-  const bar = document.getElementById('__picker_bar');
-  if (bar) {
+  // Only the label changes on hover — the hint and cancel button stay put, so
+  // the bar never reflows and the way out is always in the same place.
+  if (_pickerBar) {
     const tag = el.tagName.toLowerCase();
     const id  = el.id   ? `#${el.id}`   : '';
     const cls = el.className && typeof el.className === 'string'
       ? '.' + el.className.trim().split(/\s+/)[0] : '';
-    bar.textContent = `🎯 ${tag}${id || cls}  —  Click to select. ESC to cancel.`;
+    _pickerBar.setLabel(`🎯 ${tag}${id || cls} — click to select`);
   }
 }
 
@@ -726,13 +1017,22 @@ function _removePickerOverlay() {
   document.getElementById('__picker_overlay')?.remove();
 }
 
+// Our own chrome is not part of the page: the picker must not outline it, and a
+// click on the bar's Cancel button is a cancel, not a pick. The marker every
+// overlay carries for the capture paths identifies it here too.
+function _extIsOurChrome(node) {
+  return !!(node && node.closest && node.closest(`[${_EXT_OVERLAY_ATTR}]`));
+}
+
 document.addEventListener('mouseover', (event) => {
-  if (!pickerMode) return;
+  if (!pickerMode || _extIsOurChrome(event.target)) return;
   _updatePickerOverlay(event.target);
 }, true);
 
 document.addEventListener('click', (event) => {
   if (!pickerMode) return;
+  // Let the click through untouched so the button's own handler runs.
+  if (_extIsOurChrome(event.target)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
 
@@ -960,8 +1260,11 @@ function getKeyCombo(e) {
    VISIBLE SCREENSHOT COUNTDOWN
 ───────────────────────────────────────────────────────────────────────────── */
 
-let _countdownActive = false;
-let _countdownTimer  = null;
+let _countdownTimer   = null;
+// Module-scoped because the countdown is torn down from three entry points
+// (timer expiry, cancel button, ESC) — all of which go through the overlay
+// handle, or the theme registry would leak a closure over a removed node.
+let _countdownOverlay = null;
 
 // True while the background is running a (cancellable) full-page / scroll capture.
 // Set via FULL_CAPTURE_STATE messages so the ESC key can abort a long capture on a
@@ -979,43 +1282,26 @@ function _setFullCaptureActive(active) {
 }
 
 function _startVisibleCountdown(seconds, crop) {
-  if (_countdownActive) return;
-  _countdownActive = true;
+  if (_countdownOverlay) return;
   let remaining = seconds;
 
-  const overlay = document.createElement('div');
-  overlay.id = '__screenshot_countdown';
-  overlay.style.cssText = [
-    'position:fixed', 'top:12px', 'right:12px', 'z-index:2147483647',
-    'display:flex', 'align-items:center', 'gap:8px',
-    'background:rgba(30,30,30,0.82)', 'color:#fff',
-    'padding:6px 12px 6px 10px', 'border-radius:10px',
-    'font:13px system-ui,sans-serif', 'pointer-events:all',
-    'box-shadow:0 2px 10px rgba(0,0,0,0.4)',
-  ].join(';');
+  const numEl = _extSpan(String(remaining), [
+    'font-weight:700', 'font-size:20px', 'min-width:18px', 'text-align:center',
+  ]);
 
-  const numEl = document.createElement('span');
-  numEl.style.cssText = 'font:bold 20px system-ui,sans-serif;min-width:18px;text-align:center;';
-  numEl.textContent = remaining;
-
-  const hint = document.createElement('span');
-  hint.style.cssText = 'font:12px system-ui,sans-serif;color:rgba(255,255,255,0.75);';
-  hint.textContent = 'Open dropdown…';
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.textContent = '✕';
-  cancelBtn.title = 'Cancel (ESC)';
-  cancelBtn.style.cssText = [
-    'margin-left:4px', 'padding:1px 5px', 'border:none',
-    'background:rgba(255,255,255,0.15)', 'color:#fff', 'border-radius:4px',
-    'cursor:pointer', 'font:12px system-ui,sans-serif', 'line-height:1.4',
-  ].join(';');
-  cancelBtn.addEventListener('click', _cancelCountdown);
-
-  overlay.appendChild(numEl);
-  overlay.appendChild(hint);
-  overlay.appendChild(cancelBtn);
-  document.documentElement.appendChild(overlay);
+  // A pill rather than a bar: the countdown exists so you can open a menu before
+  // the shot, and a full-width bar would cover the very chrome you are about to
+  // capture. Same surface, same type, same spacing — smaller footprint.
+  _countdownOverlay = _extOverlay({
+    id: '__screenshot_countdown',
+    variant: 'pill',
+    label: '📸 Screenshot in…',
+    trail: numEl,
+    compactCancel: true,
+    // Routed through the teardown so the ✕, ESC and a fired capture all leave
+    // the same state behind — otherwise a cancelled countdown could never restart.
+    onCancel: () => _teardownCountdown(),
+  }).mount();
 
   const tick = () => {
     remaining--;
@@ -1026,20 +1312,18 @@ function _startVisibleCountdown(seconds, crop) {
   _countdownTimer = setTimeout(tick, 1000);
 }
 
+function _teardownCountdown() {
+  _countdownOverlay?.destroy();
+  _countdownOverlay = null;
+  clearTimeout(_countdownTimer);
+  _countdownTimer = null;
+}
+
 function _fireVisibleCapture(crop) {
-  document.getElementById('__screenshot_countdown')?.remove();
-  _countdownActive = false;
-  _countdownTimer  = null;
+  _teardownCountdown();
   requestAnimationFrame(() => requestAnimationFrame(() => {
     safeSend({ type: 'TAKE_SCREENSHOT', crop: !!crop });
   }));
-}
-
-function _cancelCountdown() {
-  clearTimeout(_countdownTimer);
-  document.getElementById('__screenshot_countdown')?.remove();
-  _countdownActive = false;
-  _countdownTimer  = null;
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -1057,11 +1341,9 @@ document.addEventListener('keydown', (e) => {
     safeSend({ type: 'CANCEL_FULL_SCREENSHOT' });
     return;
   }
-  if (e.key === 'Escape' && _countdownActive) { e.preventDefault(); _cancelCountdown(); return; }
-  if (pickerMode && e.key === 'Escape') {
-    e.preventDefault(); pickerMode = false; clearPickerUI();
-    safeSend({ type: 'STOP_PICK_MODE' }); return;
-  }
+  // One branch for every overlay: the template's ESC stack dismisses whichever
+  // one is on top, running that overlay's own cancel path.
+  if (e.key === 'Escape' && _extDismissTop()) { e.preventDefault(); return; }
 
   const tag = document.activeElement?.tagName;
   if (['INPUT', 'TEXTAREA'].includes(tag)) return;
@@ -1099,7 +1381,7 @@ document.addEventListener('keydown', (e) => {
   else if (activeHotkeys.segH && combo === activeHotkeys.segH)   { e.preventDefault(); safeSend({ type: 'HOTKEY_SEG_START', dir: 'horizontal' }); }
   else if (activeHotkeys.segStop && combo === activeHotkeys.segStop) {
     e.preventDefault();
-    if (_segCapture) document.querySelector('#__ext_seg_bar_stop')?.click();
+    _segCapture?.capture();
   } else if (activeHotkeys.screenshotElement && combo === activeHotkeys.screenshotElement) {
     e.preventDefault(); safeSend({ type: 'HOTKEY_SCREENSHOT_ELEMENT' });
   }
@@ -1132,39 +1414,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   const startX = window.scrollX;
   const startY = window.scrollY;
 
-  const bar = document.createElement('div');
-  bar.style.cssText = [
-    'position:fixed', 'top:0', 'left:0', 'right:0',
-    'background:rgba(20,20,20,0.92)', 'color:#fff',
-    'font:13px/1.4 sans-serif', 'padding:8px 14px',
-    'display:flex', 'align-items:center', 'gap:12px',
-    'z-index:2147483647', 'box-shadow:0 2px 8px rgba(0,0,0,0.5)',
-  ].join(';');
+  // Declared before the overlay so the button handlers can close over it; the
+  // template calls back into these, never the other way round.
+  let cleanup, capture;
 
-  const lblStart   = document.createElement('span');
-  lblStart.textContent = `📍 Start: X = ${startX}px, Y = ${startY}px`;
+  const bar = _extOverlay({
+    variant: 'bar',
+    label:  `📍 Start: X=${Math.round(startX)}px, Y=${Math.round(startY)}px`,
+    detail: '',
+    onCancel: () => { cleanup(); safeSend({ type: 'CANCEL_SEGMENT_CAPTURE' }); },
+    buttons: [
+      { key: 'stop', label: '⏹ Stop & Capture', tone: 'danger', onClick: () => capture() },
+    ],
+  }).mount();
 
-  const lblCurrent = document.createElement('span');
-  lblCurrent.style.flex = '1';
-
+  // Rounded for display only: on a zoomed page scrollY is fractional, and the
+  // raw value printed 15 decimals next to an integer start coordinate.
   const updateLbl = () => {
-    const endX = window.scrollX + window.innerWidth;
-    const endY = window.scrollY + window.innerHeight;
-    lblCurrent.textContent = `To: X=${endX}px, Y=${endY}px (W=${Math.abs(endX - startX)}px, H=${Math.abs(endY - startY)}px)`;
+    const endX = Math.round(window.scrollX + window.innerWidth);
+    const endY = Math.round(window.scrollY + window.innerHeight);
+    bar.setDetail(`To: X=${endX}px, Y=${endY}px (W=${Math.abs(endX - startX)}px, H=${Math.abs(endY - startY)}px)`);
   };
   updateLbl();
-
-  const btnCancel = document.createElement('button');
-  btnCancel.textContent = '✖ Cancel';
-  btnCancel.style.cssText = 'background:#555;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:12px;';
-
-  const btnStop = document.createElement('button');
-  btnStop.id = '__ext_seg_bar_stop';
-  btnStop.textContent = '⏹ Stop & Capture';
-  btnStop.style.cssText = 'background:#e74c3c;color:#fff;border:none;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;';
-
-  bar.append(lblStart, lblCurrent, btnCancel, btnStop);
-  document.documentElement.appendChild(bar);
 
   let rafId = null, scrollStopped = false, scrollStep = 2;
   const speedKey = isVert ? 'segScrollSpeedV' : 'segScrollSpeedH';
@@ -1180,24 +1451,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (isVert) window.scrollBy(0, scrollStep); else window.scrollBy(scrollStep, 0);
     const after = isVert ? window.scrollY : window.scrollX;
     updateLbl();
-    if (after === before) { scrollStopped = true; btnStop.textContent = '⏹ Capture (end of page)'; return; }
+    if (after === before) { scrollStopped = true; bar.buttons.stop.textContent = '⏹ Capture (end of page)'; return; }
     rafId = requestAnimationFrame(scrollLoop);
   };
   rafId = requestAnimationFrame(scrollLoop);
 
-  const cleanup = () => {
+  cleanup = () => {
     scrollStopped = true;
     if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
-    bar.remove();
+    bar.destroy();
     _segCapture = null;
   };
 
-  btnCancel.addEventListener('click', () => {
-    cleanup();
-    safeSend({ type: 'CANCEL_SEGMENT_CAPTURE' });
-  });
-
-  btnStop.addEventListener('click', () => {
+  capture = () => {
     const endX = window.scrollX + window.innerWidth;
     const endY = window.scrollY + window.innerHeight;
     cleanup();
@@ -1209,9 +1475,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         xEnd:   Math.max(startX, endX), yEnd:   Math.max(startY, endY),
       });
     }));
-  });
+  };
 
-  _segCapture = { cleanup };
+  _segCapture = { cleanup, capture };
   sendResponse({ ok: true });
   return true;
 });
@@ -1308,11 +1574,11 @@ function _hlNormalizeUrl(url) {
 function _hlInit() {
   try {
     if (!_hlCtxOk()) { _hlSetEnabled(true); return; }
-    chrome.storage.local.get(['hl_enabled', _HL_PATTERNS_KEY, 'popupTheme'], res => {
+    // popupTheme is loaded by the shared overlay bootstrap, not here.
+    chrome.storage.local.get(['hl_enabled', _HL_PATTERNS_KEY], res => {
       try {
         void chrome.runtime.lastError;
         _hlPatterns = res[_HL_PATTERNS_KEY] || [];
-        _hlTheme = res.popupTheme === 'dark' ? 'dark' : 'light';
         _hlApplyTipTheme();
         _hlSetEnabled(res.hl_enabled !== false);
       } catch (_) { _hlSetEnabled(true); }
@@ -1327,8 +1593,8 @@ try {
       _hlPatterns = changes[_HL_PATTERNS_KEY].newValue || [];
     }
     if (area === 'local' && changes.popupTheme) {
-      _hlTheme = changes.popupTheme.newValue === 'dark' ? 'dark' : 'light';
-      _hlApplyTipTheme();
+      _extTheme = changes.popupTheme.newValue === 'dark' ? 'dark' : 'light';
+      _extApplyTheme();
     }
   });
 } catch (_) {}
@@ -1386,31 +1652,27 @@ let _hlNoteBtn    = null;
 let _hlTipLabel   = null;
 let _hlNotePop    = null;   // small bubble showing a highlight's note on hover
 
-// Tooltip colour palettes — mirror the popup's light / dark theme.
-const _HL_TIP_THEMES = {
-  dark:  { bg:'#1e1e2e', border:'rgba(255,255,255,0.22)', text:'#cdd6f4', sub:'rgba(205,214,244,0.55)', taBg:'#11111b', btnBorder:'rgba(255,255,255,0.18)' },
-  light: { bg:'#ffffff', border:'rgba(0,0,0,0.14)',       text:'#1e1e2e', sub:'rgba(60,60,70,0.6)',      taBg:'#f4f4f7', btnBorder:'rgba(0,0,0,0.18)' },
-};
-let _hlTheme = 'dark';
+// Tooltip colour palettes — shared with every other injected overlay so the
+// highlight UI and the capture chrome stay on one palette. See _EXT_THEMES.
+const _HL_TIP_THEMES = _EXT_THEMES;
 
 function _hlTipEl() {
   if (_hlTip) return _hlTip;
-  const d = document.createElement('div');
+  const t0 = _extTokens();
+  // Same template as the capture overlays — `panel` variant, since this one is
+  // positioned against a text selection and owns its own content. The template
+  // keeps the surface themed; _hlApplyTipTheme only paints the inner parts.
+  const tip = _extOverlay({
+    variant: 'panel',
+    label: null, hint: null,
+    extra: ['pointer-events:auto', 'user-select:none', 'font-size:12px'],
+  });
+  const d = tip.el;
   d.setAttribute('data-hl-ui', '1');
-  d.style.cssText = [
-    'all:initial', 'position:fixed', 'z-index:2147483647',
-    'display:none', 'flex-direction:column', 'gap:4px',
-    'background:#1e1e2e', 'border:1px solid rgba(255,255,255,0.12)',
-    'border-radius:10px', 'padding:6px 8px',
-    'box-shadow:0 4px 24px rgba(0,0,0,0.45)',
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'font-size:11px', 'color:#cdd6f4',
-    'pointer-events:auto', 'user-select:none',
-  ].join(';');
 
   const lbl = document.createElement('div');
   lbl.textContent = 'Highlight color:';
-  lbl.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;line-height:1;';
+  lbl.style.cssText = `font-size:11px;color:${t0.sub};font-family:inherit;line-height:1;`;
   _hlTipLabel = lbl;
   d.appendChild(lbl);
 
@@ -1510,8 +1772,8 @@ function _hlTipEl() {
   ta.style.cssText = [
     'all:initial', 'box-sizing:border-box', 'width:180px', 'resize:vertical',
     'min-height:38px', 'padding:5px 6px', 'border-radius:6px',
-    'border:1px solid rgba(255,255,255,0.18)', 'background:#11111b',
-    'color:#cdd6f4', 'font-family:inherit', 'font-size:11px', 'line-height:1.4',
+    `border:1px solid ${t0.btnBorder}`, `background:${t0.taBg}`,
+    `color:${t0.text}`, 'font-family:inherit', 'font-size:12px', 'line-height:1.4',
   ].join(';');
   ta.addEventListener('mousedown', e => e.stopPropagation());
   ta.addEventListener('mouseup',   e => e.stopPropagation());
@@ -1523,14 +1785,14 @@ function _hlTipEl() {
   actions.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px;font-family:inherit;';
 
   const hint = document.createElement('span');
-  hint.style.cssText = 'font-size:10px;color:rgba(205,214,244,0.55);font-family:inherit;';
+  hint.style.cssText = `font-size:11px;color:${t0.sub};font-family:inherit;`;
 
   const saveBtn = document.createElement('button');
   saveBtn.textContent = 'Save note';
   saveBtn.style.cssText = [
-    'all:initial', 'cursor:pointer', 'font-family:inherit', 'font-size:11px',
+    'all:initial', 'cursor:pointer', 'font-family:inherit', 'font-size:12px',
     'padding:3px 10px', 'border-radius:6px', 'color:#fff',
-    'background:#4f46e5', 'border:1px solid rgba(255,255,255,0.15)',
+    `background:${_EXT_ACCENT}`, 'border:1px solid rgba(255,255,255,0.15)',
   ].join(';');
   saveBtn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); });
   saveBtn.addEventListener('click', e => { e.stopPropagation(); if (_hlTipMode === 'edit') _hlEditSaveNote(); });
@@ -1540,7 +1802,7 @@ function _hlTipEl() {
   nw.appendChild(actions);
   d.appendChild(nw);
 
-  document.documentElement.appendChild(d);
+  tip.mount();
   _hlTip = d;
   _hlNoteWrap = nw;
   _hlNoteInput = ta;
@@ -1552,18 +1814,10 @@ function _hlTipEl() {
 }
 
 // ── Apply the current theme's palette to the tooltip + note bubble ──
+// Only the inner parts: both panels' surfaces are painted by their overlay
+// template registration, which already runs on every theme change.
 function _hlApplyTipTheme() {
-  const t = _HL_TIP_THEMES[_hlTheme] || _HL_TIP_THEMES.dark;
-  if (_hlTip) {
-    _hlTip.style.background  = t.bg;
-    _hlTip.style.borderColor = t.border;
-    _hlTip.style.color       = t.text;
-    // Add a contrasting hairline ring so the panel keeps a visible edge even
-    // when it sits on a same-toned page (e.g. dark bubble on a dark site).
-    _hlTip.style.boxShadow   = _hlTheme === 'light'
-      ? '0 0 0 1px rgba(0,0,0,0.10), 0 4px 24px rgba(0,0,0,0.18)'
-      : '0 0 0 1px rgba(255,255,255,0.22), 0 4px 24px rgba(0,0,0,0.55)';
-  }
+  const t = _HL_TIP_THEMES[_extTheme] || _HL_TIP_THEMES.dark;
   if (_hlTipLabel)  _hlTipLabel.style.color = t.sub;
   if (_hlNoteHint)  _hlNoteHint.style.color = t.sub;
   if (_hlNoteInput) {
@@ -1573,14 +1827,8 @@ function _hlApplyTipTheme() {
   }
   if (_hlNoteBtn) _hlNoteBtn.style.borderColor = t.btnBorder;
   if (_hlNotePop) {
-    _hlNotePop.style.background  = t.bg;
-    _hlNotePop.style.borderColor = t.border;
-    _hlNotePop.style.color       = t.text;
-    _hlNotePop.style.boxShadow   = _hlTheme === 'light'
-      ? '0 0 0 1px rgba(0,0,0,0.10), 0 8px 28px rgba(0,0,0,0.20)'
-      : '0 0 0 1px rgba(255,255,255,0.22), 0 8px 28px rgba(0,0,0,0.6)';
     if (_hlNotePop._dot) _hlNotePop._dot.style.boxShadow =
-      `0 0 0 2px ${_hlTheme === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'}`;
+      `0 0 0 2px ${_extTheme === 'light' ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'}`;
     if (_hlNotePop._arrow) {
       const arrow = _hlNotePop._arrow;
       arrow.style.background = t.bg;
@@ -1735,19 +1983,21 @@ function _hlNotePopEl() {
     (document.head || document.documentElement).appendChild(st);
   }
 
-  const d = document.createElement('div');
+  // Same `panel` template as the tooltip; `extra` carries only what is genuinely
+  // this bubble's own — its stacking order below the tooltip, its size bounds and
+  // its enter/leave animation.
+  const pop = _extOverlay({
+    variant: 'panel',
+    label: null, hint: null,
+    extra: [
+      'z-index:2147483646', 'opacity:0',
+      'transform:translateY(6px) scale(0.96)', 'transform-origin:top center',
+      'transition:opacity 0.16s cubic-bezier(0.16,1,0.3,1), transform 0.16s cubic-bezier(0.16,1,0.3,1)',
+      'max-width:320px', 'min-width:120px', 'pointer-events:auto',
+    ],
+  });
+  const d = pop.el;
   d.setAttribute('data-hl-ui', '1');
-  d.style.cssText = [
-    'all:initial', 'box-sizing:border-box', 'position:fixed',
-    'z-index:2147483646', 'display:none', 'opacity:0',
-    'transform:translateY(6px) scale(0.96)', 'transform-origin:top center',
-    'transition:opacity 0.16s cubic-bezier(0.16,1,0.3,1), transform 0.16s cubic-bezier(0.16,1,0.3,1)',
-    'max-width:320px', 'min-width:120px', 'background:#1e1e2e',
-    'border:1px solid rgba(255,255,255,0.12)', 'border-radius:11px',
-    'padding:9px 12px 10px', 'box-shadow:0 8px 28px rgba(0,0,0,0.5)',
-    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'color:#cdd6f4', 'pointer-events:auto',
-  ].join(';');
 
   // Header row: a colour dot matching the highlight + a "Note" label.
   const head = document.createElement('div');
@@ -1805,7 +2055,7 @@ function _hlNotePopEl() {
   d.addEventListener('mouseenter', () => { clearTimeout(_hlNotePopHideT); });
   d.addEventListener('mouseleave', _hlScheduleHideNotePop);
 
-  document.documentElement.appendChild(d);
+  pop.mount();
   _hlNotePop = d;
   _hlApplyTipTheme();
   return d;

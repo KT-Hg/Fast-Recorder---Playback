@@ -173,7 +173,7 @@
   </div>
 
   <!-- Confirm Modal -->
-  <div id="confirmModal">
+  <div id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="cmTitle" aria-describedby="cmMsg" aria-hidden="true">
     <div class="cm-content">
       <h4 id="cmTitle">Confirm</h4>
       <p id="cmMsg"></p>
@@ -184,8 +184,8 @@
     </div>
   </div>
 
-  <div id="saveToast"></div>
-  <div id="toolToast"></div>
+  <div id="saveToast" role="status" aria-live="polite"></div>
+  <div id="toolToast" role="status" aria-live="polite"></div>
   <script src="editor.js"></script>
 </body>
 </html>

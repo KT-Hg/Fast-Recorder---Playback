@@ -56,9 +56,9 @@ function _doCapture(msgType, tabId, crop) {
   showToast(toastMap[msgType] || 'Capturing…', 'info');
   chrome.runtime.sendMessage({ type: msgType, tabId, crop }, (res) => {
     void chrome.runtime.lastError;
-    if (res?.error) showToast('✗ ' + res.error, 'error');
+    if (res?.error) showToast(res.error, 'error');
     else if (res?.cropping) showToast('Opening editor…', 'info');
-    else showToast('✓ Saved: ' + (res?.filename || 'screenshot'), 'success');
+    else showToast('Saved: ' + (res?.filename || 'screenshot'), 'success');
   });
 }
 
@@ -131,7 +131,7 @@ function initDiff() {
       ]);
       const threshold = parseInt(slider?.value || '10', 10);
       const res = await chrome.runtime.sendMessage({ type: 'COMPARE_SCREENSHOTS', dataUrlA: a, dataUrlB: b, threshold });
-      if (res?.error) { showToast('✗ ' + res.error, 'error'); return; }
+      if (res?.error) { showToast(res.error, 'error'); return; }
       result.style.display = '';
       stats.textContent = `Diff: ${res.changed.toLocaleString()} px (${res.pct}% of total area)`;
       preview.src = res.diffUrl;
@@ -140,7 +140,7 @@ function initDiff() {
         a.href = res.diffUrl; a.download = `diff_${Date.now()}.png`; a.click();
       };
     } catch (e) {
-      showToast('✗ ' + e.message, 'error');
+      showToast(e.message, 'error');
     } finally {
       runBtn.disabled = false; runBtn.textContent = '▶ Compare';
     }

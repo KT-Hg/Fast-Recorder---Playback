@@ -14,6 +14,19 @@
 
   <!-- ===== STICKY HEADER: Status Bar + Tab Nav ===== -->
   <div class="sticky-header" id="activationCard">
+    <!-- Update banner — shown by popup/update-banner.js when a newer version is on the Web Store -->
+    <div class="update-banner" id="updateBanner" role="status" aria-live="polite" hidden>
+      <span class="update-banner-icon" aria-hidden="true">⬆</span>
+      <span class="update-banner-text">
+        <span class="update-banner-headline" id="updateBannerHeadline">Update available</span>
+        <span class="update-banner-sub" id="updateBannerSub"></span>
+      </span>
+      <button type="button" id="updateBannerWhatsNew" class="update-banner-link">What's new</button>
+      <button type="button" id="updateBannerApply" class="update-banner-cta"
+              title="Restarts the extension to apply the update">Update</button>
+      <button type="button" id="updateBannerDismiss" class="update-banner-x"
+              aria-label="Dismiss update notice" title="Dismiss">×</button>
+    </div>
     <!-- Status Bar -->
     <div class="status-bar">
       <div class="status-dot" id="statusDot"></div>
@@ -681,8 +694,8 @@
           <div class="capture-btn-row">
             <button id="screenshotVisible"  class="cap-save-btn" title="Capture visible viewport">📷 Page</button>
             <button id="screenshotFull"     class="cap-save-btn" title="Capture full page">📄 Full</button>
-            <button id="cropVisible"        class="cap-edit-btn" title="Capture visible then crop/edit">✂ Page</button>
-            <button id="cropFull"           class="cap-edit-btn" title="Capture full page then crop/edit">✂ Full</button>
+            <button id="cropVisible"        class="cap-edit-btn" title="Capture visible viewport, then open the editor">✂ Page</button>
+            <button id="cropFull"           class="cap-edit-btn" title="Capture full page, then open the editor">✂ Full</button>
           </div>
         </div>
         <div class="capture-group-row">
@@ -690,24 +703,24 @@
           <div class="capture-btn-row">
             <button id="screenshotScrollV"  class="cap-save-btn" title="Capture full vertical scroll">↕ V</button>
             <button id="screenshotScrollH"  class="cap-save-btn" title="Capture full horizontal scroll">↔ H</button>
-            <button id="cropScrollV"        class="cap-edit-btn" title="Capture vertical scroll then crop/edit">✂ ↕V</button>
-            <button id="cropScrollH"        class="cap-edit-btn" title="Capture horizontal scroll then crop/edit">✂ ↔H</button>
+            <button id="cropScrollV"        class="cap-edit-btn" title="Capture full vertical scroll, then open the editor">✂ ↕V</button>
+            <button id="cropScrollH"        class="cap-edit-btn" title="Capture full horizontal scroll, then open the editor">✂ ↔H</button>
           </div>
         </div>
         <div class="capture-group-row">
           <span class="capture-group-label">Segment</span>
           <div class="capture-btn-row">
-            <button id="segmentScrollV"     class="cap-save-btn" title="Mark start, scroll to end, then stop">⬍ V</button>
-            <button id="segmentScrollH"     class="cap-save-btn" title="Mark start, scroll right to end, then stop">⬌ H</button>
-            <button id="cropSegmentScrollV" class="cap-edit-btn" title="Segment capture then open editor">✂ ⬍V</button>
-            <button id="cropSegmentScrollH" class="cap-edit-btn" title="Segment capture then open editor">✂ ⬌H</button>
+            <button id="segmentScrollV"     class="cap-save-btn" title="Mark start, scroll down to the end, then stop to capture">⬍ V</button>
+            <button id="segmentScrollH"     class="cap-save-btn" title="Mark start, scroll right to the end, then stop to capture">⬌ H</button>
+            <button id="cropSegmentScrollV" class="cap-edit-btn" title="Vertical segment capture, then open the editor">✂ ⬍V</button>
+            <button id="cropSegmentScrollH" class="cap-edit-btn" title="Horizontal segment capture, then open the editor">✂ ⬌H</button>
           </div>
         </div>
         <div class="capture-group-row">
           <span class="capture-group-label">Element</span>
           <div class="capture-btn-row">
             <button id="screenshotElement"     class="cap-save-btn" title="Capture a specific element">📌 Pick</button>
-            <button id="cropScreenshotElement" class="cap-edit-btn" title="Capture element then open editor">✂ Pick</button>
+            <button id="cropScreenshotElement" class="cap-edit-btn" title="Capture a specific element, then open the editor">✂ Pick</button>
           </div>
         </div>
       </div>
@@ -718,14 +731,14 @@
           <span class="capture-group-label">Page</span>
           <div class="capture-btn-row">
             <button class="cap-save-btn" data-capture-action="screenshotVisible" title="Capture visible viewport">📷 Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropVisible" title="Capture then open editor">✂ Edit</button>
+            <button class="cap-edit-btn" data-capture-action="cropVisible" title="Capture visible viewport, then open the editor">✂ Edit</button>
           </div>
         </div>
         <div class="capture-group-row">
           <span class="capture-group-label">Full</span>
           <div class="capture-btn-row">
             <button class="cap-save-btn" data-capture-action="screenshotFull" title="Capture full page">📄 Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropFull" title="Capture full page then edit">✂ Edit</button>
+            <button class="cap-edit-btn" data-capture-action="cropFull" title="Capture full page, then open the editor">✂ Edit</button>
           </div>
         </div>
       </div>
@@ -736,14 +749,14 @@
           <span class="capture-group-label">Vertical</span>
           <div class="capture-btn-row">
             <button class="cap-save-btn" data-capture-action="screenshotScrollV" title="Capture full vertical scroll">↕ Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropScrollV" title="Capture then edit">✂ Edit</button>
+            <button class="cap-edit-btn" data-capture-action="cropScrollV" title="Capture full vertical scroll, then open the editor">✂ Edit</button>
           </div>
         </div>
         <div class="capture-group-row">
           <span class="capture-group-label">Horizontal</span>
           <div class="capture-btn-row">
             <button class="cap-save-btn" data-capture-action="screenshotScrollH" title="Capture full horizontal scroll">↔ Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropScrollH" title="Capture then edit">✂ Edit</button>
+            <button class="cap-edit-btn" data-capture-action="cropScrollH" title="Capture full horizontal scroll, then open the editor">✂ Edit</button>
           </div>
         </div>
       </div>
@@ -753,15 +766,15 @@
         <div class="capture-group-row">
           <span class="capture-group-label">Vertical</span>
           <div class="capture-btn-row">
-            <button class="cap-save-btn" data-capture-action="segmentScrollV" title="Segment vertical">⬍ Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollV" title="Segment then edit">✂ Edit</button>
+            <button class="cap-save-btn" data-capture-action="segmentScrollV" title="Mark start, scroll down to the end, then stop to capture">⬍ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollV" title="Vertical segment capture, then open the editor">✂ Edit</button>
           </div>
         </div>
         <div class="capture-group-row">
           <span class="capture-group-label">Horizontal</span>
           <div class="capture-btn-row">
-            <button class="cap-save-btn" data-capture-action="segmentScrollH" title="Segment horizontal">⬌ Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollH" title="Segment then edit">✂ Edit</button>
+            <button class="cap-save-btn" data-capture-action="segmentScrollH" title="Mark start, scroll right to the end, then stop to capture">⬌ Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropSegmentScrollH" title="Horizontal segment capture, then open the editor">✂ Edit</button>
           </div>
         </div>
         <span class="helper-text">Press hotkey/button to mark start, scroll to desired end, then press again to capture.</span>
@@ -773,7 +786,7 @@
           <span class="capture-group-label">Element</span>
           <div class="capture-btn-row">
             <button class="cap-save-btn" data-capture-action="screenshotElement" title="Capture a specific element">📌 Save</button>
-            <button class="cap-edit-btn" data-capture-action="cropScreenshotElement" title="Capture element then edit">✂ Edit</button>
+            <button class="cap-edit-btn" data-capture-action="cropScreenshotElement" title="Capture a specific element, then open the editor">✂ Edit</button>
           </div>
         </div>
       </div>
@@ -1199,6 +1212,7 @@
     <div class="confirm-modal-content">
       <h4 id="confirmModalTitle">Confirm</h4>
       <p id="confirmModalMsg"></p>
+      <input id="confirmModalInput" type="text" style="display:none;" />
       <div class="row">
         <button id="confirmModalCancel" class="secondary">Cancel</button>
         <button id="confirmModalOk">OK</button>
@@ -1206,7 +1220,8 @@
     </div>
   </div>
 
-  <div id="toast" class="toast" role="alert" aria-live="assertive"></div>
+  <!-- role/aria-live are swapped to alert/assertive by showToast() for errors. -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <!-- RESUME BANNER -->
   <div id="resumeBanner" class="resume-banner" role="alert" aria-live="polite">

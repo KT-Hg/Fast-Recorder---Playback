@@ -21,6 +21,15 @@ export function getActionIcon(type) {
 
 let _toastTimer = null;
 
+// How long each toast type stays up. Confirmations are read at a glance and can
+// go quickly; anything the user may need to act on stays longer.
+const TOAST_DURATION = {
+  success: 2500,
+  info:    3000,
+  warn:    4000,
+  error:   5000,
+};
+
 export function showToast(msg, type = 'success') {
   const toast = document.getElementById('toast');
   if (!toast) return;
@@ -31,16 +40,22 @@ export function showToast(msg, type = 'success') {
   toast.textContent = msg;
   toast.className = `toast toast-${type} show`;
   clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => toast.classList.remove('show'), 5000);
+  _toastTimer = setTimeout(() => toast.classList.remove('show'), TOAST_DURATION[type] ?? TOAST_DURATION.info);
 }
 
 /* === Scroll Lock === */
 
 let _savedScrollY = 0;
+// Guards against re-entry: showLockOverlay locks twice (record + data panes) and
+// re-runs on every tab-activation check. Without this, the second lock would
+// read the already-offset body and save a bogus scroll position to restore to.
+let _scrollLocked = false;
 
 // Prevent the page from scrolling while a modal is open by positioning the
 // body at a negative top offset equal to the current scroll position.
 export function lockScroll() {
+  if (_scrollLocked) return;
+  _scrollLocked = true;
   _savedScrollY = document.body.scrollTop || window.scrollY || 0;
   document.body.style.top = `-${_savedScrollY}px`;
   document.body.classList.add('modal-open');
@@ -48,6 +63,8 @@ export function lockScroll() {
 }
 
 export function unlockScroll() {
+  if (!_scrollLocked) return;
+  _scrollLocked = false;
   document.body.classList.remove('modal-open');
   document.documentElement.style.overflow = '';
   document.body.style.top = '';
@@ -112,6 +129,8 @@ export function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false,
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
   document.getElementById('confirmModalMsg').textContent = msg;
+  const input = document.getElementById('confirmModalInput');
+  if (input) input.style.display = 'none';
   const okBtn = document.getElementById('confirmModalOk');
   const cancelBtn = document.getElementById('confirmModalCancel');
   okBtn.textContent = okLabel || (danger ? 'Delete' : 'Confirm');
@@ -130,6 +149,8 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
   const modal = document.getElementById('confirmModal');
   document.getElementById('confirmModalTitle').textContent = title;
   document.getElementById('confirmModalMsg').textContent = msg;
+  const input = document.getElementById('confirmModalInput');
+  if (input) input.style.display = 'none';
   const okBtn = document.getElementById('confirmModalOk');
   const cancelBtn = document.getElementById('confirmModalCancel');
   okBtn.textContent = 'OK';
@@ -142,6 +163,53 @@ export function showAlert(msg, { title = 'Notice' } = {}) {
   const close = () => _closeModal(modal, releaseFocus, () => { cancelBtn.style.display = ''; });
   cancelBtn.onclick = close;
   okBtn.onclick = close;
+}
+
+/**
+ * Modal replacement for window.prompt(). Cancelling does not call `onSubmit`,
+ * so callers never need a null check the way they did with the native dialog.
+ * @param {string} msg — prompt text shown above the input
+ * @param {(value: string) => void} onSubmit — called with the trimmed input on confirm only
+ * @param {Object} [opts]
+ * @param {string} [opts.title='Enter Value'] — modal heading
+ * @param {string} [opts.value=''] — initial input value, preselected for overwrite
+ * @param {string} [opts.type='text'] — input type attribute, e.g. 'number'
+ * @param {string} [opts.okLabel='OK'] — confirm button label
+ * @returns {void}
+ */
+export function showPrompt(msg, onSubmit, { title = 'Enter Value', value = '', type = 'text', okLabel = 'OK' } = {}) {
+  const modal = document.getElementById('confirmModal');
+  document.getElementById('confirmModalTitle').textContent = title;
+  document.getElementById('confirmModalMsg').textContent = msg;
+  const input = document.getElementById('confirmModalInput');
+  const okBtn = document.getElementById('confirmModalOk');
+  const cancelBtn = document.getElementById('confirmModalCancel');
+
+  input.type = type;
+  input.value = value;
+  input.style.display = '';
+  okBtn.textContent = okLabel;
+  okBtn.className = '';
+  cancelBtn.style.display = '';
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  lockScroll();
+
+  const releaseFocus = trapFocus(modal);
+  // trapFocus focuses the first tabbable element, which is not the input —
+  // put the caret where the user is about to type and preselect for overwrite.
+  input.focus();
+  input.select();
+
+  const close = () => _closeModal(modal, releaseFocus, () => { input.style.display = 'none'; });
+  const submit = () => { const v = input.value.trim(); close(); onSubmit(v); };
+
+  cancelBtn.onclick = close;
+  okBtn.onclick = submit;
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  };
 }
 
 /* === Validation === */

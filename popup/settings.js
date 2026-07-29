@@ -151,7 +151,7 @@ export function initSettings() {
     chrome.storage.sync.set({ screenshotSaveMode: mode, screenshotPrefix: prefix, segScrollSpeedV: speedV, segScrollSpeedH: speedH }, () => {
       const btn = document.getElementById('saveScreenshotSettings');
       if (btn) {
-        btn.textContent = '✓ Saved';
+        btn.textContent = 'Saved';
         setTimeout(() => { btn.textContent = 'Save Settings'; }, 1500);
       }
     });

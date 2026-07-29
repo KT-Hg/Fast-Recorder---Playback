@@ -8,19 +8,22 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 
 | Category | Capabilities |
 |---|---|
-| **Recording** | Click, input, hover, drag & drop, navigate, scroll events |
-| **Playback** | Single scenario, sequence, loop N×, scheduled (daily), CSV data-driven |
-| **Actions** | 15 action types including upload file, conditions, switch branching, readDOM, JS script |
+| **Recording** | `click` and `input` events (input debounced to one action per field). All other action types are added manually. |
+| **Playback** | Single scenario, sequence, loop N×, scheduled (one-off or daily), CSV data-driven; runs inside iframes and resumes after a mid-playback page reload |
+| **Actions** | 16 action types including upload file, conditions, switch branching, readDOM, JS script |
 | **Variables** | 4 types: Static, Random (alpha/numeric/alphanumeric/datetime), Pick, Fallback — `${varName}` substitution across selectors, values, URLs, and scripts |
 | **Upload File** | Inject local files into `<input type="file">` or drag-and-drop zones; supports multiple files and `${variable}` filenames |
-| **Screenshot** | Visible, full page, scroll (V/H), segment, element — with crop editor and watermark |
-| **CSV Run** | Run a scenario once per row; export results to XLSX/CSV/HTML with screenshots |
+| **Screenshot** | Visible, full page, scroll (V/H), segment, element — with crop editor, standalone image editor, image diff, and watermark |
+| **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
+| **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
-| **UI** | Dark/light theme, drag-to-reorder tabs, collapsible cards, hotkeys |
+| **UI** | Dark/light theme, 5 drag-to-reorder tabs, collapsible cards, hotkeys |
 
 ---
 
 ## Installation
+
+Requires **Chrome 109 or newer**.
 
 1. Clone or download this repository
 2. Open Chrome → `chrome://extensions/`
@@ -37,33 +40,42 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 1. Navigate to the page you want to automate
 2. Open the extension popup → click **Activate** in the status bar
 3. Go to the **Record & Play** tab → click **▶ Start Recording**
-4. Perform your actions on the page
+4. Click and type on the page — those are the two event types the recorder captures
 5. Click **■ Stop** → name and save the scenario
-6. Click **▶ Play** to replay
+6. Add any further steps (hover, drag & drop, navigate, screenshot, upload…) with **Add Action**
+7. Click **▶ Play** to replay
 
 ---
 
 ## Popup Tabs
 
-The popup has four tabs, reorderable by drag-and-drop. The last active tab is remembered across sessions.
+The popup has five tabs, reorderable by drag-and-drop. The last active tab is remembered across sessions.
 
 ### Record & Play
-- Start/stop recording, undo/redo recorded actions
-- Add manual actions (all 15 types)
+- Start/stop recording; undo/redo on the action list (up to 50 steps, cleared by **New** or loading another scenario)
+- Add manual actions (all 16 types)
 - Save and manage scenarios (rename, duplicate, move to folder, delete)
 - Playback controls: loop count, loop delay
-- Sequence playback (run multiple scenarios in order)
+- Sequence playback (run multiple scenarios in order, each with its own delay)
 
 ### Data
 - Global variables table (`${varName}` → value)
 - **Export Code** — generate a standalone JS Bookmarklet or Selenium Python script from any saved scenario
-- Scheduled playback (daily at a set time)
+- Scheduled playback at a set time — one-off, or **Repeat daily**
 - CSV data-driven runs (one scenario execution per CSV row)
 
 ### Capture
 - Screenshot: Visible, Full Page, Scroll V/H, Segment V/H, Element
 - Crop/edit mode for all capture types
 - Image diff tool (pixel-level comparison)
+- Standalone image editor for any image from the clipboard or a file
+
+### Highlight
+- Select text on a page to highlight it in one of 5 colours (yellow, green, pink, blue, orange), with an optional note per highlight
+- Highlights are re-applied automatically on the next visit (a `MutationObserver` re-runs restoration on late-loading content)
+- Browse, search, and filter every highlight by colour or by page; per-page and total counts
+- **URL Patterns** — wildcards in path *and* subdomain (`site.com/*/settings`, `*.myapp.com/app/*`) decide where highlighting is active; a builder turns the current tab's URL into a pattern
+- Export all highlights as JSON
 
 ### Settings
 - Hotkey bindings (configurable, synced across devices)
@@ -84,6 +96,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 | `click` | Mouse click on target element |
 | `input` | Set value + fire input/change/blur events |
 | `hover` | mouseover/mouseenter/mousemove events |
+| `dropdown` | Trusted click via CDP — for native dropdowns that ignore a synthetic JS click. Selector only, no value. |
 | `dragdrop` | HTML5 drag from source selector to target selector |
 
 `click`, `input`, `hover` support **Child Condition**: the selector targets a parent container, and a matching child is found by value, text, id, class, or input type.
@@ -110,7 +123,7 @@ The popup has four tabs, reorderable by drag-and-drop. The last active tab is re
 | `screenshot` | Capture visible viewport |
 | `screenshot_full` | Full page via CDP |
 | `screenshot_element` | Specific element via CDP clip |
-| `screenshot_tovar` | Any mode → store filename/base64 in variable for CSV export |
+| `screenshot_tovar` | Visible / full page / element → the variable receives the **filename**; the image itself is carried into the CSV export |
 | `uploadFile` | Inject local file(s) into `<input type="file">` (CDP) or drag-and-drop zone (DataTransfer bridge); supports multiple files and `${variable}` filenames |
 
 ---
@@ -123,9 +136,10 @@ From the **Data** tab → **Export Code** card, select any saved scenario and ge
 
 - Runs directly in the browser console or as a saved bookmark URL
 - No Selenium or Python required
-- Supported actions: `click`, `input`, `hover`, `dragdrop`, `navigate`, `wait`, `script`, `readdom`, `condition`, `dropdown`
+- Supported actions: `click`, `input`, `hover`, `dropdown`, `dragdrop`, `navigate`, `wait`, `script`, `readdom`, `condition`
 - Skipped actions: `screenshot*` (require Extension API), `switch`
-- Selectors: CSS preferred; automatically falls back to XPath (`xpath` / `fullXpath`) via a `_qsel()` helper injected into the generated script
+- Not supported: `uploadFile` (no way to reach the local filesystem from a bookmarklet) — emitted as a skipped step
+- Selectors: a `_qsel()` helper injected into the generated script dispatches by shape — selectors starting with `/` or `(` go through `document.evaluate` (XPath), everything else through `document.querySelector`
 - Copy as a single-line bookmark URL or download as a `.js` file
 
 **Output example:**
@@ -150,10 +164,10 @@ javascript:(async () => {
 ### 🐍 Selenium Python
 
 - Generates a ready-to-run `.py` script using `selenium` 4.x
-- Supported actions: all types including **screenshot** (which is skipped in bookmarklet)
+- Supported actions: every type except `switch` and `uploadFile` — including **screenshot**, which the bookmarklet cannot do
 - `input` actions auto-detect `<select>` elements at runtime — uses `Select.select_by_value()` with fallback to `select_by_visible_text()`
 - `condition` actions use `find_elements()` (returns list, never raises)
-- `switch` action is skipped (extension-specific routing)
+- `switch` is skipped (extension-specific scenario routing) and `uploadFile` is emitted as an unsupported step — both are commented into the generated script rather than silently dropped
 
 **Settings available in the modal:**
 
@@ -253,7 +267,7 @@ All hotkeys are configurable in the **Settings** tab and synced via `chrome.stor
 | Start Recording | `Alt+R` |
 | Stop Recording | `Alt+S` |
 | Screenshot (Visible) | `Alt+P` |
-| Screenshot (Full Page) | `Alt+F` |
+| Screenshot (Full Page) | `Alt+Shift+F` |
 | Screenshot (Scroll V) | `Alt+V` |
 | Screenshot (Scroll H) | `Alt+H` |
 | Segment V — Start | `Alt+Shift+V` |
@@ -269,24 +283,29 @@ All hotkeys are configurable in the **Settings** tab and synced via `chrome.stor
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  popup.html / popup.js  (UI Layer)                          │
+│  popup.html + popup/*.js  (UI Layer — ES modules)           │
+│  main · variables · settings · screenshots · highlight      │
+│  export-bookmarklet · export-selenium · update-banner       │
 │  Sends messages → background.js                             │
 └──────────────────────────┬───────────────────────────────────┘
                            │ chrome.runtime.sendMessage
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  background.js  (Service Worker — Orchestrator)             │
+│  background.js + bg/*.js  (Service Worker — Orchestrator)   │
 │  Message router · State machine · Storage CRUD              │
-│  Playback engine · Screenshot orchestrator · Alarms         │
+│  Playback engine · Screenshot/CDP · Alarms · Update check   │
 └──────────────────────────┬───────────────────────────────────┘
                            │ chrome.tabs.sendMessage
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  content.js  (Page Context — Execution Layer)               │
-│  DOM event capture · Selector generation (8 strategies)     │
+│  content.js  (Page Context — Execution Layer, all frames)   │
+│  DOM event capture · Selector generation (8 candidates)     │
 │  Action execution · Condition evaluation · Hotkey listener  │
+│  Highlight engine (selection, restore, URL patterns)        │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+`content.js` is injected into **all frames**; recorded actions carry the originating `frameId` so playback targets the right frame.
 
 ### System States
 
@@ -311,16 +330,20 @@ Orthogonal states (can overlay IDLE): **PICK_MODE**, **SEGMENT_CAPTURING**
 ```
 chrome.storage.local (5 MB — device-local)
   scenarios, folders, variables, schedules
-  settings (hotkeys, watermark, screenshot config, theme, tab order)
-  csvRunResults (text results only)
+  settings (watermark, screenshot config, theme, tab order)
+  highlights (hl_v1) and highlight URL patterns (hl_patterns_v1)
+  csvRunResults (text results only), _csvRows (rows of the active CSV run)
+  updateStatus (weekly Web Store version check)
   Pending context flags (pick, drag-drop, form draft)
   activatedTabs whitelist
 
 chrome.storage.sync (100 KB — synced across devices)
-  hotkeys, segment scroll speeds, notification preference
+  hotkeys, screenshot save mode + filename prefix,
+  segment scroll speeds, notification preference
 
 chrome.storage.session (1 MB — survives SW restart, lost on browser close)
-  undoStacks per scenario (max 50 snapshots each)
+  undoStacks — max 50 snapshots per stack, LRU-capped at 20 scenarios
+  Recording buffer (rec_*) and CSV checkpoint (csv_pending, 30 min TTL)
 
 IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
   CSV screenshot results: key = "rowIndex:varName", value = base64 PNG
@@ -342,24 +365,31 @@ IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
 | `popupTheme` | `"light"\|"dark"` | UI theme |
 | `manualFormDraft` | `object` | Persisted Add Action form state |
 | `playbackCheckpoint` | `object` | Resume point after mid-playback tab reload (60 s TTL) |
+| `hl_v1` | `Record<url, Highlight[]>` | Saved highlights, keyed by page URL |
+| `hl_patterns_v1` | `string[]` | URL patterns where highlighting is active |
+| `updateStatus` | `object` | Result of the weekly Web Store version check |
 
 ---
 
 ## Selector Strategy
 
-During recording, `generateSelectors()` produces up to 8 selector candidates per element:
+During recording, `getAllSelectors()` stores up to 8 selector candidates per element: `css`, `xpath`, `fullXpath`, `id`, `name`, `text` (+ `textTag`), `testId`, `dataId`. Unstable ids (React fiber ids like `:r0:`, and UUIDs) are rejected by `_isDynamicId()`; `text` is only stored for link/button/heading-like tags with ≤ 50 characters.
+
+`findElementWithFallback()` turns those into 9 lookup strategies, tried in this order — most precise first, most ambiguous last:
 
 ```
-Priority (tried in order during playback):
-  1. id          — #elementId
-  2. testId      — [data-testid="..."]
-  3. dataId      — [data-id="..."] / [data-cy="..."] etc.
-  4. name        — [name="..."]
-  5. css         — Computed CSS path
-  6. xpath       — Relative XPath
-  7. text        — Element text content match
-  8. fullXpath   — Absolute XPath (most stable but verbose)
+  1. fullXpath   — Absolute XPath (exact recorded position)
+  2. id          — document.getElementById (unique by spec)
+  3. xpath       — Relative, id-anchored XPath
+  4. css         — Computed CSS path
+  5. cssShadow   — Same CSS path, recursed through open shadow roots
+  6. testId      — [data-testid="..."]
+  7. dataId      — [data-id="..."]
+  8. name        — [name="..."]
+  9. text        — Exact text content match on the recorded tag name
 ```
+
+Strategy 5 exists because web components (LitElement, Stencil, …) render into shadow roots that `document.querySelector` cannot see.
 
 If all strategies fail, the system waits using `MutationObserver` up to the configured timeout before reporting failure.
 
@@ -377,9 +407,11 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 | Segment V/H | CDP + user-marked range | Start → scroll → stop |
 | Element | CDP + `getBoundingClientRect` | Exact element bounds |
 
+**Browser zoom** is normalised to 100 % before full-page and scroll captures and restored afterwards, so a zoomed page does not produce a distorted image. Segment captures deliberately keep the user's zoom: the segment clip rect was measured at that zoom, and resetting it would reflow the layout and point the clip at the wrong content.
+
 **Watermark** is applied in the service worker via `OffscreenCanvas` — supports `{url}` and `{datetime}` tokens, configurable font size.
 
-**Image Diff** tool compares two screenshots pixel-by-pixel with adjustable sensitivity threshold.
+**Image Diff** tool compares two screenshots pixel-by-pixel with adjustable sensitivity threshold. A standalone **Image Editor** (`editor.html`, opened in a detached window) can crop and annotate any image from the clipboard or a file.
 
 ---
 
@@ -389,7 +421,7 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 2. Upload a CSV file (first row = headers = variable names)
 3. The scenario runs once per row; each row's columns override `${varName}` tokens
 4. Live progress shown in the Now Playing mini panel
-5. Results exported as **XLSX** (images in cells), **CSV** (file paths), or **HTML** (embedded images)
+5. Results exported as **XLSX** (images in cells), **HTML** (embedded images), or **ZIP** (screenshot files + CSV). Changing the format after a run clears the accumulated results.
 6. `screenshot_tovar` actions save screenshots per row into the export
 
 ---
@@ -399,7 +431,20 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 - Tabs can be **reordered by drag and drop** — order is saved to `chrome.storage.local`
 - The **last active tab** is restored when the popup reopens
 - On first use (no saved state), the **first tab in current order** is shown
-- Default order: **Record & Play → Data → Capture → Settings**
+- Default order: **Record & Play → Data → Capture → Highlight → Settings**
+
+---
+
+## Update Check
+
+A weekly alarm calls `chrome.runtime.requestUpdateCheck()` — the official API that asks Chrome to compare the installed version against the published one. No extra host permission and no scraping of the store listing. The single source of truth is `chrome.storage.local.updateStatus`:
+
+```
+{ state: "available" | "current" | "unavailable",
+  currentVersion, latestVersion?, checkedAt, downloaded?, reason? }
+```
+
+Unpacked/dev installs cannot be checked — `requestUpdateCheck()` throws there, which is recorded as `"unavailable"` so the popup stays quiet instead of nagging about an update it cannot verify.
 
 ---
 
@@ -408,9 +453,9 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 | Permission | Purpose |
 |---|---|
 | `<all_urls>` | Content script injection on any site |
-| `debugger` | CDP access for full-page and element screenshots |
-| `scripting` | Execute `script` actions; inject content scripts on demand |
-| `alarms` | Per-schedule daily alarms (`sched_<id>`) |
+| `debugger` | CDP access: full-page/element screenshots, `script` actions, `dropdown` trusted clicks, `uploadFile` into file inputs |
+| `scripting` | Inject content scripts on demand |
+| `alarms` | Per-schedule alarms (`sched_<id>`), playback keep-alive, weekly Web Store update check |
 | `downloads` | Auto-save screenshots without file picker |
 | `windows` | Open screenshot editor as detached window |
 | `notifications` | Completion alerts when popup is closed |
@@ -450,6 +495,8 @@ These non-obvious system constraints are documented in source comments and shoul
 - **4000px CDP clip limit** — `Page.captureScreenshot` silently corrupts output beyond 4000px per dimension. Full-page captures tile in 4000px bands.
 - **Tile-via-CSS-transform** — Full-page stitching uses CSS transforms to position content (not `window.scroll`), avoiding fixed/sticky element repositioning artifacts.
 - **16384px OOM guard** — `OffscreenCanvas` allocations are capped at 16384px per side to stay within GPU driver limits.
+- **Zoom normalisation** — Browser zoom compounds with the CDP device-metrics override, shrinking the emulated layout viewport and flipping sites into their mobile layout. Full/scroll captures reset zoom to 100 % first and restore it on both the success and failure paths; segment captures skip the reset because their clip rect was measured at the current zoom.
+- **`_isDynamicId` filter** — React fiber ids (`:r0:`) and UUIDs are regenerated on every render, so they are excluded from both the `css` path and the `id` candidate rather than producing a selector that breaks on the next page load.
 - **`_csvDoneActive` flag** — Guards the idle polling branch from clearing the 3-minute CSV done bar on the next poll tick after a CSV run completes.
 - **Double rAF** — CSS transition initialization requires two `requestAnimationFrame` ticks so the browser commits the reset paint before the shrink animation begins.
 - **`previewRequestId` guard** — Stale preview responses are discarded by comparing the request ID incremented before the async call against the module-level counter.

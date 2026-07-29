@@ -571,12 +571,12 @@ export function initVariables() {
       _reindexRows();
       _closeModal();
       _autoSave();
-      showToast(`✓ "${name}" saved`, 'success');
+      showToast(`"${name}" saved`, 'success');
     } else {
       addVariableRow(name, cfg);
       _closeModal();
       _autoSave();
-      showToast(`✓ "${name}" added`, 'success');
+      showToast(`"${name}" added`, 'success');
     }
   });
 

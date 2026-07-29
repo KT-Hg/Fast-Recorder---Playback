@@ -226,7 +226,7 @@ export function initHighlight() {
         }
         showToast('Highlights cleared', 'success');
       },
-      { title: 'Clear highlights', danger: true, okLabel: 'Clear' }
+      { title: 'Clear Highlights', danger: true, okLabel: 'Clear' }
     );
   });
 
@@ -415,7 +415,7 @@ export function initHighlight() {
       e.stopPropagation();
       if (!patterns.length) return;
       navigator.clipboard.writeText(patterns.join('\n')).then(() => {
-        showToast('Patterns copied to clipboard', 'success');
+        showToast('Patterns copied', 'success');
       }).catch(() => showToast('Copy failed', 'error'));
     });
   }
@@ -827,7 +827,7 @@ export function initHighlight() {
       copyBtn.addEventListener('click', e => {
         e.stopPropagation();
         if (!otherUrls.length) {
-          navigator.clipboard.writeText(h.text).then(() => showToast('Copied', 'success'));
+          navigator.clipboard.writeText(h.text).then(() => showToast('Highlight text copied', 'success'));
           return;
         }
         const isOpen = copyRow.classList.contains('open');
@@ -878,7 +878,7 @@ export function initHighlight() {
             });
             showToast('Highlight removed', 'success');
           },
-          { title: 'Remove highlight', danger: true, okLabel: 'Remove' }
+          { title: 'Remove Highlight', danger: true, okLabel: 'Remove' }
         );
       });
 
