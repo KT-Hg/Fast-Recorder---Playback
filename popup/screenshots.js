@@ -29,11 +29,18 @@ function takeScreenshotWithCrop(msgType, crop = false) {
     if (msgType === 'TAKE_SCREENSHOT') {
       chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
         if (res.screenshotCountdownEnabled) {
+          // frameId: 0 pins this to the main frame. content.js runs in every
+          // frame (manifest all_frames: true); an unscoped chrome.tabs.sendMessage
+          // fans this out to every matching iframe on the page too (ads, embeds,
+          // chat widgets…), and each frame independently runs its own countdown
+          // and fires its own TAKE_SCREENSHOT at the end — one click, one
+          // countdown UI, but a capture per frame. See bg/utils.js's tabMsg,
+          // which pins to frameId 0 for the same reason.
           chrome.tabs.sendMessage(tabId, {
             type: 'START_VISIBLE_COUNTDOWN',
             seconds: res.screenshotCountdownSeconds || 3,
             crop: !!crop,
-          });
+          }, { frameId: 0 });
           window.close();
           return;
         }
