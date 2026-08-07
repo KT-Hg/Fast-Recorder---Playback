@@ -1335,6 +1335,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  // Held keys re-fire 'keydown' at the OS repeat rate. Without this guard, a
+  // press that lasts a beat too long re-triggers the matched hotkey (most
+  // visibly: two screenshots from one press of Alt+P) instead of one.
+  if (e.repeat) return;
+
   if (e.key === 'Escape' && _fullCaptureActive) {
     e.preventDefault();
     _setFullCaptureActive(false);
