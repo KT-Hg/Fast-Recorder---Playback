@@ -1589,6 +1589,30 @@ chrome.storage.local.get(["activatedTabs"], (res) => {
   checkTabActivation();
 });
 
+// The Record/Data lock overlays only render (opacity/pointer-events) while their
+// own popup tab is the active one — see body[data-active-tab="..."] in the CSS.
+// The scroll lock they trigger needs the same scoping, or it strands *other*
+// tabs (e.g. Settings) unscrollable any time the page tab isn't activated,
+// regardless of which popup tab is actually showing. Track what each overlay
+// wants independently of which tab is on screen, then only engage the lock
+// when the active tab is the one whose overlay wants it.
+let _recordOverlayWanted = false;
+let _dataOverlayWanted = false;
+
+function _syncOverlayScrollLock() {
+  const activeTab = document.body.dataset.activeTab;
+  const shouldLock = (activeTab === 'tabRecord' && _recordOverlayWanted) ||
+                      (activeTab === 'tabData'   && _dataOverlayWanted);
+  if (shouldLock) lockScroll(); else unlockScroll();
+}
+
+// Re-check the lock whenever init.js's switchTab() flips data-active-tab, since
+// showLockOverlay/hideLockOverlay run independently of tab switches (driven by
+// the connection-check interval).
+new MutationObserver(_syncOverlayScrollLock).observe(document.body, {
+  attributeFilter: ['data-active-tab'],
+});
+
 function showLockOverlay(which, type) {
   const id = which === 'record' ? 'Record' : 'Data';
   const overlay = document.getElementById('lockOverlay' + id);
@@ -1606,7 +1630,8 @@ function showLockOverlay(which, type) {
     if (btn) btn.hidden = false;
   }
   overlay.classList.add('is-visible');
-  lockScroll();
+  if (which === 'record') _recordOverlayWanted = true; else _dataOverlayWanted = true;
+  _syncOverlayScrollLock();
 }
 
 function hideLockOverlay() {
@@ -1614,7 +1639,9 @@ function hideLockOverlay() {
   const d = document.getElementById('lockOverlayData');
   if (r) r.classList.remove('is-visible');
   if (d) d.classList.remove('is-visible');
-  unlockScroll();
+  _recordOverlayWanted = false;
+  _dataOverlayWanted = false;
+  _syncOverlayScrollLock();
 }
 
 function checkTabActivation() {
