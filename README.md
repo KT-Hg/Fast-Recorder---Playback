@@ -74,7 +74,10 @@ The popup has five tabs, reorderable by drag-and-drop. The last active tab is re
 - Select text on a page to highlight it in one of 5 colours (yellow, green, pink, blue, orange), with an optional note per highlight
 - Highlights are re-applied automatically on the next visit (a `MutationObserver` re-runs restoration on late-loading content)
 - Browse, search, and filter every highlight by colour or by page; per-page and total counts
-- **URL Patterns** — wildcards in path *and* subdomain (`site.com/*/settings`, `*.myapp.com/app/*`) decide where highlighting is active; a builder turns the current tab's URL into a pattern
+- **URL Patterns** — wildcards in path *and* subdomain (`site.com/*/settings`, `*.myapp.com/app/*`) group several pages under one shared set of highlights; a builder turns the current tab's URL into a pattern
+  - Adding or removing a pattern re-groups what is already stored, so highlights never go missing when the rules change — each one records the page it was made on
+  - A pattern that names no query string matches any query (`site.com/products` covers `?page=2`); one that names a query is matched against it
+  - `#anchor` links are ignored (same document), while `#/route` and `#!/route` hashes are kept — a hash router names a real page
 - Export all highlights as JSON
 
 ### Settings
@@ -365,8 +368,8 @@ IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
 | `popupTheme` | `"light"\|"dark"` | UI theme |
 | `manualFormDraft` | `object` | Persisted Add Action form state |
 | `playbackCheckpoint` | `object` | Resume point after mid-playback tab reload (60 s TTL) |
-| `hl_v1` | `Record<url, Highlight[]>` | Saved highlights, keyed by page URL |
-| `hl_patterns_v1` | `string[]` | URL patterns where highlighting is active |
+| `hl_v1` | `Record<url, Highlight[]>` | Saved highlights, keyed by the *normalized* URL (a matching pattern, else the page URL minus any `#anchor`). Each entry keeps `srcUrl` — the page it was made on — so the whole store can be re-grouped when patterns change |
+| `hl_patterns_v1` | `string[]` | URL patterns grouping pages under one shared highlight set |
 | `updateStatus` | `object` | Result of the daily Web Store version check |
 | `updateAvailableSince` | `number` | First sighting of a pending update — grace-clock start |
 | `lastUpdateAt` | `number` | When this install last changed version — lock deadline anchor |

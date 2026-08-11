@@ -88,21 +88,68 @@ export function initHighlight() {
 
   // ── URL normalisation (mirrors content.js logic) ──
   // Supports * in both path segments AND subdomain (e.g. *.myapp.com/path)
+  // A bare #anchor jumps within the same document, so it must not fork the
+  // storage key. A #/route (or #!/route) hash is a router path and does name a
+  // different page, so that one stays part of the key.
+  function hlCanonicalUrl(url) {
+    const s = String(url || '');
+    const i = s.indexOf('#');
+    if (i === -1) return s;
+    const first = s[i + 1];
+    return (first === '/' || first === '!') ? s : s.slice(0, i);
+  }
+
   function hlMatchPattern(url, pattern) {
-    const strip = s => s.replace(/^https?:\/\//, '');
-    // Escape all regex special chars except *, then convert * → [^/]+
-    const escaped = strip(pattern)
+    const strip = s => hlCanonicalUrl(s).replace(/^https?:\/\//, '');
+    const pat = strip(pattern);
+    const u   = strip(url);
+    // A pattern naming no query of its own matches whatever query the URL
+    // carries — /products and /products?page=2 are one page as far as a
+    // grouping rule is concerned.
+    const target = pat.includes('?') ? u : u.split('?')[0];
+    // Escape all regex special chars except *, then convert * → one path segment
+    const escaped = pat
       .replace(/[.+?^${}()|[\]\\]/g, c => '\\' + c)
-      .replace(/\*/g, '[^/]+');
-    try { return new RegExp('^' + escaped + '(/.*)?$').test(strip(url)); }
+      .replace(/\*/g, '[^/?#]+');
+    try { return new RegExp('^' + escaped + '(/.*)?$').test(target); }
     catch (_) { return false; }
   }
 
-  function hlNormalizeUrl(url) {
-    for (const p of patterns) {
+  function hlNormalizeUrl(url, list = patterns) {
+    for (const p of list) {
       if (hlMatchPattern(url, p)) return p;
     }
-    return url;
+    return hlCanonicalUrl(url);
+  }
+
+  // ── Re-group stored highlights against a pattern list ──
+  // hl_v1 is keyed by the *normalized* URL, so adding or removing a pattern
+  // moves the key every saved page resolves to. Without this, highlights made
+  // on page A vanish the moment a pattern that also covers A is added for
+  // page B — the data stays in storage but under a key nothing reads any more.
+  // Each entry carries srcUrl (the page it was actually made on), so the whole
+  // store can be re-bucketed from scratch. Works for add and remove alike.
+  // Legacy entries with no srcUrl fall back to their current key: correct when
+  // that key is a plain URL, and a no-op when it is a pattern (a pattern always
+  // matches itself), so nothing is ever dropped.
+  function hlRegroup(data, nextPatterns) {
+    const out = {};
+    for (const [key, list] of Object.entries(data || {})) {
+      if (!Array.isArray(list) || !list.length) continue;
+      for (const h of list) {
+        const src = h.srcUrl || key;
+        const newKey = hlNormalizeUrl(src, nextPatterns);
+        (out[newKey] ||= []).push({ ...h, srcUrl: src });
+      }
+    }
+    // Two buckets can merge into one; drop duplicate ids and keep a stable order.
+    for (const key of Object.keys(out)) {
+      const seen = new Set();
+      out[key] = out[key]
+        .filter(h => !seen.has(h.id) && seen.add(h.id))
+        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    }
+    return out;
   }
 
   // ── Header / Toggle ──
@@ -429,7 +476,9 @@ export function initHighlight() {
   function addPattern() {
     const raw = patternInput?.value.trim();
     if (!raw) return;
-    const val = raw.replace(/^https?:\/\//, '');
+    // Canonicalise the same way URLs are, so a pattern pasted straight from the
+    // address bar (trailing #anchor and all) means what the user expects.
+    const val = hlCanonicalUrl(raw).replace(/^https?:\/\//, '');
 
     if (val.includes(' ')) {
       showValMsg('Pattern must not contain spaces', 'error');
@@ -461,10 +510,21 @@ export function initHighlight() {
   }
 
   function savePatterns() {
-    chrome.storage.local.set({ [HL_PATTERNS_KEY]: patterns }, () => {
-      sendToTab({ type: 'HL_PATTERNS_UPDATED', patterns });
-      renderPatterns();
-      load();
+    // Re-read rather than trusting allData — the content script may have saved
+    // a highlight since the last load().
+    chrome.storage.local.get(HL_STORAGE_KEY, res => {
+      const regrouped = hlRegroup(res[HL_STORAGE_KEY] || {}, patterns);
+      // One write, so the patterns and the buckets they key can never disagree.
+      chrome.storage.local.set(
+        { [HL_PATTERNS_KEY]: patterns, [HL_STORAGE_KEY]: regrouped },
+        () => {
+          // Selection is keyed by the old grouping — let load() re-derive it.
+          selectedUrl = '';
+          sendToTab({ type: 'HL_PATTERNS_UPDATED', patterns });
+          renderPatterns();
+          load();
+        }
+      );
     });
   }
 
@@ -484,7 +544,13 @@ export function initHighlight() {
     patterns.forEach((p, idx) => {
       const li = document.createElement('li');
       li.className = 'hl-pattern-item';
-      const matchCount  = Object.keys(allData).filter(u => hlMatchPattern(u, p) || u === p).length;
+      // Count real pages covered, not storage keys — after re-grouping every
+      // matching page collapses into the pattern's single key.
+      const matchCount  = new Set(
+        Object.entries(allData)
+          .flatMap(([key, list]) => (list || []).map(h => h.srcUrl || key))
+          .filter(u => hlMatchPattern(u, p) || u === p)
+      ).size;
       const isWildcard  = p.includes('*');
       const isLocalhost = /^(localhost|127\.|0\.0\.0\.)/.test(p);
       const badgeClass  = isLocalhost ? 'hl-pattern-badge hl-pattern-badge--local'
@@ -526,6 +592,15 @@ export function initHighlight() {
       chrome.storage.local.get([HL_STORAGE_KEY, HL_PATTERNS_KEY], res => {
         allData  = res[HL_STORAGE_KEY]  || {};
         patterns = res[HL_PATTERNS_KEY] || [];
+
+        // Self-heal: repairs stores orphaned by a pattern added before the
+        // re-group existed, and backfills srcUrl on older entries. Writes only
+        // on an actual change, so this settles after one pass.
+        const healed = hlRegroup(allData, patterns);
+        if (JSON.stringify(healed) !== JSON.stringify(allData)) {
+          allData = healed;
+          chrome.storage.local.set({ [HL_STORAGE_KEY]: healed });
+        }
 
         const normalizedTabUrl = hlNormalizeUrl(activeTabUrl);
 
@@ -844,7 +919,7 @@ export function initHighlight() {
           showToast('Already exists on that page', 'warn');
           return;
         }
-        targetList.push({ id: crypto.randomUUID(), text: h.text, color: h.color, note: h.note || '', createdAt: Date.now() });
+        targetList.push({ id: crypto.randomUUID(), text: h.text, color: h.color, note: h.note || '', createdAt: Date.now(), srcUrl: targetUrl });
         allData[targetUrl] = targetList;
         chrome.storage.local.set({ [HL_STORAGE_KEY]: allData }, () => {
           copyRow.classList.remove('open');

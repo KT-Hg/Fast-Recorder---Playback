@@ -1559,12 +1559,30 @@ function _hlSetEnabled(on) {
 const _HL_PATTERNS_KEY = 'hl_patterns_v1';
 let _hlPatterns = [];
 
+// A bare #anchor jumps within the same document, so it must not fork the
+// storage key — otherwise clicking a table-of-contents link makes the page's
+// highlights vanish. A #/route (or #!/route) hash is a router path and does
+// name a different page, so that one stays part of the key.
+function _hlCanonicalUrl(url) {
+  const s = String(url || '');
+  const i = s.indexOf('#');
+  if (i === -1) return s;
+  const first = s[i + 1];
+  return (first === '/' || first === '!') ? s : s.slice(0, i);
+}
+
 function _hlMatchPattern(url, pattern) {
-  const strip = s => s.replace(/^https?:\/\//, '');
-  const escaped = strip(pattern)
+  const strip = s => _hlCanonicalUrl(s).replace(/^https?:\/\//, '');
+  const pat = strip(pattern);
+  const u   = strip(url);
+  // A pattern naming no query of its own matches whatever query the URL carries
+  // — /products and /products?page=2 are one page as far as a grouping rule is
+  // concerned. A pattern that does name a query is matched against it.
+  const target  = pat.includes('?') ? u : u.split('?')[0];
+  const escaped = pat
     .replace(/[.+?^${}()|[\]\\]/g, c => '\\' + c)
-    .replace(/\*/g, '[^/]+');
-  try { return new RegExp('^' + escaped + '(/.*)?$').test(strip(url)); }
+    .replace(/\*/g, '[^/?#]+');   // one path segment — never across ? or #
+  try { return new RegExp('^' + escaped + '(/.*)?$').test(target); }
   catch (_) { return false; }
 }
 
@@ -1572,7 +1590,36 @@ function _hlNormalizeUrl(url) {
   for (const p of _hlPatterns) {
     if (_hlMatchPattern(url, p)) return p;
   }
-  return url;
+  return _hlCanonicalUrl(url);
+}
+
+// Unwrap every highlight mark without touching storage — used when the storage
+// key changes under us (pattern added/removed) and the page must be re-painted
+// from the new bucket.
+function _hlUnwrapAll() {
+  document.querySelectorAll('mark[data-hl-id]').forEach(m => {
+    const p = m.parentNode;
+    if (!p) return;
+    while (m.firstChild) p.insertBefore(m.firstChild, m);
+    p.removeChild(m);
+  });
+  document.body?.normalize();
+}
+
+// Patterns changed → this page's storage key may have moved. Repaint from the
+// bucket the page now resolves to.
+let _hlPatternRefreshTimer = null;
+function _hlRefreshForPatterns() {
+  clearTimeout(_hlPatternRefreshTimer);
+  _hlPatternRefreshTimer = setTimeout(() => {
+    // Runs even when highlighting is off: marks already painted stay on the page
+    // in that state, so leaving them behind would show the old bucket's set.
+    if (!_hlCtxOk()) return;
+    _hlHideTip();
+    _hlHideNotePop();
+    _hlUnwrapAll();
+    _hlRestore();
+  }, 150);
 }
 
 // ── Bootstrap: load patterns + enabled state, then start observer ──
@@ -1596,6 +1643,9 @@ try {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[_HL_PATTERNS_KEY]) {
       _hlPatterns = changes[_HL_PATTERNS_KEY].newValue || [];
+      // The bucket this page reads from just moved — repaint. Debounced, so the
+      // hl_v1 re-group written alongside the patterns lands first.
+      _hlRefreshForPatterns();
     }
     if (area === 'local' && changes.popupTheme) {
       _extTheme = changes.popupTheme.newValue === 'dark' ? 'dark' : 'light';
@@ -2313,7 +2363,10 @@ function _hlApply(color) {
   window.getSelection().removeAllRanges();
 
   _hlGetPage(list => {
-    list.push({ id, text, color, note, createdAt: Date.now(), anchor, parentSel, containerSelectors });
+    // srcUrl records the real page this highlight was made on. The storage key
+    // may be a URL pattern, so without it a pattern change would orphan the
+    // entry with no way to re-group it. See _hlRegroup.
+    list.push({ id, text, color, note, createdAt: Date.now(), srcUrl: location.href, anchor, parentSel, containerSelectors });
     _hlSavePage(list);
   });
 
@@ -2540,7 +2593,25 @@ async function _hlRestoreOne(h) {
 
 // ── Restore all highlights for the current page ──
 function _hlRestore() {
-  _hlGetPage(list => { list.forEach(h => _hlRestoreOne(h)); });
+  _hlGetPage(async list => {
+    await Promise.all(list.map(h => _hlRestoreOne(h)));
+
+    // Entries saved before srcUrl existed carry no record of their origin page.
+    // One that just restored here demonstrably belongs to this page, so stamp
+    // it — that keeps it re-groupable when patterns change later.
+    const orphans = list.filter(h => !h.srcUrl && document.querySelector(`[data-hl-id="${h.id}"]`));
+    if (!orphans.length) return;
+    const ids = new Set(orphans.map(h => h.id));
+    _hlGetPage(fresh => {
+      let changed = false;
+      const next = fresh.map(h => {
+        if (h.srcUrl || !ids.has(h.id)) return h;
+        changed = true;
+        return { ...h, srcUrl: location.href };
+      });
+      if (changed) _hlSavePage(next);
+    });
+  });
 }
 
 // ── Scroll to ──
@@ -2589,6 +2660,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === 'HL_PATTERNS_UPDATED') {
     _hlPatterns = msg.patterns || [];
+    _hlRefreshForPatterns();
     sendResponse({ ok: true });
     return false;
   }
