@@ -1,5 +1,5 @@
 import { showToast } from './utils.js';
-import { computeLockState } from '../bg/update-lock.js';
+import { computeLockState, evaluateRemoteConfig } from '../bg/update-lock.js';
 
 const DEFAULT_HOTKEYS = {
   startRecord:       'Alt+R',
@@ -127,11 +127,13 @@ export function loadUpdateInfo() {
   if (!cur) return;
   cur.textContent = chrome.runtime.getManifest().version;
 
-  chrome.storage.local.get(['updateStatus', 'updateAvailableSince', 'lastUpdateAt'], (res) => {
+  chrome.storage.local.get(['updateStatus', 'updateAvailableSince', 'lastUpdateAt', 'remoteConfig'], (res) => {
     const st   = res?.updateStatus;
+    const hard = evaluateRemoteConfig(res?.remoteConfig, chrome.runtime.getManifest().version);
     const lock = computeLockState({
       lastUpdateAt:   res?.lastUpdateAt,
       availableSince: res?.updateAvailableSince,
+      hardLock:       hard.hardLock,
     });
 
     const latestEl   = document.getElementById('updateInfoLatest');
@@ -151,16 +153,20 @@ export function loadUpdateInfo() {
 
     if (rowEl) rowEl.hidden = !lock.pending;
     if (deadlineEl && lock.pending) {
-      deadlineEl.textContent = lock.locked
-        ? 'passed — features locked'
-        : `${formatWhen(lock.deadline)} (${lock.daysLeft} day${lock.daysLeft === 1 ? '' : 's'} left)`;
+      deadlineEl.textContent = lock.critical
+        ? 'none — critical update'
+        : lock.locked
+          ? 'passed — features locked'
+          : `${formatWhen(lock.deadline)} (${lock.daysLeft} day${lock.daysLeft === 1 ? '' : 's'} left)`;
     }
     if (noteEl) {
-      noteEl.textContent = lock.locked
-        ? 'Recording, playback and screenshots are locked until the update is installed.'
-        : lock.pending
-          ? 'Recording, playback and screenshots lock if the update is not installed by the deadline.'
-          : 'Checked automatically once a day.';
+      noteEl.textContent = lock.critical
+        ? (hard.message || 'A critical update is required.')
+        : lock.locked
+          ? 'Recording, playback and screenshots are locked until the update is installed.'
+          : lock.pending
+            ? 'Recording, playback and screenshots lock if the update is not installed by the deadline.'
+            : 'Checked automatically once a day.';
     }
   });
 }

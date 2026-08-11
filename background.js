@@ -23,11 +23,11 @@ import {
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 import {
-  UPDATE_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
+  UPDATE_ALARM, AUTO_APPLY_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
   initUpdateAvailableListener, applyUpdate, markInstalledVersion,
   reconcileUpdateState, initLockWatcher, ensureLockState, notifyLocked,
+  setBusyProbe, maybeAutoApply,
 } from './bg/update-check.js';
-import { LOCK_MESSAGE } from './bg/update-lock.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -85,6 +85,10 @@ chrome.storage.local.get(["schedules"], (res) => {
 });
 
 // Daily Web Store version check + update-lock bookkeeping (see bg/update-check.js).
+// The busy probe must be set before anything can decide to auto-apply an update:
+// chrome.runtime.reload() takes the recording/playback down with the worker.
+setBusyProbe(() => state.recording || state.playback.active ||
+                   state.sequencePlayback.active || state.csvPlayback.active);
 ensureUpdateAlarm();
 scheduleCatchUpCheck();
 initUpdateAvailableListener();
@@ -119,6 +123,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     return;
   }
   if (alarm.name === UPDATE_ALARM) { runUpdateCheck(); return; }
+  // A critical update whose install was postponed because a run was in progress.
+  if (alarm.name === AUTO_APPLY_ALARM) { maybeAutoApply(); return; }
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   const id = alarm.name.slice(ALARM_PREFIX.length);
   chrome.storage.local.get(["schedules"], (res) => {
@@ -178,8 +184,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // before the cached lock state has been read back from storage.
   ensureLockState().then((lock) => {
     if (lock.locked) {
-      notifyLocked();
-      sendResponse({ locked: true, started: false, error: LOCK_MESSAGE });
+      notifyLocked(lock.message);
+      sendResponse({ locked: true, started: false, error: lock.message });
       return;
     }
     handleMessage(request, sender, sendResponse);

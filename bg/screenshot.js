@@ -14,7 +14,6 @@ import { state } from './state.js';
 import { tabMsg } from './utils.js';
 import { isSessionOpen, markSessionClosed } from './cdp-session.js';
 import { ensureLockState, notifyLocked } from './update-check.js';
-import { LOCK_MESSAGE } from './update-lock.js';
 
 /* ── Per-tab screenshot serialization queue ─────────────────────────────────────
  * Chrome's CDP debugger is attached/detached around every CDP capture. If two
@@ -1089,8 +1088,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // read from cache because a hotkey capture is often what wakes the worker.
   ensureLockState().then((lock) => {
     if (lock.locked) {
-      notifyLocked();
-      sendResponse({ error: LOCK_MESSAGE, locked: true });
+      notifyLocked(lock.message);
+      sendResponse({ error: lock.message, locked: true });
       return;
     }
     handleScreenshotRequest(request, sender, sendResponse);

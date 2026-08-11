@@ -19,11 +19,20 @@
  *                          the grace clock and hand out a trivial bypass.
  *   lastUpdateAt         ms — when this install last changed version. Anchor for the
  *                          30-day deadline; written by onInstalled.
+ *   remoteConfig         cached critical-release floor — see bg/remote-config.js.
+ *   autoApplyAt /        cooldown and per-version budget for the self-restart that
+ *   autoApplyTries       installs a critical update.
  */
 
-import { computeLockState, LOCK_MESSAGE } from './update-lock.js';
+import { computeLockState, evaluateRemoteConfig, compareVersions, LOCK_MESSAGE } from './update-lock.js';
+import { fetchRemoteConfig } from './remote-config.js';
+
+export { compareVersions };
 
 export const UPDATE_ALARM = "updateCheckDaily";
+
+/** Retries the auto-apply reload that was postponed because a run was in progress. */
+export const AUTO_APPLY_ALARM = "updateAutoApply";
 
 /** Pre-1.0.9 alarm name — cleared once so it can't linger as a zombie. */
 const LEGACY_ALARM = "updateCheckWeekly";
@@ -35,18 +44,6 @@ function currentVersion() {
   return chrome.runtime.getManifest().version;
 }
 
-/** Numeric dotted-version compare. Returns 1 / 0 / -1 for a newer / same / older than b. */
-export function compareVersions(a, b) {
-  const pa = String(a || "").split(".");
-  const pb = String(b || "").split(".");
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0);
-    if (d !== 0) return d > 0 ? 1 : -1;
-  }
-  return 0;
-}
-
 /**
  * Ask Chrome whether a newer version is on the store and record the answer.
  * Never throws — every failure mode ends up in updateStatus.
@@ -54,6 +51,10 @@ export function compareVersions(a, b) {
 export async function runUpdateCheck() {
   const current = currentVersion();
   const checkedAt = Date.now();
+
+  // Same cadence as the store check: one daily poll covers both the ordinary
+  // grace period and the critical-release floor.
+  await fetchRemoteConfig();
 
   let result;
   try {
@@ -77,10 +78,20 @@ export async function runUpdateCheck() {
   if (status === "throttled") return;
 
   if (status === "update_available") {
+    // Carry `downloaded` forward for the same target version. It is only ever set
+    // by onUpdateAvailable, and it is the one signal that the CRX is staged and a
+    // reload would actually install something — dropping it here would silently
+    // disable the auto-apply path for critical releases.
+    const prev = (await localGet(['updateStatus'])).updateStatus;
+    const downloaded = prev?.downloaded === true && (!version || prev.latestVersion === version);
     await chrome.storage.local.set({
-      updateStatus: { state: "available", currentVersion: current, latestVersion: version, checkedAt },
+      updateStatus: {
+        state: "available", currentVersion: current, latestVersion: version, checkedAt,
+        ...(downloaded ? { downloaded: true } : {}),
+      },
     });
     await markUpdatePending();
+    await maybeAutoApply();
     return;
   }
 
@@ -118,6 +129,8 @@ async function clearUpdatePending() {
  */
 export async function markInstalledVersion() {
   await chrome.storage.local.set({ lastUpdateAt: Date.now() });
+  // The auto-apply budget is per-version — a fresh version starts with a full one.
+  await new Promise((r) => chrome.storage.local.remove(['autoApplyAt', 'autoApplyTries'], r));
   await clearUpdatePending();
 }
 
@@ -139,29 +152,48 @@ export async function reconcileUpdateState() {
     return;
   }
   await refreshLockState();
+  // Covers the case where Chrome staged the CRX in a previous worker lifetime.
+  await maybeAutoApply();
 }
 
 /* === Lock state === */
 
 /**
- * Only the two timestamps are cached, never the derived verdict: the deadline can
- * pass while a long-running playback keeps the worker alive, and a cached verdict
- * would stay stale until the next storage write.
+ * Only the stored inputs are cached, never the derived verdict: both the grace
+ * deadline and the remote config's staleness window can pass while a long-running
+ * playback keeps the worker alive, and a cached verdict would stay stale until
+ * the next storage write.
  */
 let _anchors = null;
 let _anchorsPromise = null;
 
 async function loadAnchors() {
-  const { lastUpdateAt, updateAvailableSince } = await localGet(['lastUpdateAt', 'updateAvailableSince']);
-  _anchors = { lastUpdateAt, availableSince: updateAvailableSince };
+  const res = await localGet(['lastUpdateAt', 'updateAvailableSince', 'remoteConfig']);
+  _anchors = {
+    lastUpdateAt:   res.lastUpdateAt,
+    availableSince: res.updateAvailableSince,
+    remoteConfig:   res.remoteConfig || null,
+  };
   return _anchors;
 }
 
-/** Re-read the anchors from storage and return the current verdict. */
+/** Lock verdict for the currently loaded anchors, with the message to show. */
+function verdict() {
+  const a = _anchors || {};
+  const hard = evaluateRemoteConfig(a.remoteConfig, currentVersion());
+  const state = computeLockState({
+    lastUpdateAt:   a.lastUpdateAt,
+    availableSince: a.availableSince,
+    hardLock:       hard.hardLock,
+  });
+  return { ...state, message: state.critical ? hard.message : LOCK_MESSAGE };
+}
+
+/** Re-read from storage and return the current verdict. */
 export async function refreshLockState() {
   _anchorsPromise = loadAnchors();
   await _anchorsPromise;
-  return computeLockState(_anchors);
+  return verdict();
 }
 
 /**
@@ -171,15 +203,58 @@ export async function refreshLockState() {
  */
 export function ensureLockState() {
   if (!_anchorsPromise) _anchorsPromise = loadAnchors();
-  return _anchorsPromise.then(() => computeLockState(_anchors));
+  return _anchorsPromise.then(verdict);
 }
 
 /** Pick up writes from another extension context (or from the popup's cleanup). */
 export function initLockWatcher() {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.updateAvailableSince || changes.lastUpdateAt) _anchorsPromise = loadAnchors();
+    if (changes.updateAvailableSince || changes.lastUpdateAt || changes.remoteConfig) {
+      _anchorsPromise = loadAnchors();
+    }
   });
+}
+
+/* === Auto-apply for critical releases === */
+
+const AUTO_APPLY_COOLDOWN_MS = 30 * 60 * 1000;
+const AUTO_APPLY_MAX_TRIES   = 3;
+
+/** Set by background.js — reloading mid-run would tear down the recording/playback. */
+let _isBusy = () => false;
+export function setBusyProbe(fn) { if (typeof fn === 'function') _isBusy = fn; }
+
+/**
+ * Install a downloaded critical update without waiting for the user, since a
+ * hard lock leaves them with nothing to do but click Update anyway.
+ *
+ * Three separate brakes, because a reload loop in a service worker is expensive
+ * to escape: it only runs when Chrome reports the CRX already downloaded (a bare
+ * reload with nothing staged would just restart and try again), at most once per
+ * cooldown, and at most a few times per version — after which the lock simply
+ * stands and the user clicks Update.
+ */
+export async function maybeAutoApply() {
+  const { hardLock } = evaluateRemoteConfig(
+    (_anchors || await loadAnchors()).remoteConfig, currentVersion());
+  if (!hardLock) return;
+
+  const res = await localGet(['updateStatus', 'autoApplyAt', 'autoApplyTries']);
+  if (!res.updateStatus?.downloaded) return;
+  if ((res.autoApplyTries || 0) >= AUTO_APPLY_MAX_TRIES) return;
+  if (res.autoApplyAt && Date.now() - res.autoApplyAt < AUTO_APPLY_COOLDOWN_MS) return;
+
+  if (_isBusy()) {
+    chrome.alarms.create(AUTO_APPLY_ALARM, { delayInMinutes: 2 });
+    return;
+  }
+
+  await chrome.storage.local.set({
+    autoApplyAt: Date.now(),
+    autoApplyTries: (res.autoApplyTries || 0) + 1,
+  });
+  chrome.runtime.reload();
 }
 
 /* === Notification for blocked actions === */
@@ -191,8 +266,8 @@ let _lastLockNotice = 0;
  * hotkey-triggered actions have no UI at all, hence the notification. Rate-limited
  * so a held-down hotkey can't spam the notification centre.
  */
-export function notifyLocked() {
-  chrome.runtime.sendMessage({ type: 'UPDATE_LOCK_BLOCKED', message: LOCK_MESSAGE }).catch(() => {});
+export function notifyLocked(message = LOCK_MESSAGE) {
+  chrome.runtime.sendMessage({ type: 'UPDATE_LOCK_BLOCKED', message }).catch(() => {});
   if (Date.now() - _lastLockNotice < 10_000) return;
   _lastLockNotice = Date.now();
   try {
@@ -200,7 +275,7 @@ export function notifyLocked() {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
       title: 'Fast Recorder & Playback — update required',
-      message: LOCK_MESSAGE,
+      message,
       priority: 2,
     }, () => { void chrome.runtime.lastError; });
   } catch (_) { /* notifications unavailable — the toast still fires */ }
@@ -235,7 +310,11 @@ export function scheduleCatchUpCheck() {
   });
 }
 
-/** Chrome downloaded an update but can't swap it in while the extension runs. */
+/**
+ * Chrome downloaded an update but can't swap it in while the extension runs.
+ * This is the only place that knows the CRX is actually staged, so it is also
+ * where a critical release gets installed without asking.
+ */
 export function initUpdateAvailableListener() {
   chrome.runtime.onUpdateAvailable.addListener((details) => {
     chrome.storage.local.set({
@@ -246,8 +325,9 @@ export function initUpdateAvailableListener() {
         checkedAt: Date.now(),
         downloaded: true,
       },
+    }, () => {
+      markUpdatePending().then(maybeAutoApply);
     });
-    markUpdatePending();
   });
 }
 

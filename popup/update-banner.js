@@ -18,7 +18,9 @@
  */
 
 import { showToast } from './utils.js';
-import { computeLockState, LOCK_MESSAGE } from '../bg/update-lock.js';
+import {
+  computeLockState, evaluateRemoteConfig, compareVersions, LOCK_MESSAGE,
+} from '../bg/update-lock.js';
 
 const DISMISS_KEY = 'updateBannerDismissed'; // version the user waved off
 
@@ -40,17 +42,7 @@ const LOCKED_CONTROLS = [
 
 let _latest = '';      // latest version currently on screen, for the dismiss key
 let _locked = false;   // mirrors the service worker's lock state
-
-/** Numeric dotted-version compare. Returns 1 / 0 / -1 for a newer / same / older than b. */
-function compareVersions(a, b) {
-  const pa = String(a || '').split('.');
-  const pb = String(b || '').split('.');
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (parseInt(pa[i], 10) || 0) - (parseInt(pb[i], 10) || 0);
-    if (d !== 0) return d > 0 ? 1 : -1;
-  }
-  return 0;
-}
+let _lockMessage = LOCK_MESSAGE;
 
 /** True while the extension is locked for being out of date. */
 export function isUpdateLocked() {
@@ -62,7 +54,7 @@ function render() {
   if (!banner) return;
 
   chrome.storage.local.get(
-    ['updateStatus', 'updateAvailableSince', 'lastUpdateAt', DISMISS_KEY],
+    ['updateStatus', 'updateAvailableSince', 'lastUpdateAt', 'remoteConfig', DISMISS_KEY],
     (res) => {
       const st      = res?.updateStatus;
       const running = chrome.runtime.getManifest().version;
@@ -77,10 +69,13 @@ function render() {
         return;
       }
 
+      const hard = evaluateRemoteConfig(res.remoteConfig, running);
       const lock = computeLockState({
         lastUpdateAt:   res.lastUpdateAt,
         availableSince: res.updateAvailableSince,
+        hardLock:       hard.hardLock,
       });
+      _lockMessage = lock.critical ? hard.message : LOCK_MESSAGE;
       applyLocked(lock.locked);
 
       const dismissKey = latest || 'any';
@@ -103,7 +98,11 @@ function render() {
       if (dismiss) dismiss.hidden = lock.warning || lock.locked;
       if (apply) apply.textContent = lock.locked ? 'Update now' : 'Update';
 
-      if (lock.locked) {
+      if (lock.critical) {
+        if (headline) headline.textContent = 'Critical update required';
+        // Operator-supplied copy, so textContent only — never innerHTML.
+        if (sub) sub.textContent = `— ${hard.message}`;
+      } else if (lock.locked) {
         if (headline) headline.textContent = 'Features locked — update required';
         if (sub) sub.textContent = latest
           ? `— recording, playback and screenshots stay off until ${latest} is installed`
@@ -144,7 +143,7 @@ function initClickGuard() {
     if (!target) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    showToast(LOCK_MESSAGE, 'error');
+    showToast(_lockMessage, 'error');
   }, true);
 }
 
@@ -186,7 +185,7 @@ export function initUpdateBanner() {
   // The daily check runs in the service worker, possibly while the popup is open.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.updateStatus || changes.updateAvailableSince ||
-        changes.lastUpdateAt || changes[DISMISS_KEY]) render();
+    if (changes.updateStatus || changes.updateAvailableSince || changes.lastUpdateAt ||
+        changes.remoteConfig || changes[DISMISS_KEY]) render();
   });
 }

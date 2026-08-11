@@ -333,7 +333,7 @@ chrome.storage.local (5 MB — device-local)
   settings (watermark, screenshot config, theme, tab order)
   highlights (hl_v1) and highlight URL patterns (hl_patterns_v1)
   csvRunResults (text results only), _csvRows (rows of the active CSV run)
-  updateStatus, updateAvailableSince, lastUpdateAt (daily version check + lock)
+  updateStatus, updateAvailableSince, lastUpdateAt, remoteConfig (version check + lock)
   Pending context flags (pick, drag-drop, form draft)
   activatedTabs whitelist
 
@@ -370,6 +370,8 @@ IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
 | `updateStatus` | `object` | Result of the daily Web Store version check |
 | `updateAvailableSince` | `number` | First sighting of a pending update — grace-clock start |
 | `lastUpdateAt` | `number` | When this install last changed version — lock deadline anchor |
+| `remoteConfig` | `object` | Cached critical-release floor (`minVersion`, `hardLock`, `message`, `fetchedAt`) |
+| `autoApplyAt` / `autoApplyTries` | `number` | Cooldown and budget for the self-restart that installs a critical update |
 
 ---
 
@@ -465,6 +467,18 @@ The last 5 days before the deadline show a non-dismissible countdown banner.
 | `lastUpdateAt` | When this install last changed version; written by `onInstalled`, so applying an update lifts the lock immediately. |
 
 Enforcement lives in the service worker (`LOCKED_MESSAGE_TYPES` in `background.js` and the guard in `bg/screenshot.js`), because hotkeys and scheduled runs never pass through the popup. The popup's greyed-out buttons and click guard are UX only. A dev install never sets `updateAvailableSince`, so it can never lock itself.
+
+### Critical releases
+
+A version floor cannot ship inside the extension — users on the broken build would have to update in order to receive the rule telling them to update. So it lives in a JSON file fetched daily from GitHub Pages (`bg/remote-config.js`), published from `docs/update-config.json`:
+
+```json
+{ "minVersion": "1.0.9", "hardLock": true, "message": "Security fix" }
+```
+
+`hardLock` locks every install below `minVersion` immediately, skipping the grace period. Once Chrome reports the CRX downloaded (`onUpdateAvailable`), `maybeAutoApply()` restarts the extension to install it — no user action at all — deferring while a recording or playback run is in progress.
+
+Because this file can disable the extension for everyone, the client treats it as hostile input: a hard lock still requires Chrome to have independently confirmed a newer version on the store (so a wrong `minVersion` cannot strand anyone), unreachable/malformed/expired configs fail open, a cached config stops applying after 7 days without a refresh, and the self-restart is capped at once per 30 minutes and 3 times per version. See `docs/update-config.README.md`.
 
 ---
 
