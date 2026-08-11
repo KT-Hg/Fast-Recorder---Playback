@@ -1,4 +1,5 @@
 import { showToast } from './utils.js';
+import { computeLockState } from '../bg/update-lock.js';
 
 const DEFAULT_HOTKEYS = {
   startRecord:       'Alt+R',
@@ -114,7 +115,74 @@ export function loadNotificationSetting() {
   });
 }
 
+/* === Version / update card === */
+
+function formatWhen(ts) {
+  if (!ts) return 'never';
+  return new Date(ts).toLocaleString();
+}
+
+export function loadUpdateInfo() {
+  const cur = document.getElementById('updateInfoCurrent');
+  if (!cur) return;
+  cur.textContent = chrome.runtime.getManifest().version;
+
+  chrome.storage.local.get(['updateStatus', 'updateAvailableSince', 'lastUpdateAt'], (res) => {
+    const st   = res?.updateStatus;
+    const lock = computeLockState({
+      lastUpdateAt:   res?.lastUpdateAt,
+      availableSince: res?.updateAvailableSince,
+    });
+
+    const latestEl   = document.getElementById('updateInfoLatest');
+    const checkedEl  = document.getElementById('updateInfoChecked');
+    const deadlineEl = document.getElementById('updateInfoDeadline');
+    const rowEl      = document.getElementById('updateInfoDeadlineRow');
+    const noteEl     = document.getElementById('updateInfoNote');
+
+    if (latestEl) {
+      // "unavailable" means Chrome could not ask the store at all — an unpacked
+      // build, or a failed check. Saying "up to date" there would be a lie.
+      latestEl.textContent = st?.state === 'unavailable'
+        ? 'unknown (not installed from the Web Store)'
+        : (st?.latestVersion || '—');
+    }
+    if (checkedEl) checkedEl.textContent = formatWhen(st?.checkedAt);
+
+    if (rowEl) rowEl.hidden = !lock.pending;
+    if (deadlineEl && lock.pending) {
+      deadlineEl.textContent = lock.locked
+        ? 'passed — features locked'
+        : `${formatWhen(lock.deadline)} (${lock.daysLeft} day${lock.daysLeft === 1 ? '' : 's'} left)`;
+    }
+    if (noteEl) {
+      noteEl.textContent = lock.locked
+        ? 'Recording, playback and screenshots are locked until the update is installed.'
+        : lock.pending
+          ? 'Recording, playback and screenshots lock if the update is not installed by the deadline.'
+          : 'Checked automatically once a day.';
+    }
+  });
+}
+
 export function initSettings() {
+  /* --- Manual update check --- */
+  document.getElementById('checkForUpdateNow')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    chrome.runtime.sendMessage({ type: 'CHECK_FOR_UPDATE' }, (res) => {
+      btn.disabled = false;
+      btn.textContent = 'Check for updates';
+      loadUpdateInfo();
+      if (chrome.runtime.lastError) { showToast('Could not reach the update service.', 'error'); return; }
+      const st = res?.updateStatus;
+      if (st?.state === 'available') showToast(`Version ${st.latestVersion || ''} is available`.trim(), 'warn');
+      else if (st?.state === 'current') showToast('You are on the latest version', 'success');
+      else showToast('Update check unavailable for this install', 'info');
+    });
+  });
+
   /* --- Slider ↔ number sync --- */
   const sliderV  = document.getElementById('segScrollSpeedV');
   const numV     = document.getElementById('segScrollSpeedVNum');
@@ -202,10 +270,12 @@ export function initSettings() {
   loadScreenshotSettings();
   loadHotkeySettings();
   loadNotificationSetting();
+  loadUpdateInfo();
 }
 
 export function reloadSettings() {
   loadScreenshotSettings();
   loadHotkeySettings();
   loadNotificationSetting();
+  loadUpdateInfo();
 }

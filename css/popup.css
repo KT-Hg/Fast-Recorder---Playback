@@ -2500,6 +2500,71 @@ textarea:focus-visible,
   color: #f5f7fa;
 }
 
+/* Countdown and locked variants override the informational blue/violet gradient.
+   Both keep white type in either theme, so the dark-theme rules above are undone. */
+.update-banner.is-warning {
+  background: linear-gradient(90deg, var(--warning-dark) 0%, var(--warning) 100%);
+}
+.update-banner.is-locked {
+  background: linear-gradient(90deg, var(--danger-dark) 0%, var(--danger) 100%);
+}
+.update-banner.is-warning,
+.update-banner.is-locked,
+[data-theme="dark"] .update-banner.is-warning,
+[data-theme="dark"] .update-banner.is-locked { color: #fff; }
+
+[data-theme="dark"] .update-banner.is-warning .update-banner-link,
+[data-theme="dark"] .update-banner.is-locked  .update-banner-link { color: #fff; }
+
+.update-banner.is-warning .update-banner-cta,
+.update-banner.is-locked  .update-banner-cta,
+[data-theme="dark"] .update-banner.is-warning .update-banner-cta,
+[data-theme="dark"] .update-banner.is-locked  .update-banner-cta {
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--danger-dark);
+}
+.update-banner.is-warning .update-banner-cta { color: var(--warning-dark); }
+
+/* === Version card (Settings) === */
+.update-info-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.update-info-row[hidden] { display: none; }
+.update-info-label { flex: 0 0 auto; color: var(--muted); }
+.update-info-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* === Update lock === */
+/* Visual half of the lock — the service worker refuses the work regardless, and
+   a capture-phase click guard in update-banner.js catches synthetic clicks. */
+body.update-locked #startRecord,
+body.update-locked #playScenario,
+body.update-locked #startSequence,
+body.update-locked #startCsvRun,
+body.update-locked #diffScreenshots,
+body.update-locked .cap-save-btn,
+body.update-locked .cap-edit-btn {
+  opacity: 0.45;
+  filter: grayscale(0.8);
+  cursor: not-allowed;
+}
+body.update-locked #startRecord:hover,
+body.update-locked #playScenario:hover,
+body.update-locked #startSequence:hover,
+body.update-locked #startCsvRun:hover,
+body.update-locked #diffScreenshots:hover,
+body.update-locked .cap-save-btn:hover,
+body.update-locked .cap-edit-btn:hover { transform: none; }
+
 /* === Now Playing bar === */
 .now-playing-bar {
   display: flex;
@@ -3802,41 +3867,41 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 /* ===== HIGHLIGHT TAB ===== */
 
 /*
- * ── GLOBAL CSS TRAPS — đọc trước khi thêm element mới vào HL tab ──────────
+ * ── GLOBAL CSS TRAPS — read before adding a new element to the HL tab ─────
  *
- * Ba rules toàn cục bên trên ảnh hưởng MỌI button/input/select trong file:
+ * Three global rules earlier in this file affect EVERY button/input/select:
  *
  *  ① button, input, select {
- *       width: 100%;          ← button/select chiếm toàn hàng, đẩy siblings ra
- *       margin-top: 6px;      ← tạo khoảng cách thừa trong flex row
- *       padding: 8px 10px;    ← padding quá lớn cho compact UI
+ *       width: 100%;          ← button/select fills the row, pushing siblings out
+ *       margin-top: 6px;      ← adds stray spacing inside a flex row
+ *       padding: 8px 10px;    ← too large for this compact UI
  *       border: 2px solid var(--border);
  *    }
  *
  *  ② button {
- *       background: var(--primary);   ← mọi button mặc định màu xanh
+ *       background: var(--primary);   ← every button defaults to blue
  *       color: white;
  *    }
  *
  *  ③ button:hover:not(:disabled) {
- *       background: var(--primary-dark);     ← hover → xanh đậm
+ *       background: var(--primary-dark);     ← hover → darker blue
  *       border-color: var(--primary-dark);
- *       transform: translateY(-1px);         ← hover → nhấc lên
+ *       transform: translateY(-1px);         ← hover → lifts up
  *    }
  *
- * ── SCOPED RESET (tự động cho mọi button/input/select trong .card của HL tab):
- *    Dùng :where() → specificity 0,0,1 (element only).
- *    Đủ để beat trap ① (cùng specificity 0,0,1, nhưng khai báo SAU nên thắng
- *    theo cascade).  Bất kỳ .hl-* class rule nào (≥0,1,0) sẽ tự ghi đè.
+ * ── SCOPED RESET (applies to every button/input/select inside an HL tab .card):
+ *    :where() keeps specificity at 0,0,1 (element only) — enough to beat trap ①
+ *    because it ties on specificity but is declared later, so the cascade picks
+ *    it. Any .hl-* class rule (≥0,1,0) still overrides this reset.
  * ────────────────────────────────────────────────────────────────────────────
  *
- * CHECKLIST khi thêm button/input/select MỚI vào HL tab:
- *   button  → ① width/margin OK (reset bên dưới xử lý)
- *             ② PHẢI khai báo background + color trong base rule
- *             ③ PHẢI khai báo background + transform:none trong :hover rule
- *             (ngoại lệ: .hl-pattern-add-btn là primary button, giữ nguyên)
- *   input/select → ① width/margin OK (reset bên dưới xử lý)
- *                  Nếu dùng flex: thêm min-width:0 để tránh overflow
+ * CHECKLIST when adding a NEW button/input/select to the HL tab:
+ *   button  → ① width/margin handled by the reset below
+ *             ② MUST declare background + color in its base rule
+ *             ③ MUST declare background + transform:none in its :hover rule
+ *             (exception: .hl-pattern-add-btn is a primary button — leave as is)
+ *   input/select → ① width/margin handled by the reset below
+ *                  If used in a flex row, add min-width:0 to avoid overflow
  */
 :where(#tabHighlight .card) button,
 :where(#tabHighlight .card) select,

@@ -333,7 +333,7 @@ chrome.storage.local (5 MB — device-local)
   settings (watermark, screenshot config, theme, tab order)
   highlights (hl_v1) and highlight URL patterns (hl_patterns_v1)
   csvRunResults (text results only), _csvRows (rows of the active CSV run)
-  updateStatus (weekly Web Store version check)
+  updateStatus, updateAvailableSince, lastUpdateAt (daily version check + lock)
   Pending context flags (pick, drag-drop, form draft)
   activatedTabs whitelist
 
@@ -367,7 +367,9 @@ IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
 | `playbackCheckpoint` | `object` | Resume point after mid-playback tab reload (60 s TTL) |
 | `hl_v1` | `Record<url, Highlight[]>` | Saved highlights, keyed by page URL |
 | `hl_patterns_v1` | `string[]` | URL patterns where highlighting is active |
-| `updateStatus` | `object` | Result of the weekly Web Store version check |
+| `updateStatus` | `object` | Result of the daily Web Store version check |
+| `updateAvailableSince` | `number` | First sighting of a pending update — grace-clock start |
+| `lastUpdateAt` | `number` | When this install last changed version — lock deadline anchor |
 
 ---
 
@@ -437,7 +439,7 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 
 ## Update Check
 
-A weekly alarm calls `chrome.runtime.requestUpdateCheck()` — the official API that asks Chrome to compare the installed version against the published one. No extra host permission and no scraping of the store listing. The single source of truth is `chrome.storage.local.updateStatus`:
+A daily alarm calls `chrome.runtime.requestUpdateCheck()` — the official API that asks Chrome to compare the installed version against the published one. No extra host permission and no scraping of the store listing. The single source of truth is `chrome.storage.local.updateStatus`:
 
 ```
 { state: "available" | "current" | "unavailable",
@@ -445,6 +447,24 @@ A weekly alarm calls `chrome.runtime.requestUpdateCheck()` — the official API 
 ```
 
 Unpacked/dev installs cannot be checked — `requestUpdateCheck()` throws there, which is recorded as `"unavailable"` so the popup stays quiet instead of nagging about an update it cannot verify.
+
+### Update Lock
+
+Once the store has a newer version, the user has a grace period to install it; after that, anything that *starts* a capture, a recording or a playback run is refused until the update is applied. Read-only actions, `STOP_*`, export and backup stay available so a locked install can still be stopped and emptied.
+
+The deadline (`bg/update-lock.js`) is the later of:
+
+* `lastUpdateAt + 30 days` — 30 days since this install last changed version, and
+* `updateAvailableSince + 7 days` — a floor, so someone who sat on the newest build for months is not locked the instant a release ships.
+
+The last 5 days before the deadline show a non-dismissible countdown banner.
+
+| Key | Meaning |
+|---|---|
+| `updateAvailableSince` | First sighting of the pending update; also the "is an update pending" flag. Kept outside `updateStatus`, which is overwritten on every check — one offline check would otherwise reset the grace clock. |
+| `lastUpdateAt` | When this install last changed version; written by `onInstalled`, so applying an update lifts the lock immediately. |
+
+Enforcement lives in the service worker (`LOCKED_MESSAGE_TYPES` in `background.js` and the guard in `bg/screenshot.js`), because hotkeys and scheduled runs never pass through the popup. The popup's greyed-out buttons and click guard are UX only. A dev install never sets `updateAvailableSince`, so it can never lock itself.
 
 ---
 
@@ -455,7 +475,7 @@ Unpacked/dev installs cannot be checked — `requestUpdateCheck()` throws there,
 | `<all_urls>` | Content script injection on any site |
 | `debugger` | CDP access: full-page/element screenshots, `script` actions, `dropdown` trusted clicks, `uploadFile` into file inputs |
 | `scripting` | Inject content scripts on demand |
-| `alarms` | Per-schedule alarms (`sched_<id>`), playback keep-alive, weekly Web Store update check |
+| `alarms` | Per-schedule alarms (`sched_<id>`), playback keep-alive, daily Web Store update check |
 | `downloads` | Auto-save screenshots without file picker |
 | `windows` | Open screenshot editor as detached window |
 | `notifications` | Completion alerts when popup is closed |

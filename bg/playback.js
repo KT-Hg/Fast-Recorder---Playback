@@ -38,6 +38,54 @@ function _notifyAlreadyRunning() {
   sendAlertNotification('⚠ Already Running', 'Playback is already running — stop it first', 'already_running');
 }
 
+/* ── Recording ⇄ Playback mutual exclusion ──────────────────────────────────────
+ * Recording and playback drive the same tab, and the recorder cannot tell a
+ * synthesized event from a human one. Whichever mode started first wins; the
+ * second request is refused rather than queued, because the two cannot be
+ * interleaved without corrupting the scenario being recorded.
+ *
+ * Both refusals notify as well as return, because most callers cannot surface a
+ * rejection themselves: the popup closes its own window right after dispatching,
+ * the hotkey path in content.js sends without a callback, and scheduled playback
+ * fires from an alarm with no response channel at all.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Refuse to start playback while a recording is in progress. Called from every
+ * playback entry point, not just the message router, so the scheduled-alarm path
+ * is covered too.
+ *
+ * @returns {boolean} true if the request was refused — the caller must return.
+ */
+export function refuseIfRecording() {
+  if (!state.recording) return false;
+  chrome.runtime.sendMessage({ type: 'PLAYBACK_BLOCKED_RECORDING' }).catch(() => {});
+  sendAlertNotification(
+    '⚠ Recording Active',
+    'Cannot start playback while recording — stop recording first',
+    'blocked_recording',
+  );
+  return true;
+}
+
+/**
+ * Refuse to start recording while any playback is running — the mirror of
+ * refuseIfRecording(). Lives in this module because it owns the playback-active
+ * state; the START_RECORD handler calls it.
+ *
+ * @returns {boolean} true if the request was refused — the caller must return.
+ */
+export function refuseRecordingIfPlaying() {
+  if (!_isAnyPlaybackActive()) return false;
+  chrome.runtime.sendMessage({ type: 'RECORD_BLOCKED_PLAYBACK' }).catch(() => {});
+  sendAlertNotification(
+    '⚠ Playback Active',
+    'Cannot start recording while playback is running — stop it first',
+    'blocked_playback',
+  );
+  return true;
+}
+
 function _notifyActionFailed(index, action, reason) {
   const r = reason || 'element not found';
   chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index, action, reason: r }).catch(() => {});
@@ -419,6 +467,7 @@ export async function playActionsOnTab(
 
 /** Resume a scenario from a saved checkpoint after a tab reload mid-playback. */
 export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) {
+  if (refuseIfRecording()) return;
   // Guard: never start a checkpoint resume while CSV (or any other) playback is
   // active.  CSV has its own per-row resume path; running startPlaybackFromCheckpoint
   // on top of an active CSV run would bypass forceAutoSave/skipDownload and cause
@@ -449,6 +498,7 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
 }
 
 export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
+  if (refuseIfRecording()) return;
   if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   _ssSettings = null; // reset screenshot settings cache for this run
 
@@ -499,6 +549,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
 /* ── Sequence Playback ──────────────────────────────────────────────────────── */
 
 export async function startSequence(runList) {
+  if (refuseIfRecording()) return;
   if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   _ssSettings = null;
 
@@ -604,6 +655,7 @@ function collectRelevantKeys(actions) {
 
 // Results go to IndexedDB one row at a time (O(1)/row vs the previous O(n²) array-rewrite approach).
 export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFormat = 'csv', startRowIndex = 0) {
+  if (refuseIfRecording()) return;
   if (_isAnyPlaybackActive()) { _notifyAlreadyRunning(); return; }
   _ssSettings = null;
 

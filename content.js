@@ -2291,8 +2291,9 @@ function _hlApply(color) {
 
   let segments = _hlGetTextNodes(_hlRange);
 
-  // Range có thể bị stale nếu trang thay đổi DOM sau khi user chọn text.
-  // Fallback: tìm lại text trong DOM hiện tại.
+  // The stored Range goes stale if the page mutates the DOM between the user
+  // selecting the text and picking a colour (common on SPAs that re-render on
+  // selection). Re-locate the text in the live DOM instead of dropping it.
   if (!segments.length) {
     const fresh = _hlFindRange(text, anchor, parentSel);
     if (fresh) segments = _hlGetTextNodes(fresh);

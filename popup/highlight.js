@@ -389,7 +389,6 @@ export function initHighlight() {
       hlBuilderSegments.appendChild(chip);
     });
 
-    // Update trigger host label
     if (hlBuilderHost) {
       const domStr = builderDomainParts
         .map((p, i) => builderDomainPartStates[i] === 'wildcard' ? '*' : p)

@@ -1127,6 +1127,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     showToast('No active tab found — open a tab and try again', 'error');
   } else if (msg.type === 'PLAYBACK_TAB_CLOSED') {
     showToast('Tab was closed — playback stopped', 'error');
+  } else if (msg.type === 'PLAYBACK_BLOCKED_RECORDING') {
+    showToast('Cannot start playback while recording — stop recording first', 'error');
+  } else if (msg.type === 'RECORD_BLOCKED_PLAYBACK') {
+    showToast('Cannot start recording while playback is running — stop it first', 'error');
   }
 });
 

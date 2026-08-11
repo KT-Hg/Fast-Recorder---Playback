@@ -130,7 +130,8 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   // Active shortcut map (may be overridden from storage)
   let shortcuts = JSON.parse(JSON.stringify(DEFAULT_SHORTCUTS));
 
-  // Load saved shortcuts from storage
+  // Awaited before any key handler is bound, so the first keypress already uses
+  // the user's saved bindings rather than the defaults.
   await new Promise(resolve => {
     chrome.storage.local.get(['cropEditorShortcuts'], res => {
       if (res.cropEditorShortcuts)
@@ -1409,7 +1410,8 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     workCtx.drawImage(tmp, 0, 0);
     render();
     showSaveToast("Adjustments applied");
-    // Reset sliders
+    // Adjustments are now baked into the canvas, so the sliders must return to
+    // neutral — leaving them raised would re-apply the same delta on the next run.
     document.getElementById("adjReset").click();
   });
 

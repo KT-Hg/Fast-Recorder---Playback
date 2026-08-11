@@ -13,6 +13,8 @@
 import { state } from './state.js';
 import { tabMsg } from './utils.js';
 import { isSessionOpen, markSessionClosed } from './cdp-session.js';
+import { ensureLockState, notifyLocked } from './update-check.js';
+import { LOCK_MESSAGE } from './update-lock.js';
 
 /* ── Per-tab screenshot serialization queue ─────────────────────────────────────
  * Chrome's CDP debugger is attached/detached around every CDP capture. If two
@@ -1077,13 +1079,28 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
 
 /* ── Screenshot Message Handler ─────────────────────────────────────────────── */
 
+const FULL_TYPES   = ['TAKE_SCREENSHOT_FULL', 'TAKE_SCREENSHOT_SCROLL_V', 'TAKE_SCREENSHOT_SCROLL_H'];
+const ALL_SS_TYPES = [...FULL_TYPES, 'TAKE_SCREENSHOT', 'TAKE_SCREENSHOT_ELEMENT'];
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  const FULL_TYPES   = ['TAKE_SCREENSHOT_FULL', 'TAKE_SCREENSHOT_SCROLL_V', 'TAKE_SCREENSHOT_SCROLL_H'];
-  const ALL_SS_TYPES = [...FULL_TYPES, 'TAKE_SCREENSHOT', 'TAKE_SCREENSHOT_ELEMENT'];
   if (!ALL_SS_TYPES.includes(request.type)) return;
 
+  // Capture is one of the features the update lock disables. Awaited rather than
+  // read from cache because a hotkey capture is often what wakes the worker.
+  ensureLockState().then((lock) => {
+    if (lock.locked) {
+      notifyLocked();
+      sendResponse({ error: LOCK_MESSAGE, locked: true });
+      return;
+    }
+    handleScreenshotRequest(request, sender, sendResponse);
+  });
+  return true;
+});
+
+function handleScreenshotRequest(request, sender, sendResponse) {
   const tabId = request.tabId || sender.tab?.id;
-  if (!tabId) { sendResponse({ error: 'No tab ID' }); return true; }
+  if (!tabId) { sendResponse({ error: 'No tab ID' }); return; }
 
   if (request.type === 'TAKE_SCREENSHOT_ELEMENT') {
     chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix'], (settings) => {
@@ -1095,7 +1112,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'SCREENSHOT_RESULT', result }).catch(() => {});
         }).catch(e => sendResponse({ error: e.message }));
     });
-    return true;
+    return;
   }
 
   chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix'], (settings) => {
@@ -1121,6 +1138,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }).catch(e => sendResponse({ error: e.message }))
       .finally(() => { if (isFull) tabMsg(tabId, { type: 'FULL_CAPTURE_STATE', active: false }).catch(() => {}); });
   });
-
-  return true;
-});
+}

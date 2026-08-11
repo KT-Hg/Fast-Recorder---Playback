@@ -13,7 +13,10 @@ import {
   getVariables, generateId, getStack, pushUndo, mutateScenarioActions,
 } from './bg/storage.js';
 import { updateBadge } from './bg/utils.js';
-import { startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback } from './bg/playback.js';
+import {
+  startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback,
+  refuseIfRecording, refuseRecordingIfPlaying,
+} from './bg/playback.js';
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
   openCropUI, buildScreenshotFilename,
@@ -21,8 +24,10 @@ import {
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 import {
   UPDATE_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
-  initUpdateAvailableListener, applyUpdate,
+  initUpdateAvailableListener, applyUpdate, markInstalledVersion,
+  reconcileUpdateState, initLockWatcher, ensureLockState, notifyLocked,
 } from './bg/update-check.js';
+import { LOCK_MESSAGE } from './bg/update-lock.js';
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 
@@ -57,7 +62,11 @@ function unregisterScheduleAlarm(id) {
 }
 
 // Set defaults on first install only — do not overwrite user settings on extension update.
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  // Restart the 30-day update clock. Runs on "install" too, so a fresh install
+  // isn't judged against a deadline it was never around for.
+  if (details?.reason === 'install' || details?.reason === 'update') markInstalledVersion();
+
   chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
     const defaults = {};
     if (res.screenshotCountdownEnabled === undefined) defaults.screenshotCountdownEnabled = true;
@@ -75,10 +84,12 @@ chrome.storage.local.get(["schedules"], (res) => {
   });
 });
 
-// Weekly Web Store version check (see bg/update-check.js).
+// Daily Web Store version check + update-lock bookkeeping (see bg/update-check.js).
 ensureUpdateAlarm();
 scheduleCatchUpCheck();
 initUpdateAvailableListener();
+initLockWatcher();
+reconcileUpdateState();
 
 // Restore an in-progress recording if the SW was suspended mid-session.
 restoreRecordingState().then(() => { if (state.recording) updateBadge(); });
@@ -114,18 +125,69 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const schedules = res.schedules || [];
     const s = schedules.find((x) => x.id === id);
     if (!s || !s.enabled) return;
-    startPlayback(s.scenarioId);
-    if (!s.repeat) {
-      s.enabled = false;
-      chrome.storage.local.set({ schedules });
-      unregisterScheduleAlarm(id);
-    }
+    // A locked extension must not run unattended either — skip the slot and say
+    // why, but leave the schedule enabled so it resumes after the update.
+    ensureLockState().then((lock) => {
+      if (lock.locked) { notifyLocked(); return; }
+      startPlayback(s.scenarioId);
+      // A one-shot schedule burns itself only when it actually ran; a slot skipped
+      // by the lock stays armed for the next occurrence.
+      if (!s.repeat) {
+        s.enabled = false;
+        chrome.storage.local.set({ schedules });
+        unregisterScheduleAlarm(id);
+      }
+    });
   });
 });
 
 /* === MAIN MESSAGE HANDLER === */
 
+/**
+ * Actions refused while the update lock is on: anything that *starts* capture,
+ * recording or playback. Deliberately absent — every GET_*, every STOP_*, and the
+ * export/backup paths, so a locked user can still watch a run finish, stop it, and
+ * get their scenarios out. Screenshot messages are guarded in bg/screenshot.js,
+ * which owns its own listener.
+ */
+const LOCKED_MESSAGE_TYPES = new Set([
+  'START_RECORD',
+  'START_PLAYBACK_SCENARIO', 'START_SEQUENCE_PLAYBACK',
+  'START_CSV_PLAYBACK', 'RESUME_CSV_PLAYBACK', 'RESUME_PLAYBACK',
+  'HOTKEY_SEG_START', 'HOTKEY_SCREENSHOT_ELEMENT',
+  'START_SEGMENT_CAPTURE', 'CAPTURE_SEGMENT',
+  'COMPARE_SCREENSHOTS',
+]);
+
+/**
+ * Message types that start playback. Refused while a recording is in progress —
+ * see the mutual-exclusion block in bg/playback.js for why the two modes cannot
+ * overlap. Listed here so the router can answer with an error instead of letting
+ * the request fall through and report `started: true` for a run that never began.
+ */
+const PLAYBACK_START_TYPES = new Set([
+  'START_PLAYBACK_SCENARIO', 'START_SEQUENCE_PLAYBACK',
+  'START_CSV_PLAYBACK', 'RESUME_CSV_PLAYBACK', 'RESUME_PLAYBACK',
+]);
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!LOCKED_MESSAGE_TYPES.has(request?.type)) {
+    return handleMessage(request, sender, sendResponse);
+  }
+  // Must await: a hotkey wakes the service worker and its message can arrive
+  // before the cached lock state has been read back from storage.
+  ensureLockState().then((lock) => {
+    if (lock.locked) {
+      notifyLocked();
+      sendResponse({ locked: true, started: false, error: LOCK_MESSAGE });
+      return;
+    }
+    handleMessage(request, sender, sendResponse);
+  });
+  return true; // keep the channel open across the storage read
+});
+
+function handleMessage(request, sender, sendResponse) {
   const { type } = request;
 
   // Screenshot messages have their own dedicated listener in bg/screenshot.js.
@@ -134,6 +196,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (["TAKE_SCREENSHOT", "TAKE_SCREENSHOT_FULL",
        "TAKE_SCREENSHOT_SCROLL_V", "TAKE_SCREENSHOT_SCROLL_H",
        "TAKE_SCREENSHOT_ELEMENT"].includes(type)) return;
+
+  // Refuse before dispatch so the caller is told the run did not start. The
+  // guard is repeated inside each playback entry point for the callers that
+  // never reach this router (scheduled alarms).
+  if (PLAYBACK_START_TYPES.has(type) && refuseIfRecording()) {
+    sendResponse({ started: false, error: 'Cannot start playback while recording is active' });
+    return;
+  }
 
   /* --- Forward recorded actions to popup --- */
   if (type === "RECORDED_ACTION") {
@@ -230,6 +300,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   /* --- Recording --- */
   if (type === "START_RECORD") {
+    if (refuseRecordingIfPlaying()) {
+      sendResponse({ started: false, error: 'Cannot start recording while playback is active' });
+      return;
+    }
     const tabId = request.tabId || sender.tab?.id || null;
     const startRecording = (scenarioId) => {
       state.recording = true;
@@ -245,8 +319,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       startRecording(request.scenarioId);
     } else {
       // Hotkey-triggered recording: no scenarioId in request, so we fall back to
-    // the last selected scenario from the popup (async storage read).
-    chrome.storage.local.get(["lastSelectedScenario"], (res) => {
+      // the last selected scenario from the popup (async storage read).
+      chrome.storage.local.get(["lastSelectedScenario"], (res) => {
         startRecording(res?.lastSelectedScenario || null);
       });
       return true;
@@ -517,7 +591,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       scenarios[id] = { ...request.scenario, createdAt: Date.now() };
       await setScenarios(scenarios);
       // Flag script actions in imported scenarios so the popup can warn the user —
-    // imported code runs with the extension's elevated CSP privileges.
+      // imported code runs with the extension's elevated CSP privileges.
       const hasScriptActions = (request.scenario?.actions || []).some(a => a.type === 'script');
       sendResponse({ success: true, id, hasScriptActions });
     });
@@ -1026,5 +1100,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
   }
-});
+}
 
