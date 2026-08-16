@@ -182,9 +182,20 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     });
   }
 
-  /* === 2. Load image === */
-  const res = await chrome.runtime.sendMessage({ type: "GET_PENDING_CROP" });
-  if (!res?.crop) { window.close(); return; }
+  /* === 2. Load image ===
+   * The token identifies which capture this window was opened for; the background
+   * keeps the entry alive until the window closes, so a reload lands here again
+   * and gets the same image back. */
+  const _cropToken = new URLSearchParams(location.search).get("crop");
+  const res = await chrome.runtime.sendMessage({ type: "GET_PENDING_CROP", token: _cropToken });
+  if (!res?.crop) {
+    // Closing silently here was indistinguishable from a crash. Say what happened,
+    // then close — the capture itself is gone and cannot be recovered.
+    document.body.textContent = "This capture is no longer available. Take the screenshot again.";
+    document.body.style.cssText = "display:flex;align-items:center;justify-content:center;height:100vh;font:14px system-ui;color:#888";
+    setTimeout(() => window.close(), 4000);
+    return;
+  }
   const { dataUrl, downloadPath, saveAs } = res.crop;
 
   const imgEl = document.getElementById("imgEl");
@@ -965,9 +976,13 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     if(!el)return; el.textContent=name; el.classList.remove("show");
     void el.offsetWidth; el.classList.add("show");
   }
-  function showSaveToast(msg) {
+  function showSaveToast(msg, isError = false) {
     const el=document.getElementById("saveToast");
     if(!el)return; el.textContent=msg; el.classList.remove("show");
+    el.classList.toggle("is-error", !!isError);
+    // Errors interrupt; confirmations wait their turn.
+    el.setAttribute("role", isError ? "alert" : "status");
+    el.setAttribute("aria-live", isError ? "assertive" : "polite");
     void el.offsetWidth; el.classList.add("show");
   }
 
@@ -1221,21 +1236,55 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   });
 
   /* === 17. Save / Cancel === */
-  document.getElementById("btnSaveCrop").addEventListener("click", () => {
+  /**
+   * Send a rendered canvas to the background for download and report the outcome.
+   *
+   * The background already distinguishes success from "Cancelled" (the user
+   * dismissed the Save As dialog) and "Download timeout", but both failure
+   * replies used to be dropped on the floor: the window just sat there, so a
+   * cancelled save was indistinguishable from a hung one and clicking Save again
+   * looked equally dead.
+   */
+  function saveCanvas(canvas, okLabel, btn) {
+    const prevLabel = btn ? btn.textContent : null;
+    if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+    const restore = () => { if (btn) { btn.disabled = false; btn.textContent = prevLabel; } };
+
+    chrome.runtime.sendMessage(
+      { type: "SAVE_CROPPED", dataUrl: canvas.toDataURL("image/png"), downloadPath, saveAs },
+      (res) => {
+        if (chrome.runtime.lastError) {
+          restore();
+          showSaveToast("Save failed — " + chrome.runtime.lastError.message, true);
+          return;
+        }
+        if (res?.success) {
+          showSaveToast(okLabel);
+          setTimeout(() => window.close(), 1200);
+          return;
+        }
+        restore();
+        // "Cancelled" is the user's own choice, so it is stated plainly rather
+        // than dressed up as an error.
+        showSaveToast(res?.error === "Cancelled" ? "Save cancelled" : ("Save failed — " + (res?.error || "unknown")), true);
+      },
+    );
+  }
+
+  const btnSaveCropEl = document.getElementById("btnSaveCrop");
+  const btnSaveFullEl = document.getElementById("btnSaveFull");
+
+  btnSaveCropEl.addEventListener("click", () => {
     if(pendingShape) commitPending();
     if (!cropSel) return;
     const {x,y,w,h}=cropSel;
     const off=document.createElement("canvas"); off.width=w; off.height=h;
     off.getContext("2d").drawImage(workCanvas,x,y,w,h,0,0,w,h);
-    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:off.toDataURL("image/png"),downloadPath,saveAs}, (res) => {
-      if (res?.success) { showSaveToast(`Saved crop: ${w}×${h} px`); setTimeout(()=>window.close(), 1200); }
-    });
+    saveCanvas(off, `Saved crop: ${w}×${h} px`, btnSaveCropEl);
   });
-  document.getElementById("btnSaveFull").addEventListener("click", () => {
+  btnSaveFullEl.addEventListener("click", () => {
     if(pendingShape) commitPending();
-    chrome.runtime.sendMessage({type:"SAVE_CROPPED",dataUrl:workCanvas.toDataURL("image/png"),downloadPath,saveAs}, (res) => {
-      if (res?.success) { showSaveToast(`Saved full: ${workCanvas.width}×${workCanvas.height} px`); setTimeout(()=>window.close(), 1200); }
-    });
+    saveCanvas(workCanvas, `Saved full: ${workCanvas.width}×${workCanvas.height} px`, btnSaveFullEl);
   });
   function confirmCloseIfDirty() {
     if (undoStack.length > 0 || pendingShape) {
@@ -1284,18 +1333,24 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     document.body.classList.toggle("light", !dark);
     if (btnTheme) btnTheme.textContent = dark ? "🌙" : "☀️";
   }
-  // Sync with popup theme
-  chrome.storage.local.get(["theme"], res => {
-    applyTheme(res.theme !== "light");
+  // Shares the popup's theme key. This used to read and write "theme" while the
+  // popup and the in-page overlays used "popupTheme", so the editor was a third,
+  // isolated theme: opening the crop editor from a dark popup produced a white
+  // window, and toggling it here changed nothing anywhere else.
+  const THEME_KEY = "popupTheme";
+  // Absent means light — matching popup/theme.js, which treats only the literal
+  // "dark" as dark. The old default here was the opposite way round.
+  chrome.storage.local.get([THEME_KEY], res => {
+    applyTheme(res[THEME_KEY] === "dark");
   });
-  chrome.storage.onChanged.addListener((changes) => {
-    if (changes.theme) applyTheme(changes.theme.newValue !== "light");
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[THEME_KEY]) return;
+    applyTheme(changes[THEME_KEY].newValue === "dark");
   });
   if (btnTheme) btnTheme.addEventListener("click", () => {
-    const isLight = document.body.classList.contains("light");
-    const newTheme = isLight ? "dark" : "light";
-    chrome.storage.local.set({ theme: newTheme });
-    applyTheme(newTheme !== "light");
+    const nextIsDark = document.body.classList.contains("light");
+    chrome.storage.local.set({ [THEME_KEY]: nextIsDark ? "dark" : "light" });
+    applyTheme(nextIsDark);
   });
 
   /* === 19. Init === */

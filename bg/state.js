@@ -12,7 +12,8 @@ export const state = {
   recordingTabId: null,
   recordingScenarioId: null,
   pickMode: false,
-  pendingCrop: null,
+  // pendingCrop moved to a per-window token map in bg/screenshot.js — a single
+  // slot could not survive an editor reload or two crops opened back to back.
   currentActions: [],
   undoStack: [],
   redoStack: [],
@@ -42,29 +43,25 @@ export const state = {
     currentRow: 0,
     scenarioId: null,
     delayBetween: 500,
+    // Graceful stop: set by STOP_CSV_AFTER_ROW. The row in flight runs to the end
+    // and its result is written before the loop exits, unlike STOP_CSV_PLAYBACK
+    // which clears `active` and drops the partial row.
+    stopAfterRow: false,
   },
   segmentCapture: { active: false, tabId: null, dir: null },
 };
 
-/* === CSV Rows Storage === */
-
-/**
- * Persist the full rows array to local storage so restoreCsvState() can
- * reload it after an SW restart.  Stored separately from the lightweight
- * session checkpoint because large CSVs would exceed the 10 MB session quota.
+/* === CSV Playback State Persistence ===
+ *
+ * Row data is NOT duplicated here. The popup already writes the parsed CSV to
+ * chrome.storage.local under `csvSessionData` — it needs it after the run to
+ * build the result export — and this module used to write a second full copy to
+ * `_csvRows`, doubling the footprint of every CSV in local storage for no gain.
+ * Both now read the one record; only the lightweight row-index checkpoint lives
+ * in session storage.
  */
-export function saveCsvRows(rows) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ _csvRows: rows }, () => {
-      if (chrome.runtime.lastError) {
-        console.warn('[STATE] saveCsvRows failed:', chrome.runtime.lastError.message);
-      }
-      resolve();
-    });
-  });
-}
 
-/* === CSV Playback State Persistence === */
+const CSV_SESSION_KEY = 'csvSessionData';
 
 /**
  * Persist a lightweight CSV checkpoint (row index only — rows live in local
@@ -80,14 +77,15 @@ export async function persistCsvState(scenarioId, currentRow, delayBetween, expo
   } catch (_) {}
 }
 
-/** Remove both the session checkpoint and the locally-stored rows. */
+/**
+ * Drop the run checkpoint.
+ *
+ * `csvSessionData` is deliberately left in place: the popup reads it to build the
+ * result CSV/XLSX after the run, so clearing it here would break the download.
+ */
 export async function clearCsvState() {
-  const tasks = [];
-  if (chrome.storage?.session) {
-    tasks.push(chrome.storage.session.remove('csv_pending').catch(() => {}));
-  }
-  tasks.push(new Promise(r => chrome.storage.local.remove('_csvRows', r)));
-  await Promise.all(tasks);
+  if (!chrome.storage?.session) return;
+  await chrome.storage.session.remove('csv_pending').catch(() => {});
 }
 
 /**
@@ -97,7 +95,7 @@ export async function clearCsvState() {
  *  - No session storage available (< Chrome 102)
  *  - No checkpoint exists
  *  - Checkpoint is older than 30 minutes (stale — user likely closed the browser)
- *  - Row data is missing from local storage
+ *  - The parsed CSV is missing from local storage
  */
 export async function restoreCsvState() {
   if (!chrome.storage?.session) return null;
@@ -108,10 +106,10 @@ export async function restoreCsvState() {
       if (cp) await clearCsvState();
       return null;
     }
-    const localRes = await new Promise(r => chrome.storage.local.get(['_csvRows'], r));
-    const rows = localRes._csvRows;
-    if (!rows || !Array.isArray(rows) || rows.length === 0) {
-      console.warn('[STATE] restoreCsvState: checkpoint found but rows missing — discarding');
+    const localRes = await new Promise(r => chrome.storage.local.get([CSV_SESSION_KEY], r));
+    const rows = localRes?.[CSV_SESSION_KEY]?.rows;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.warn('[STATE] restoreCsvState: checkpoint found but CSV data missing — discarding');
       await clearCsvState();
       return null;
     }

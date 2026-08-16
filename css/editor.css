@@ -182,7 +182,12 @@ body {
   box-shadow:0 4px 14px rgba(0,0,0,0.3);
 }
 #saveToast.show { display:block;animation:toastFade 1.8s ease forwards; }
+/* Failures need to outlast the success fade — the user has to read and act on
+   them, and the window stays open rather than closing behind the toast. */
+#saveToast.is-error { background:#ef4444; }
+#saveToast.is-error.show { animation:toastFadeLong 5s ease forwards; }
 @keyframes toastFade { 0%{opacity:1} 70%{opacity:1} 100%{opacity:0} }
+@keyframes toastFadeLong { 0%{opacity:1} 88%{opacity:1} 100%{opacity:0} }
 
 /* === Tool switch toast === */
 #toolToast {

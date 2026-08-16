@@ -1,4 +1,4 @@
-import { state, persistCsvState, clearCsvState, saveCsvRows } from './state.js';
+import { state, persistCsvState, clearCsvState } from './state.js';
 import { getScenarios, getVariables } from './storage.js';
 import {
   updateBadge, sendCompletionNotification, sendAlertNotification,
@@ -12,19 +12,36 @@ import { ssWrite, ssClear, csvResultWrite, csvResultClear } from './idb-screensh
 
 /* ── SW keep-alive ──────────────────────────────────────────────────────────── */
 
-// Chrome MV3 terminates idle Service Workers after ~30 s.  A playback that
-// contains a long wait() action would be killed mid-run without this alarm.
-// The alarm fires every 20 s and reschedules itself (via background.js onAlarm)
-// for as long as playback is active.
+// Chrome MV3 terminates idle Service Workers after ~30 s. A playback that sits in
+// a long wait() action makes no extension API calls, so nothing resets that timer
+// and the run would be killed mid-flight.
+//
+// Two mechanisms, because neither is sufficient alone:
+//
+//   - The alarm survives a worker that has already been torn down, and is what
+//     brings it back. It asks for 20 s but Chrome clamps alarms to a 30 s floor,
+//     landing exactly on the idle deadline — too close to rely on by itself.
+//   - The interval below makes a cheap API call every 20 s. Each one resets the
+//     idle timer from inside, so the worker never reaches the deadline in the
+//     first place. It dies with the worker, which is why the alarm is still needed.
 
 const KEEPALIVE_ALARM = 'playback-keepalive';
+const KEEPALIVE_MS    = 20_000;
+
+let _keepaliveTimer = null;
 
 function _startKeepalive() {
-  chrome.alarms.create(KEEPALIVE_ALARM, { when: Date.now() + 20_000 });
+  chrome.alarms.create(KEEPALIVE_ALARM, { when: Date.now() + KEEPALIVE_MS });
+  if (_keepaliveTimer) clearInterval(_keepaliveTimer);
+  _keepaliveTimer = setInterval(() => {
+    // Any extension API call resets the idle countdown; this is among the cheapest.
+    chrome.runtime.getPlatformInfo(() => { void chrome.runtime.lastError; });
+  }, KEEPALIVE_MS);
 }
 
 function _stopKeepalive() {
   chrome.alarms.clear(KEEPALIVE_ALARM);
+  if (_keepaliveTimer) { clearInterval(_keepaliveTimer); _keepaliveTimer = null; }
 }
 
 /* ── Concurrency Guard ──────────────────────────────────────────────────────── */
@@ -627,25 +644,36 @@ export async function startSequence(runList) {
 
 /* ── CSV Playback ───────────────────────────────────────────────────────────── */
 
+/**
+ * Variable names a scenario actually touches. Only these are kept in the per-row
+ * IndexedDB record, which is what the CSV/XLSX/HTML export turns into columns.
+ *
+ * The field list must stay in step with interpolateAction() in bg/utils.js — a
+ * field that gets variables substituted but is not scanned here silently loses
+ * its column. folderPath, fileName, fileNames and the idContains/classContains
+ * conditions were missing, so a scenario uploading `${docFolder}/${invoiceFile}`
+ * ran correctly but exported neither value.
+ */
 function collectRelevantKeys(actions) {
-  const keys    = new Set();
-  const VAR_RE  = /\$\{([^}]+)\}/g;
-  const FIELDS  = ['selector', 'value', 'url', 'code', 'expectedValue', 'switchVar'];
-  const C_FIELDS = ['valueEquals', 'textContains'];
+  const keys   = new Set();
+  const VAR_RE = /\$\{([^}]+)\}/g;
+  const FIELDS = [
+    'selector', 'value', 'url', 'code', 'expectedValue', 'switchVar',
+    'folderPath', 'fileName',
+  ];
+  const C_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains'];
+
+  const scan = (v) => {
+    if (typeof v !== 'string') return;
+    let m; VAR_RE.lastIndex = 0;
+    while ((m = VAR_RE.exec(v)) !== null) keys.add(m[1]);
+  };
+
   for (const a of actions) {
-    for (const f of FIELDS) {
-      if (typeof a[f] === 'string') {
-        let m; VAR_RE.lastIndex = 0;
-        while ((m = VAR_RE.exec(a[f])) !== null) keys.add(m[1]);
-      }
-    }
+    for (const f of FIELDS) scan(a[f]);
+    if (Array.isArray(a.fileNames)) a.fileNames.forEach(scan);
     if (a.conditions && typeof a.conditions === 'object') {
-      for (const f of C_FIELDS) {
-        if (typeof a.conditions[f] === 'string') {
-          let m; VAR_RE.lastIndex = 0;
-          while ((m = VAR_RE.exec(a.conditions[f])) !== null) keys.add(m[1]);
-        }
-      }
+      for (const f of C_FIELDS) scan(a.conditions[f]);
     }
     // readdom and screenshot_tovar produce variables that are also "relevant".
     if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) keys.add(a.varName);
@@ -662,142 +690,187 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   // xlsx/html/zip formats post-process screenshots client-side — skip downloading
   // individual files during the run to avoid the browser download dialog.
   const skipDownload = exportFormat === 'xlsx' || exportFormat === 'html' || exportFormat === 'zip';
-  state.csvPlayback = { active: true, rows, currentRow: startRowIndex, scenarioId, delayBetween };
+  // A run picking up from a checkpoint must keep everything the earlier rows wrote.
+  const isResume = startRowIndex > 0;
+  state.csvPlayback = {
+    active: true, rows, currentRow: startRowIndex, scenarioId, delayBetween,
+    stopAfterRow: false,
+  };
   state.csvInterrupted = null;
   updateBadge();
 
-  await saveCsvRows(rows);
-  await persistCsvState(scenarioId, startRowIndex, delayBetween, exportFormat);
+  let tabId         = null;
+  let scenario      = null;
+  let completedRows = 0;
+  let failedRows    = 0;
+  let runError      = null;
+  let keepaliveOn   = false;
 
-  const [scenarios, baseVars] = await Promise.all([getScenarios(), getVariables()]);
-  const scenario = scenarios[scenarioId];
-  if (!scenario) {
-    state.csvPlayback.active = false;
-    await clearCsvState();
-    updateBadge();
-    return;
-  }
+  // The whole run lives inside try/catch/finally, matching startPlayback and
+  // startSequence. A throw anywhere — an IndexedDB quota error while writing a
+  // row, a rejected CDP command, a tab closing mid-action — otherwise leaves
+  // csvPlayback.active stuck true: the keep-alive alarm then re-arms itself every
+  // 20 s for the life of the worker, and every later Play is refused with
+  // "already running" for a run that is not running. The only escape was
+  // disabling the extension.
+  try {
+    // Rows are not re-saved here: the popup wrote them to csvSessionData before
+    // dispatching START_CSV_PLAYBACK, and restoreCsvState() reads that record.
+    await persistCsvState(scenarioId, startRowIndex, delayBetween, exportFormat);
 
-  const tabId = await getActiveTabId();
-  if (!tabId) {
-    state.csvPlayback.active = false;
-    await clearCsvState();
-    updateBadge();
-    chrome.runtime.sendMessage({ type: 'PLAYBACK_NO_TAB' }).catch(() => {});
-    sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
-    return;
-  }
+    const [scenarios, baseVars] = await Promise.all([getScenarios(), getVariables()]);
+    scenario = scenarios[scenarioId];
+    if (!scenario) return;
 
-  const actions      = scenario.actions || [];
-  const relevantKeys = collectRelevantKeys(actions);
+    tabId = await getActiveTabId();
+    if (!tabId) {
+      chrome.runtime.sendMessage({ type: 'PLAYBACK_NO_TAB' }).catch(() => {});
+      sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
+      return;
+    }
 
-  // Collect screenshot varNames in action order, including nested scenarios
-  // reached via Switch, so XLSX/HTML column headers match the full action sequence.
-  function _collectSsVars(acts, visited) {
-    const out = [];
-    for (const a of acts) {
-      if (a.type === 'screenshot_tovar' && a.varName && !visited.has('var:' + a.varName)) {
-        visited.add('var:' + a.varName);
-        out.push(a.varName);
-      }
-      if (a.type === 'switch' && a.cases) {
-        for (const c of a.cases) {
-          if (c.scenarioId && !visited.has('sc:' + c.scenarioId)) {
-            visited.add('sc:' + c.scenarioId);
-            const nested = scenarios[c.scenarioId];
-            if (nested?.actions) out.push(..._collectSsVars(nested.actions, visited));
+    const actions      = scenario.actions || [];
+    const relevantKeys = collectRelevantKeys(actions);
+
+    // Collect screenshot varNames in action order, including nested scenarios
+    // reached via Switch, so XLSX/HTML column headers match the full action sequence.
+    function _collectSsVars(acts, visited) {
+      const out = [];
+      for (const a of acts) {
+        if (a.type === 'screenshot_tovar' && a.varName && !visited.has('var:' + a.varName)) {
+          visited.add('var:' + a.varName);
+          out.push(a.varName);
+        }
+        if (a.type === 'switch' && a.cases) {
+          for (const c of a.cases) {
+            if (c.scenarioId && !visited.has('sc:' + c.scenarioId)) {
+              visited.add('sc:' + c.scenarioId);
+              const nested = scenarios[c.scenarioId];
+              if (nested?.actions) out.push(..._collectSsVars(nested.actions, visited));
+            }
           }
         }
       }
+      return out;
     }
-    return out;
-  }
-  const ssVarOrder = _collectSsVars(actions, new Set(['sc:' + scenarioId]));
-  chrome.storage.local.set({ csvSsVarOrder: ssVarOrder });
+    const ssVarOrder = _collectSsVars(actions, new Set(['sc:' + scenarioId]));
+    chrome.storage.local.set({ csvSsVarOrder: ssVarOrder });
 
-  // Clear previous run's results, screenshots, and any stale single-scenario
-  // checkpoint before starting — a fresh run should never show stale data from
-  // the prior run, and leftover checkpoints would trigger false OFFER_RESUME.
-  await Promise.all([
-    new Promise(r => chrome.storage.local.remove('csvRunResults', r)),
-    new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
-    ssClear(),
-    csvResultClear(),
-  ]);
+    // Clear the previous run's results and screenshots — a fresh run must never
+    // show stale data from the prior one.
+    //
+    // Skipped on resume. startRowIndex > 0 means rows 0..startRowIndex-1 already
+    // ran and their results are the entire point of resuming; clearing here wiped
+    // them, so a run resumed at row 120 of 200 exported only the last 80 rows.
+    if (!isResume) {
+      await Promise.all([
+        new Promise(r => chrome.storage.local.remove('csvRunResults', r)),
+        ssClear(),
+        csvResultClear(),
+      ]);
+    }
+    // Always dropped: a leftover single-scenario checkpoint would trigger a false
+    // OFFER_RESUME on top of the CSV run.
+    await new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r));
 
-  let completedRows = 0;
-  let failedRows    = 0;
+    chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+    await _startKeepalive();
+    keepaliveOn = true;
 
-  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
-  await _startKeepalive();
-  for (let i = startRowIndex; i < rows.length; i++) {
-    if (!state.csvPlayback.active) break;
-    state.csvPlayback.currentRow = i;
+    for (let i = startRowIndex; i < rows.length; i++) {
+      if (!state.csvPlayback.active) break;
+      state.csvPlayback.currentRow = i;
+      updateBadge();
+
+      await persistCsvState(scenarioId, i, delayBetween, exportFormat);
+
+      // Merge base variables with row data; CSV columns override base vars when
+      // names collide so per-row data always takes precedence.
+      const rowVars = { ...baseVars, ...rows[i] };
+      state.playback = {
+        active: true, tabId, scenarioId,
+        scenarioName: scenario.name || scenarioId,
+        originalScenarioName: scenario.name || scenarioId,
+        actionIndex: 0, totalActions: actions.length,
+      };
+      const screenshotsResult = {};
+      const failedActions     = [];
+      const finalVars = await playActionsOnTab(
+        tabId, actions, rowVars, screenshotsResult, true, skipDownload, 0, failedActions,
+      );
+      state.playback.active = false;
+
+      completedRows++;
+      if (failedActions.length > 0) failedRows++;
+
+      // Only store variables that are actually referenced by the scenario to
+      // keep IDB records lean.
+      // Screenshot vars are placed last in action-capture order so that XLSX/HTML
+      // column headers match the scenario's action sequence rather than the order
+      // the vars were defined (CSV column order or baseVars order).
+      const filteredVarsRaw = Object.fromEntries(
+        Object.entries(finalVars).filter(([k]) => relevantKeys.has(k)),
+      );
+      const ssKeys = new Set(Object.keys(screenshotsResult));
+      const filteredVars = {};
+      for (const [k, v] of Object.entries(filteredVarsRaw)) {
+        if (!ssKeys.has(k)) filteredVars[k] = v;
+      }
+      for (const k of Object.keys(screenshotsResult)) {
+        if (k in filteredVarsRaw) filteredVars[k] = filteredVarsRaw[k];
+      }
+
+      await csvResultWrite(i, { rowIndex: i, vars: filteredVars, failures: failedActions });
+
+      for (const [vn, b64] of Object.entries(screenshotsResult)) {
+        await ssWrite(i, vn, b64);
+      }
+
+      // "Stop after this row" was requested while this row was running. The row
+      // is complete and its result is written, so leaving now is the graceful
+      // exit the button promises — as opposed to STOP_CSV_PLAYBACK, which clears
+      // `active` and abandons the row mid-action.
+      const gracefulStop = state.csvPlayback.stopAfterRow === true;
+      const isLast = gracefulStop || i === rows.length - 1;
+      chrome.runtime.sendMessage({
+        type: 'CSV_ROW_DONE', rowIndex: i, total: rows.length,
+        failRows: failedRows, isLast, delayBetween,
+      }).catch(() => {});
+
+      if (gracefulStop) break;
+
+      if (!isLast && delayBetween > 0) {
+        await new Promise((r) => setTimeout(r, delayBetween));
+      }
+    }
+  } catch (err) {
+    runError = err;
+    console.error('[CSV] Run aborted by an unexpected error:', err);
+  } finally {
+    if (keepaliveOn) _stopKeepalive();
+    if (tabId != null) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
+    state.csvPlayback.active = false;
+    state.playback.active    = false;
+    await Promise.all([
+      clearCsvState(),
+      new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
+    ]).catch(() => {});
     updateBadge();
-
-    await persistCsvState(scenarioId, i, delayBetween, exportFormat);
-
-    // Merge base variables with row data; CSV columns override base vars when
-    // names collide so per-row data always takes precedence.
-    const rowVars = { ...baseVars, ...rows[i] };
-    state.playback = {
-      active: true, tabId, scenarioId,
-      scenarioName: scenario.name || scenarioId,
-      originalScenarioName: scenario.name || scenarioId,
-      actionIndex: 0, totalActions: actions.length,
-    };
-    const screenshotsResult = {};
-    const failedActions     = [];
-    const finalVars = await playActionsOnTab(
-      tabId, actions, rowVars, screenshotsResult, true, skipDownload, 0, failedActions,
-    );
-    state.playback.active = false;
-
-    completedRows++;
-    if (failedActions.length > 0) failedRows++;
-
-    // Only store variables that are actually referenced by the scenario to
-    // keep IDB records lean.
-    // Screenshot vars are placed last in action-capture order so that XLSX/HTML
-    // column headers match the scenario's action sequence rather than the order
-    // the vars were defined (CSV column order or baseVars order).
-    const filteredVarsRaw = Object.fromEntries(
-      Object.entries(finalVars).filter(([k]) => relevantKeys.has(k)),
-    );
-    const ssKeys = new Set(Object.keys(screenshotsResult));
-    const filteredVars = {};
-    for (const [k, v] of Object.entries(filteredVarsRaw)) {
-      if (!ssKeys.has(k)) filteredVars[k] = v;
-    }
-    for (const k of Object.keys(screenshotsResult)) {
-      if (k in filteredVarsRaw) filteredVars[k] = filteredVarsRaw[k];
-    }
-
-    await csvResultWrite(i, { rowIndex: i, vars: filteredVars, failures: failedActions });
-
-    for (const [vn, b64] of Object.entries(screenshotsResult)) {
-      await ssWrite(i, vn, b64);
-    }
-
-    const isLast = i === rows.length - 1;
-    chrome.runtime.sendMessage({
-      type: 'CSV_ROW_DONE', rowIndex: i, total: rows.length,
-      failRows: failedRows, isLast, delayBetween,
-    }).catch(() => {});
-
-    if (!isLast && delayBetween > 0) {
-      await new Promise((r) => setTimeout(r, delayBetween));
-    }
   }
 
-  await _stopKeepalive();
-  chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
-  state.csvPlayback.active = false;
-  await Promise.all([
-    clearCsvState(),
-    new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
-  ]);
-  updateBadge();
+  // Report the crash rather than letting the run end in silence. Results written
+  // before the throw stay in IndexedDB, so the export button still works.
+  if (runError) {
+    const msg = runError?.message || String(runError);
+    sendAlertNotification('⚠ CSV Run Failed', `Stopped after ${completedRows} row(s): ${msg}`, 'csv_error');
+    chrome.runtime.sendMessage({
+      type: 'CSV_RUN_ERROR', error: msg, total: completedRows, failRows: failedRows,
+    }).catch(() => {});
+    return;
+  }
+
+  // Nothing ran: missing scenario or no eligible tab, both already reported above.
+  if (!scenario || tabId == null) return;
 
   const _csvMsg = failedRows > 0
     ? `${completedRows - failedRows} ✓ · ${failedRows} ✗ of ${completedRows} rows — "${scenario.name}"`

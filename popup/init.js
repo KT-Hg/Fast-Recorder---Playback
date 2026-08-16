@@ -8,7 +8,7 @@
  *  4. startConnectionCheck — starts the PING interval after UI is ready.
  */
 
-import { applyTheme, initTheme } from './theme.js';
+import { initTheme } from './theme.js';
 import { startConnectionCheck } from './connection.js';
 import { initScreenshots } from './screenshots.js';
 import { initVariables } from './variables.js';
@@ -136,17 +136,33 @@ function initTabs() {
   });
 }
 
-initHeaderSpacer();
-initTabs();
-initCaptureTabs();
-initTheme();
-initScreenshots();
-initVariables();
-initSettings();
-initMain();
-initExportBookmarklet();
-initExportSelenium();
-initImageEditor();
-initHighlight();
-initUpdateBanner();
-startConnectionCheck();
+/**
+ * Run one bootstrap step, isolated.
+ *
+ * These used to be twelve bare calls. A throw in any of them — one renamed
+ * element id is enough — aborted the whole sequence, so everything after it
+ * never ran and the popup opened half-dead with nothing in the console pointing
+ * at the cause. Now a failing module costs only itself, and says so.
+ */
+function step(name, fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.error(`[POPUP] ${name}() failed — the rest of the popup still loads:`, err);
+  }
+}
+
+step('initHeaderSpacer',       initHeaderSpacer);
+step('initTabs',               initTabs);
+step('initCaptureTabs',        initCaptureTabs);
+step('initTheme',              initTheme);
+step('initScreenshots',        initScreenshots);
+step('initVariables',          initVariables);
+step('initSettings',           initSettings);
+step('initMain',               initMain);
+step('initExportBookmarklet',  initExportBookmarklet);
+step('initExportSelenium',     initExportSelenium);
+step('initImageEditor',        initImageEditor);
+step('initHighlight',          initHighlight);
+step('initUpdateBanner',       initUpdateBanner);
+step('startConnectionCheck',   startConnectionCheck);

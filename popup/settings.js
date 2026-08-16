@@ -81,19 +81,29 @@ export function formatKeyEvent(e) {
   return parts.join('+');
 }
 
+// Setting id → the element that displays its current combo.
+const HOTKEY_LABEL_IDS = {
+  startRecord:       'hotkeyStartRecord',
+  stopRecord:        'hotkeyStopRecord',
+  screenshot:        'hotkeyScreenshot',
+  screenshotFull:    'hotkeyScreenshotFull',
+  screenshotScrollV: 'hotkeyScreenshotScrollV',
+  screenshotScrollH: 'hotkeyScreenshotScrollH',
+  segV:              'hotkeySegV',
+  segH:              'hotkeySegH',
+  segStop:           'hotkeySegStop',
+  screenshotElement: 'hotkeyScreenshotElement',
+};
+
 export function loadHotkeySettings() {
   chrome.storage.sync.get(['hotkeys'], (res) => {
     const h = { ...DEFAULT_HOTKEYS, ...(res.hotkeys || {}) };
-    document.getElementById('hotkeyStartRecord').textContent       = h.startRecord;
-    document.getElementById('hotkeyStopRecord').textContent        = h.stopRecord;
-    document.getElementById('hotkeyScreenshot').textContent        = h.screenshot;
-    document.getElementById('hotkeyScreenshotFull').textContent    = h.screenshotFull;
-    document.getElementById('hotkeyScreenshotScrollV').textContent = h.screenshotScrollV || '—';
-    document.getElementById('hotkeyScreenshotScrollH').textContent = h.screenshotScrollH || '—';
-    document.getElementById('hotkeySegV').textContent              = h.segV    || '—';
-    document.getElementById('hotkeySegH').textContent              = h.segH    || '—';
-    document.getElementById('hotkeySegStop').textContent           = h.segStop || '—';
-    document.getElementById('hotkeyScreenshotElement').textContent = h.screenshotElement || '—';
+    // Guarded lookups: a renamed or removed element used to throw straight out of
+    // initSettings(), which aborted the rest of the popup bootstrap in init.js.
+    for (const [key, id] of Object.entries(HOTKEY_LABEL_IDS)) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = h[key] || '—';
+    }
   });
 }
 
@@ -104,14 +114,18 @@ export function cancelHotkeyCapture() {
   capturingHotkey = null;
 }
 
+/**
+ * Read the completion-notification toggle from storage into the checkbox.
+ *
+ * Load only — the change listener is bound once in initSettings(). This function
+ * runs again on every visit to the Settings tab (reloadSettings), and it used to
+ * attach a fresh listener each time. Ten tab switches meant one click writing
+ * chrome.storage.sync eleven times, against a hard quota of 120 writes/minute.
+ */
 export function loadNotificationSetting() {
   chrome.storage.sync.get(['notifyOnComplete'], (res) => {
     const cb = document.getElementById('notifyOnComplete');
     if (cb) cb.checked = !!res.notifyOnComplete;
-  });
-
-  document.getElementById('notifyOnComplete')?.addEventListener('change', (e) => {
-    chrome.storage.sync.set({ notifyOnComplete: e.target.checked });
   });
 }
 
@@ -270,6 +284,12 @@ export function initSettings() {
   /* --- Reset hotkeys --- */
   document.getElementById('resetHotkeys')?.addEventListener('click', () => {
     chrome.storage.sync.set({ hotkeys: DEFAULT_HOTKEYS }, loadHotkeySettings);
+  });
+
+  /* --- Completion notification toggle ---
+   * Bound here, exactly once. reloadSettings() only refreshes values. */
+  document.getElementById('notifyOnComplete')?.addEventListener('change', (e) => {
+    chrome.storage.sync.set({ notifyOnComplete: e.target.checked });
   });
 
   /* --- Load initial state --- */

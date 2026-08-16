@@ -405,16 +405,18 @@ const CARD_HELP_DATA = {
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">Export Folder</span><span class="ch-title">Xuất cả thư mục</span></div><p class="ch-desc">Chọn thư mục rồi nhấn <b>Export Folder</b>. Tất cả scenario trong thư mục đó được đóng gói vào <b>1 file JSON duy nhất</b> (dạng array). Tiện để backup hoặc chuyển sang máy khác. Tên file = tên thư mục + <code>_folder.json</code>.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">Import Scenario</span><span class="ch-title">Nhập scenario</span></div><p class="ch-desc">Chọn file <code>.json</code> đã export từ trước, rồi nhấn <b>Import Scenario</b>. Extension hỗ trợ:<br>
         • <b>File đơn</b>: 1 scenario object <code>{"name":…,"actions":…}</code><br>
-        • <b>File nhiều scenario</b>: array <code>[{"name":…},…]</code> (từ Export Folder)<br><br>
-        Scenario nhập vào sẽ <b>được cấp ID mới</b> để tránh trùng với scenario hiện có. Nếu tên trùng, sẽ hỏi xác nhận ghi đè.</p></div>
+        • <b>File nhiều scenario</b>: array <code>[{"name":…},…]</code><br>
+        • <b>File thư mục</b> (từ Export Folder): <code>{"name":…,"scenarios":{…}}</code> — thư mục được <b>tạo lại</b> và toàn bộ scenario bên trong được nhập vào đó<br><br>
+        Scenario nhập vào sẽ <b>được cấp ID mới</b> để tránh trùng với scenario hiện có. Mục không đúng định dạng scenario sẽ bị bỏ qua và báo rõ số lượng.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">💡 Tip</span><span class="ch-title">Dùng để backup</span></div><p class="ch-desc">Export toàn bộ các thư mục định kỳ để backup. Khi cần khôi phục, Import từng file một. Lưu ý: Variables và Settings không được bao gồm trong file export — cần backup riêng nếu cần.</p></div>`,
     en: `
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">Export Scenario</span><span class="ch-title">Export single scenario</span></div><p class="ch-desc">Select a scenario from the dropdown and click <b>Export Scenario</b>. A <code>.json</code> file is downloaded with the scenario name as the filename. The file contains: name, action list, creation time.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">Export Folder</span><span class="ch-title">Export entire folder</span></div><p class="ch-desc">Select a folder and click <b>Export Folder</b>. All scenarios in that folder are packed into <b>a single JSON file</b> (as an array). Useful for backup or migration. Filename = folder name + <code>_folder.json</code>.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">Import Scenario</span><span class="ch-title">Import scenario</span></div><p class="ch-desc">Select a previously exported <code>.json</code> file, then click <b>Import Scenario</b>. Supports:<br>
         • <b>Single file</b>: one scenario object <code>{"name":…,"actions":…}</code><br>
-        • <b>Multi-scenario file</b>: array <code>[{"name":…},…]</code> (from Export Folder)<br><br>
-        Imported scenarios are <b>assigned new IDs</b> to avoid conflicts. If a name already exists, you will be asked to confirm overwrite.</p></div>
+        • <b>Multi-scenario file</b>: array <code>[{"name":…},…]</code><br>
+        • <b>Folder file</b> (from Export Folder): <code>{"name":…,"scenarios":{…}}</code> — the folder is <b>recreated</b> and every scenario inside is imported into it<br><br>
+        Imported scenarios are <b>assigned new IDs</b> to avoid conflicts. Entries that are not scenarios are skipped, and the count is reported.</p></div>
       <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">💡 Tip</span><span class="ch-title">Use for backups</span></div><p class="ch-desc">Periodically export all folders to back up your scenarios. To restore, import the files one by one. Note: Variables and Settings are not included in export files — back these up separately if needed.</p></div>`
   },
   sequence: {
@@ -641,19 +643,8 @@ const startSequence = document.getElementById("startSequence");
 const stopSequence = document.getElementById("stopSequence");
 const saveSequenceAsScenario = document.getElementById("saveSequenceAsScenario");
 
-// Compact mode elements
-const toggleAdvancedMode = document.getElementById("toggleAdvancedMode");
-const compactView = document.getElementById("compactView");
-const startRecordCompact = document.getElementById("startRecordCompact");
-const stopRecordCompact = document.getElementById("stopRecordCompact");
-const scenarioListCompact = document.getElementById("scenarioListCompact");
-const playScenarioCompact = document.getElementById("playScenarioCompact");
-const stopPlayCompact = document.getElementById("stopPlayCompact");
-const scenarioNameCompact = document.getElementById("scenarioNameCompact");
-const scenarioFolderCompact = document.getElementById("scenarioFolderCompact");
-const saveFlowCompact = document.getElementById("saveFlowCompact");
-const previewCompact = document.getElementById("previewCompact");
-const actionsCompact = document.getElementById("actionsCompact");
+// (Compact mode was removed — the tab-based UI replaced it. Its elements lived in
+//  a display:none block in popup.html purely to keep this file's queries alive.)
 
 // Undo/Redo elements
 const undoAction = document.getElementById("undoAction");
@@ -1093,6 +1084,84 @@ chrome.runtime.onMessage.addListener((msg) => {
   setCsvDoneBar(name, summary);
 });
 
+// A run that died on an exception. Without this the card would stay stuck in the
+// 'running' skin — Start disabled, Download hidden — with nothing explaining why.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "CSV_RUN_ERROR") return;
+  _stopCsvCountdown();
+  const total = msg.total ?? 0;
+  // Rows written before the throw are still in IndexedDB, so offer the download.
+  _updateCsvBadges(total, total, msg.failRows ?? 0, true);
+  _setCsvState(total > 0 ? 'done' : 'idle');
+  const statusEl = document.getElementById("csvStatus");
+  if (statusEl) statusEl.textContent = `Run failed after ${total} row(s) — ${msg.error || 'unknown error'}`;
+  showToast(`CSV run failed: ${msg.error || 'unknown error'}`, "error");
+});
+
+/* === CSV Resume Banner ===
+ * The service worker detects a run interrupted by a browser restart or a worker
+ * suspend and reports it two ways: a CSV_RUN_INTERRUPTED push (popup already
+ * open) and a csvInterrupted field on GET_EXTENSION_STATUS (popup opened later).
+ * Both paths existed in the background but nothing in the popup listened, so the
+ * offer never reached the user and an interrupted run had to be redone from row 1. */
+let _csvPendingResume = null;
+const csvResumeBanner = document.getElementById("csvResumeBanner");
+
+function _showCsvResumeBanner(pending) {
+  if (!csvResumeBanner || !pending) return;
+  // Nothing to resume if the run already reached the end.
+  const resumeRow = pending.resumeRow ?? 0;
+  const total     = pending.totalRows ?? 0;
+  if (total <= 0 || resumeRow >= total) return;
+  _csvPendingResume = pending;
+  const name  = scenariosCache[pending.scenarioId]?.name || pending.scenarioId;
+  const msgEl = document.getElementById("csvResumeBannerMsg");
+  if (msgEl) {
+    msgEl.textContent =
+      `CSV run "${name}" was interrupted at row ${resumeRow + 1} of ${total} — resume?`;
+  }
+  csvResumeBanner.style.display = "flex";
+}
+
+function _hideCsvResumeBanner() {
+  _csvPendingResume = null;
+  if (csvResumeBanner) csvResumeBanner.style.display = "none";
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "CSV_RUN_INTERRUPTED") return;
+  _showCsvResumeBanner(msg.pending);
+});
+
+document.getElementById("csvResumeBtn")?.addEventListener("click", () => {
+  if (!_csvPendingResume) return;
+  const pending = _csvPendingResume;
+  _hideCsvResumeBanner();
+  chrome.runtime.sendMessage({ type: "RESUME_CSV_PLAYBACK" }, (res) => {
+    if (chrome.runtime.lastError || !res?.started) {
+      showToast(res?.error || "Could not resume the CSV run", "error");
+      return;
+    }
+    _csvRunScenarioName = scenariosCache[pending.scenarioId]?.name || "CSV Run";
+    _csvDelayBetween    = pending.delayBetween || 500;
+    _setCsvState('running');
+    _updateCsvBadges(res.resumedFrom ?? 0, pending.totalRows ?? 0, 0, false);
+    startCsvPoll(document.getElementById("csvStatus"));
+    showToast(`Resuming from row ${(res.resumedFrom ?? 0) + 1}`, "success");
+  });
+});
+
+document.getElementById("csvResumeDismissBtn")?.addEventListener("click", () => {
+  chrome.runtime.sendMessage({ type: "DISMISS_CSV_RESUME" });
+  _hideCsvResumeBanner();
+});
+
+// Covers the popup being opened after the worker already sent CSV_RUN_INTERRUPTED.
+chrome.runtime.sendMessage({ type: "GET_EXTENSION_STATUS" }, (status) => {
+  if (chrome.runtime.lastError || !status?.csvInterrupted || status.csvPlaying) return;
+  _showCsvResumeBanner(status.csvInterrupted);
+});
+
 /* === Resumable Playback Banner === */
 let _resumeCheckpoint = null;
 const resumeBanner = document.getElementById("resumeBanner");
@@ -1134,80 +1203,6 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
-/* === Compact Mode (legacy stubs) === */
-function applyAdvancedMode() {
-  // Always advanced in tab-based UI
-  document.body.classList.remove("compact-mode");
-}
-
-if (toggleAdvancedMode) {
-  toggleAdvancedMode.addEventListener('click', () => {
-    const isAdvanced = document.body.classList.contains("compact-mode");
-    applyAdvancedMode(isAdvanced);
-    chrome.storage.local.set({ [ADVANCED_MODE_KEY]: isAdvanced });
-    document.getElementById('toggleAdvancedMode')?.setAttribute('aria-checked', String(isAdvanced));
-  });
-  toggleAdvancedMode.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      e.currentTarget.click();
-    }
-  });
-}
-
-// Compact mode button handlers
-if (startRecordCompact) {
-  startRecordCompact.addEventListener('click', async () => {
-    // Query current tab directly to ensure we have the correct tabId
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      const tab = tabs[0];
-      if (!tab) { showToast("No active tab found", "error"); return; }
-
-      const tabId = tab.id;
-
-      // Ensure content script is injected first
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          files: ["content.js"]
-        });
-      } catch (_) {
-        // Content script already injected — expected
-      }
-
-      // Add to activated tabs if not already
-      if (!activatedTabs.has(tabId)) {
-        activatedTabs.add(tabId);
-        chrome.storage.local.set({ activatedTabs: Array.from(activatedTabs) });
-      }
-
-      chrome.runtime.sendMessage({ type: "START_RECORD", tabId });
-      window.close(); // Close popup so recording can proceed
-    });
-  });
-}
-
-if (stopRecordCompact) {
-  stopRecordCompact.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: "STOP_RECORD" });
-    setTimeout(previewActionsCompact, 150);
-  });
-}
-
-if (playScenarioCompact) {
-  playScenarioCompact.addEventListener('click', () => {
-    const scenarioId = scenarioListCompact?.value;
-    if (!scenarioId) return;
-    chrome.runtime.sendMessage({ type: "START_PLAYBACK_SCENARIO", scenarioId });
-    window.close();
-  });
-}
-
-if (stopPlayCompact) {
-  stopPlayCompact.addEventListener('click', () => chrome.runtime.sendMessage({ type: "STOP_PLAYBACK" }));
-}
-
-
 /* === SCREENSHOT BUTTONS === */
 
 /* === Recording, Scenarios, Sequence, Playback === */
@@ -1236,38 +1231,6 @@ document.getElementById("dragdropTargetPick")?.addEventListener("click", () => {
 });
 
 
-// Sync compact scenario list with main list
-function renderCompactScenarioList() {
-  if (!scenarioListCompact) return;
-
-  scenarioListCompact.innerHTML = '<option value="">-- Select scenario --</option>';
-
-  Object.entries(scenariosCache)
-    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
-    .forEach(([id, meta]) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = meta.name;
-      scenarioListCompact.appendChild(option);
-    });
-}
-
-// Sync compact folder list with main list
-function renderCompactFolderList() {
-  if (!scenarioFolderCompact) return;
-
-  scenarioFolderCompact.innerHTML = '<option value="">(No Folder)</option>';
-
-  Object.entries(foldersCache)
-    .sort(([, a], [, b]) => (a.name || "").localeCompare(b.name || ""))
-    .forEach(([id, folder]) => {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = folder.name;
-      scenarioFolderCompact.appendChild(option);
-    });
-}
-
 function _showFieldError(inputEl, message) {
   inputEl.classList.add("required-error");
   inputEl.setAttribute("aria-invalid", "true");
@@ -1285,90 +1248,6 @@ function _showFieldError(inputEl, message) {
     inputEl.setAttribute("aria-invalid", "false");
     errorEl.textContent = "";
   }, 2500);
-}
-
-// Compact mode save handler
-if (saveFlowCompact) {
-  saveFlowCompact.addEventListener('click', () => {
-    const name = (scenarioNameCompact?.value || "").trim();
-    if (!name) {
-      _showFieldError(scenarioNameCompact, "Scenario name is required");
-      return;
-    }
-    const folderId = scenarioFolderCompact?.value || null;
-    chrome.runtime.sendMessage(
-      { type: "SAVE_SCENARIO", name, folderId },
-      () => {
-        scenarioNameCompact.value = "";
-        loadScenarios();
-      }
-    );
-  });
-}
-
-// Compact mode preview handler (recorded actions buffer)
-function previewActionsCompact() {
-  if (!actionsCompact) return;
-
-  chrome.runtime.sendMessage({ type: "GET_PREVIEW_ACTIONS" }, (res) => {
-    const actions = res?.actions || [];
-    actionsCompact.innerHTML = "";
-
-    if (actions.length === 0) {
-      actionsCompact.innerHTML = '<li style="color: var(--muted); font-style: italic;">No actions recorded</li>';
-      return;
-    }
-
-    actions.forEach((action) => {
-      const li = document.createElement("li");
-      li.innerHTML = `
-        <span class="type">${getActionIcon(action.type)}${escHtml(action.type)}</span>
-        <span class="value">${escHtml(action.value || action.selector || action.url || action.code || "")}</span>
-      `;
-      actionsCompact.appendChild(li);
-    });
-  });
-}
-
-if (previewCompact) {
-  previewCompact.addEventListener('click', previewActionsCompact);
-}
-
-// Compact mode preview handler (selected scenario actions)
-const previewScenarioCompact = document.getElementById("previewScenarioCompact");
-const actionsScenarioCompact = document.getElementById("actionsScenarioCompact");
-
-function previewScenarioActionsCompact() {
-  if (!actionsScenarioCompact || !scenarioListCompact) return;
-
-  const scenarioId = scenarioListCompact.value;
-  if (!scenarioId) {
-    actionsScenarioCompact.innerHTML = '<li style="color: var(--muted); font-style: italic;">No scenario selected</li>';
-    return;
-  }
-
-  chrome.runtime.sendMessage({ type: "GET_PREVIEW_ACTIONS", scenarioId }, (res) => {
-    const actions = res?.actions || [];
-    actionsScenarioCompact.innerHTML = "";
-
-    if (actions.length === 0) {
-      actionsScenarioCompact.innerHTML = '<li style="color: var(--muted); font-style: italic;">No actions in scenario</li>';
-      return;
-    }
-
-    actions.forEach((action) => {
-      const li = document.createElement("li");
-      li.innerHTML = `
-        <span class="type">${getActionIcon(action.type)}${escHtml(action.type)}</span>
-        <span class="value">${escHtml(action.value || action.selector || action.url || action.code || "")}</span>
-      `;
-      actionsScenarioCompact.appendChild(li);
-    });
-  });
-}
-
-if (previewScenarioCompact) {
-  previewScenarioCompact.addEventListener('click', previewScenarioActionsCompact);
 }
 
 const SELECTOR_LABELS = {
@@ -1666,7 +1545,6 @@ function checkTabActivation() {
       deactivateTab.style.display = "none";
       showLockOverlay('record', 'not-eligible');
       showLockOverlay('data', 'not-eligible');
-      if (compactView) compactView.classList.add("hidden");
       document.body.dataset.activation = 'not-eligible';
       return;
     }
@@ -1680,7 +1558,6 @@ function checkTabActivation() {
       activateTab.style.display = "none";
       deactivateTab.style.display = "block";
       hideLockOverlay();
-      if (compactView) compactView.classList.remove("hidden");
       document.body.dataset.activation = 'active';
       connectionRetryCount = 0;
       startConnectionCheck();
@@ -1692,7 +1569,6 @@ function checkTabActivation() {
       deactivateTab.style.display = "none";
       showLockOverlay('record', 'inactive');
       showLockOverlay('data', 'inactive');
-      if (compactView) compactView.classList.add("hidden");
       document.body.dataset.activation = 'inactive';
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval);
@@ -3311,11 +3187,9 @@ function loadScenarios() {
     renderFolderOptions();
     renderMoveToFolderSelect();
     renderFoldersManagementUI();
-    renderCompactFolderList();
     renderScenarioOptions();
     renderSequenceScenarioList();
     renderExportScenarioSelect();
-    renderCompactScenarioList();
     renderScheduleScenarioSelect();
     renderCsvScenarioSelect();
     renderExportCodeSelect();
@@ -3742,13 +3616,9 @@ exportScenario.onclick = () => {
     const blob = new Blob([JSON.stringify(res.scenario, null, 2)], {
       type: "application/json",
     });
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${res.scenario.name}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    // Via _downloadBlob, which defers revokeObjectURL. Revoking on the line after
+    // a.click() can beat the browser to reading the blob and write an empty file.
+    _downloadBlob(blob, `${_safeFileName(res.scenario.name)}.json`);
     showToast(`Exported "${res.scenario.name}"`, "success");
   });
 };
@@ -3762,14 +3632,9 @@ if (exportFolder) {
     chrome.runtime.sendMessage({ type: 'EXPORT_FOLDER', folderId }, (res) => {
       const folderData = res?.folder;
       if (!folderData) { showToast("Failed to export folder", "error"); return; }
-      const nameSafe = (folderData.name || 'folder').replace(/\s+/g, '-');
+      const nameSafe = _safeFileName(folderData.name || 'folder').replace(/\s+/g, '-');
       const blob = new Blob([JSON.stringify(folderData, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `folder-${nameSafe}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      _downloadBlob(blob, `folder-${nameSafe}.json`);
       showToast(`Exported folder "${folderData.name}"`, "success");
     });
   };
@@ -3783,24 +3648,70 @@ importScenario.onclick = () => {
 
   const reader = new FileReader();
   reader.onload = () => {
+    let json;
     try {
-      const json = JSON.parse(reader.result);
-      // Support both single scenario {name,actions} and array [{name,actions},…]
-      const items = Array.isArray(json) ? json : [json];
-      if (!items.length) { showToast("Empty file", "error"); return; }
-      let done = 0;
-      items.forEach((scenario) => {
-        chrome.runtime.sendMessage({ type: "IMPORT_SCENARIO", scenario }, () => {
-          done++;
-          if (done === items.length) {
-            loadScenarios();
-            showToast(`Imported ${items.length} scenario${items.length > 1 ? "s" : ""}`, "success");
-          }
-        });
-      });
+      json = JSON.parse(reader.result);
     } catch (e) {
       showToast("Invalid JSON file", 'error');
+      return;
     }
+
+    // Three accepted shapes:
+    //   1. { name, actions: [...] }                 — Export Scenario
+    //   2. [ { name, actions }, … ]                 — array of scenarios
+    //   3. { name, scenarios: { id: {...}, … } }    — Export Folder
+    // Shape 3 used to fall through to the single-scenario branch, which created
+    // an empty entry named after the folder and dropped every scenario in it.
+    const isFolderExport = json && typeof json === 'object' && !Array.isArray(json)
+      && json.scenarios && typeof json.scenarios === 'object';
+
+    if (isFolderExport) {
+      chrome.runtime.sendMessage({ type: "IMPORT_FOLDER", folder: json }, (res) => {
+        if (chrome.runtime.lastError || !res?.success) {
+          showToast("Import failed: " + (res?.error || "unreadable folder file"), "error");
+          return;
+        }
+        loadScenarios(); // refreshes folders too — see its GET_FOLDERS call
+        const skipped = res.skipped ? ` (${res.skipped} skipped)` : "";
+        showToast(`Imported folder "${res.folderName}" — ${res.count} scenario${res.count > 1 ? "s" : ""}${skipped}`, "success");
+        if (res.hasScriptActions) {
+          showAlert(
+            "This folder contains scenarios with Run JS actions. Imported code runs with the " +
+            "extension's privileges — review those actions before playing them.",
+            { title: "⚠ Imported code" },
+          );
+        }
+      });
+      return;
+    }
+
+    const items = Array.isArray(json) ? json : [json];
+    if (!items.length) { showToast("Empty file", "error"); return; }
+    let done = 0, ok = 0, failed = 0, sawScripts = false;
+    items.forEach((scenario) => {
+      chrome.runtime.sendMessage({ type: "IMPORT_SCENARIO", scenario }, (res) => {
+        done++;
+        if (res?.success) { ok++; if (res.hasScriptActions) sawScripts = true; }
+        else failed++;
+        if (done !== items.length) return;
+        loadScenarios();
+        if (ok === 0) {
+          showToast("Nothing imported — the file is not a scenario export", "error");
+          return;
+        }
+        showToast(
+          `Imported ${ok} scenario${ok > 1 ? "s" : ""}${failed ? ` · ${failed} skipped` : ""}`,
+          failed ? "warn" : "success",
+        );
+        if (sawScripts) {
+          showAlert(
+            "This import contains Run JS actions. Imported code runs with the extension's " +
+            "privileges — review those actions before playing them.",
+            { title: "⚠ Imported code" },
+          );
+        }
+      });
+    });
   };
   reader.readAsText(file);
 };
@@ -3818,13 +3729,14 @@ if (backupAllBtn) {
         showToast("Backup failed", "error");
         return;
       }
-      const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `fast-recorder-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
+      // chrome.storage.sync settings (hotkeys, screenshot save mode + prefix,
+      // segment scroll speed, completion notification) go under __sync. Restore
+      // splits them back out; older files without the key still load.
+      const payload = { ...res.data, __sync: res.sync || {} };
+      _downloadBlob(
+        new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
+        `fast-recorder-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      );
       showToast("Backup downloaded", "success");
     });
   };
@@ -3840,7 +3752,9 @@ function _doRestore(file) {
     try {
       const data = JSON.parse(reader.result);
       showConfirm(
-        "This will overwrite ALL current data (scenarios, folders, schedules, settings). Continue?",
+        "This overwrites ALL current data — scenarios, folders, variables, schedules, " +
+        "highlights and settings. It cannot be undone, so run \"Backup All Data\" first " +
+        "if you have anything you want to keep. Continue?",
         () => {
           chrome.runtime.sendMessage({ type: "RESTORE_ALL_DATA", data }, (res) => {
             if (chrome.runtime.lastError) {
@@ -3848,14 +3762,17 @@ function _doRestore(file) {
               return;
             }
             if (res?.success) {
-              showToast("Data restored — reloading…", "success");
-              setTimeout(() => location.reload(), 1200);
+              // A sync-settings failure still leaves a usable restore, so it is a
+              // warning rather than an error — but it must not be silent.
+              if (res.warning) showToast(res.warning, "warn");
+              else showToast("Data restored — reloading…", "success");
+              setTimeout(() => location.reload(), res.warning ? 3500 : 1200);
             } else {
               showToast("Restore failed: " + (res?.error || "unknown"), "error");
             }
           });
         },
-        { title: "Restore All Data", okLabel: "Restore" }
+        { title: "Restore All Data", okLabel: "Restore", danger: true }
       );
     } catch {
       showToast("Invalid backup file", "error");
@@ -4322,14 +4239,20 @@ document.getElementById("addSchedule")?.addEventListener("click", () => {
 
   const isEditing = !!editingScheduleId;
   const saveAction = () => {
-    chrome.runtime.sendMessage({ type: "SAVE_SCHEDULE", schedule }, () => {
+    chrome.runtime.sendMessage({ type: "SAVE_SCHEDULE", schedule }, (res) => {
       editingScheduleId = null;
       document.getElementById("addSchedule").textContent = "+ Add";
       _resetScheduleTimePicker?.();
       document.getElementById("scheduleLabel").value = "";
       document.getElementById("scheduleRepeat").checked = false;
       loadSchedules();
-      showToast(isEditing ? "Schedule updated" : "Schedule added", "success");
+      // The row is saved either way, but without an alarm it will never fire —
+      // say so rather than let it sit in the list looking armed.
+      if (res?.invalidTime) {
+        showToast(`Saved, but "${schedule.time}" is not a valid time — this schedule will not run`, "warn");
+      } else {
+        showToast(isEditing ? "Schedule updated" : "Schedule added", "success");
+      }
     });
   };
 
@@ -4400,37 +4323,72 @@ function renderExportCodeSelect() {
   if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
 }
 
+/**
+ * Parse CSV text into { headers, rows }.
+ *
+ * Scans the whole document character by character rather than splitting on
+ * newlines first. Splitting first broke any file with a line break inside a
+ * quoted field — an Excel export with a multi-line note column turned one record
+ * into several, and the fragments were then run as real rows (e.g. a scenario
+ * logging in with username "- second line of the note").
+ *
+ * Follows RFC 4180: fields may be quoted, "" is a literal quote inside a quoted
+ * field, and CR/LF inside quotes is data. Whitespace is trimmed only on unquoted
+ * fields — a quoted "  001  " keeps its padding, which is the reason to quote it.
+ *
+ * @returns {{headers: string[], rows: Object<string,string>[]}|null} null when
+ *          the file has no header row plus at least one data row.
+ */
 function parseCSV(text) {
+  if (typeof text !== 'string') return null;
   if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return null;
 
-  // Proper CSV line parser that handles quoted fields with commas and escaped quotes
-  function parseLine(line) {
-    const fields = [];
-    let i = 0, field = '', inQuote = false;
-    while (i < line.length) {
-      const ch = line[i];
-      if (inQuote) {
-        if (ch === '"') {
-          if (line[i + 1] === '"') { field += '"'; i += 2; }
-          else { inQuote = false; i++; }
-        } else { field += ch; i++; }
-      } else {
-        if (ch === '"') { inQuote = true; i++; }
-        else if (ch === ',') { fields.push(field.trim()); field = ''; i++; }
-        else { field += ch; i++; }
-      }
+  const records = [];
+  let record  = [];
+  let field   = '';
+  let quoted  = false;   // this field was opened with a quote
+  let inQuote = false;   // currently inside the quotes
+  // Whether the current record has any content at all. Distinguishes a blank line
+  // (skipped) from a genuine one-column row holding an empty quoted value.
+  let dirty   = false;
+  let i       = 0;
+
+  const endField = () => {
+    record.push(quoted ? field : field.trim());
+    field  = '';
+    quoted = false;
+  };
+  const endRecord = () => {
+    endField();
+    if (dirty) records.push(record);
+    record = [];
+    dirty  = false;
+  };
+
+  while (i < text.length) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; }
+        else { inQuote = false; i++; }
+      } else { field += ch; i++; }
+      continue;
     }
-    fields.push(field.trim());
-    return fields;
+    if (ch === '"')       { inQuote = true; quoted = true; dirty = true; i++; }
+    else if (ch === ',')  { endField(); dirty = true; i++; }
+    else if (ch === '\r') { i++; if (text[i] === '\n') i++; endRecord(); }
+    else if (ch === '\n') { i++; endRecord(); }
+    else                  { field += ch; dirty = true; i++; }
   }
+  // Trailing record when the file does not end in a newline.
+  if (dirty) endRecord();
 
-  const headers = parseLine(lines[0]);
-  const rows = lines.slice(1).map((line) => {
-    const vals = parseLine(line);
+  if (records.length < 2) return null;
+
+  const headers = records[0];
+  const rows = records.slice(1).map((vals) => {
     const row = {};
-    headers.forEach((h, i) => { row[h] = vals[i] ?? ""; });
+    headers.forEach((h, idx) => { row[h] = vals[idx] ?? ""; });
     return row;
   });
   return { headers, rows };
@@ -4878,6 +4836,21 @@ ${imgRels.join('\n')}</Relationships>` : '';
   return zip.build('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
+/**
+ * Strip path separators and characters Windows rejects from a user-supplied
+ * name before it becomes a download filename. Scenario and folder names are
+ * free text, so one containing "/" or ":" produced a silently renamed or
+ * failed download. Spaces and hyphens are kept — callers that want them
+ * collapsed do that themselves.
+ */
+function _safeFileName(name) {
+  return String(name ?? '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/^\.+/, '')
+    .trim()
+    .slice(0, 120) || 'export';
+}
+
 function _downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
@@ -4943,6 +4916,13 @@ function _setCsvState(s) {
   const pbCsvSection = document.getElementById("pbPanelCsvSection");
   const pbStopSingle = document.getElementById("pbPanelStop");
   const pbStopSplit  = document.getElementById("pbPanelCsvStopSplit");
+  const pbStopAfter  = document.getElementById("pbStopCsvAfterRow");
+
+  // Undo the "Stopping…" latch left by a previous run's graceful stop.
+  if (pbStopAfter && s !== 'done') {
+    pbStopAfter.disabled = false;
+    pbStopAfter.textContent = "⏸ After row";
+  }
 
   if (s === 'idle') {
     if (formatSel)    { formatSel.disabled = false; formatSel.style.pointerEvents = ""; formatSel.style.cursor = ""; }
@@ -5064,8 +5044,23 @@ function _handleCsvStop(label) {
   });
 }
 
-document.getElementById("pbStopCsvNow")?.addEventListener("click",      () => _handleCsvStop("aborted"));
-document.getElementById("pbStopCsvAfterRow")?.addEventListener("click",  () => _handleCsvStop("stopped after this row"));
+// Hard stop — the row in flight is abandoned and never recorded.
+document.getElementById("pbStopCsvNow")?.addEventListener("click", () => _handleCsvStop("aborted"));
+
+// Graceful stop — the worker finishes and records the current row, then ends the
+// run through the normal completion path (CSV_ROW_DONE with isLast, then
+// CSV_RUN_DONE), which is what flips the card to its 'done' state. The button
+// latches so a second click cannot be mistaken for "it didn't work".
+document.getElementById("pbStopCsvAfterRow")?.addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  chrome.runtime.sendMessage({ type: "STOP_CSV_AFTER_ROW" }, (res) => {
+    if (chrome.runtime.lastError) return;
+    if (res?.alreadyStopped) { showToast("CSV run already finished", "info"); return; }
+    btn.disabled = true;
+    btn.textContent = "⏸ Stopping…";
+    showToast(`Will stop after row ${(res?.currentRow ?? 0) + 1} finishes`, "info");
+  });
+});
 
 document.getElementById("csvChangeFormat")?.addEventListener("click", () => {
   showConfirm(

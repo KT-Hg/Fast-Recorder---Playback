@@ -2857,6 +2857,9 @@ body.update-locked .cap-edit-btn:hover { transform: none; }
   font-size: 13px;
   box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
 }
+/* Both banners are fixed to the same edge, so the CSV one stacks above the
+   single-scenario one for the rare case where both have something to offer. */
+#csvResumeBanner { bottom: 96px; background: #075985; }
 .resume-banner-msg { flex: 1; }
 .resume-banner-btn {
   background: #22c55e;

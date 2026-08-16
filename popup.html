@@ -1118,23 +1118,6 @@
 
   </div><!-- end tabSettings -->
 
-  <!-- ===== COMPACT VIEW (hidden, kept for JS compatibility) ===== -->
-  <div style="display:none;" id="compactView">
-    <select id="scenarioListCompact"></select>
-    <button id="startRecordCompact"></button>
-    <button id="stopRecordCompact"></button>
-    <button id="playScenarioCompact"></button>
-    <button id="stopPlayCompact"></button>
-    <input id="scenarioNameCompact" />
-    <select id="scenarioFolderCompact"></select>
-    <button id="saveFlowCompact"></button>
-    <button id="previewCompact"></button>
-    <ul id="actionsCompact"></ul>
-    <button id="previewScenarioCompact"></button>
-    <ul id="actionsScenarioCompact"></ul>
-    <label id="toggleAdvancedMode"></label>
-  </div>
-
   <!-- ===== MODALS ===== -->
 
   <!-- Variable Modal (Add / Edit) -->
@@ -1251,6 +1234,13 @@
     <span id="resumeBannerMsg" class="resume-banner-msg"></span>
     <button id="resumeBtn" class="resume-banner-btn">▶ Resume</button>
     <button id="resumeDismissBtn" class="resume-banner-dismiss" aria-label="Dismiss resume banner">✕</button>
+  </div>
+
+  <!-- CSV RESUME BANNER — an interrupted data run detected at service-worker startup -->
+  <div id="csvResumeBanner" class="resume-banner" role="alert" aria-live="polite">
+    <span id="csvResumeBannerMsg" class="resume-banner-msg"></span>
+    <button id="csvResumeBtn" class="resume-banner-btn">▶ Resume run</button>
+    <button id="csvResumeDismissBtn" class="resume-banner-dismiss" aria-label="Dismiss CSV resume banner">✕</button>
   </div>
 
   <!-- DIFF MODAL -->

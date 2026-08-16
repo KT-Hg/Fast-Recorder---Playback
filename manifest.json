@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Fast Recorder & Playback",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Record & Playback web workflows with variables, CSV data runs, screenshots, file uploads, drag-drop, and JS scripting",
 
   "permissions": [
     "tabs",
     "storage",
+    "unlimitedStorage",
     "scripting",
     "downloads",
     "alarms",

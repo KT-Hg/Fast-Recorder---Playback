@@ -786,7 +786,9 @@ function _renderActionsTab(actions) {
 
   const enabled = (actions || []).filter(a => !a.disabled);
   enabled.forEach((a, i) => {
-    const info = _ACT_TYPE_INFO[a.type] || { icon: '●', label: a.type, cls: 'wait' };
+    // The fallback label is a.type straight out of an imported .json, so both it
+    // and the class name are escaped at the interpolation site below.
+    const info = _ACT_TYPE_INFO[a.type] || { icon: '●', label: String(a.type ?? 'unknown'), cls: 'wait' };
     const desc = _actionDesc(a);
     let status, statusLabel, rowCls;
     if (SKIPPED_TYPES.has(a.type)) {
@@ -798,7 +800,7 @@ function _renderActionsTab(actions) {
     }
     html += `<div class="export-bm-action-row ${rowCls}">
       <span class="export-bm-action-step">${i + 1}</span>
-      <span class="export-bm-action-type abt-${info.cls}">${info.icon} ${info.label}</span>
+      <span class="export-bm-action-type abt-${escHtml(info.cls)}">${info.icon} ${escHtml(info.label)}</span>
       <span class="export-bm-action-desc">${escHtml(desc)}</span>
       <span class="export-bm-action-status ast-${status}">${statusLabel}</span>
     </div>`;

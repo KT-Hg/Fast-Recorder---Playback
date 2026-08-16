@@ -26,17 +26,38 @@ if (window.__actionRecorderInjected) {
 
 let pickerMode = false;
 
+/**
+ * Whether a recording session is currently running.
+ *
+ * The click and input listeners below are attached to `document` on every page and
+ * in every frame (manifest all_frames: true), so without this gate they fired for
+ * every click and every keystroke the user made anywhere — sending the field's
+ * value to the service worker each time. That woke the worker continuously (each
+ * message resets its 30 s idle timer, so it effectively never slept) and pushed
+ * input values, password fields included, onto the extension message bus outside
+ * any recording session.
+ *
+ * Seeded from the REGISTER_FRAME reply so a script injected mid-recording (tab
+ * activation, reconnect after a crash) starts in the right state, then kept in
+ * sync by RECORDING_STATE broadcasts from background.js.
+ */
+let _isRecording = false;
+
 // Background has access to sender.frameId; content scripts do not.  We ask for
 // it on load so every recorded action can embed the frameId and be replayed in
 // the correct iframe.  Defaults to 0 (main frame) on error.
 let _myFrameId = 0;
 try {
   chrome.runtime.sendMessage({ type: 'REGISTER_FRAME' }, (res) => {
-    if (!chrome.runtime.lastError && res?.frameId != null) {
-      _myFrameId = res.frameId;
-    }
+    if (chrome.runtime.lastError || !res) return;
+    if (res.frameId != null) _myFrameId = res.frameId;
+    _isRecording = !!res.recording;
   });
 } catch (_) {}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === 'RECORDING_STATE') _isRecording = !!msg.recording;
+});
 
 /* ─────────────────────────────────────────────────────────────────────────────
    DYNAMIC ID DETECTION
@@ -391,7 +412,7 @@ function waitForElement(selector, timeout = 5000) {
 ───────────────────────────────────────────────────────────────────────────── */
 
 document.addEventListener('click', (event) => {
-  if (pickerMode) return;
+  if (!_isRecording || pickerMode) return;
 
   // Flush pending debounced input before recording the click.
   const activeEl = document.activeElement;
@@ -417,6 +438,7 @@ document.addEventListener('click', (event) => {
 const _inputDebounceTimers = new WeakMap();
 
 document.addEventListener('input', (event) => {
+  if (!_isRecording || pickerMode) return;
   const el = event.target;
   const selectors = getAllSelectors(el);
   if (!selectors) return;
@@ -427,6 +449,9 @@ document.addEventListener('input', (event) => {
   if (_inputDebounceTimers.has(el)) clearTimeout(_inputDebounceTimers.get(el));
   _inputDebounceTimers.set(el, setTimeout(() => {
     _inputDebounceTimers.delete(el);
+    // Re-checked on fire: the user may have stopped recording during the 400 ms
+    // window, and the pending value must not outlive the session.
+    if (!_isRecording) return;
     safeSend({
       type: 'RECORDED_ACTION',
       action: { type: 'input', selector: selectors.css, selectors, value: el.value, frameId: _myFrameId },
@@ -1517,15 +1542,46 @@ let _hlObserver     = null;
 let _hlRestoreTimer = null;
 let _hlStyleEl      = null;
 
-// Override user-select:none so text in any element can be selected for highlighting.
-// Uses high-specificity selector (0,1,2) to beat site rules like h1.class (0,1,1).
+/**
+ * Override user-select:none so text in any element can be selected for highlighting.
+ * Uses high-specificity selectors (0,1,2) to beat site rules like h1.class (0,1,1).
+ *
+ * Draggables are excluded. A site's `user-select: none` is usually not there to
+ * stop you copying — on Trello/Jira/Figma-style boards it is what makes dragging
+ * work, and forcing text selection back on turned every card drag into a text
+ * smear. Highlighting is on by default, so this hit users who never opened the
+ * feature, on every page they visited.
+ */
+const _HL_SELECT_CSS = [
+  'html body *:not([draggable="true"]):not([draggable="true"] *)',
+  '{ user-select: text !important; -webkit-user-select: text !important; }',
+].join(' ');
+
 function _hlInjectStyle() {
   if (_hlStyleEl) return;
   _hlStyleEl = document.createElement('style');
   _hlStyleEl.setAttribute('data-hl-ui', '1');
-  _hlStyleEl.textContent = 'html body * { user-select: text !important; -webkit-user-select: text !important; }';
+  _hlStyleEl.textContent = _HL_SELECT_CSS;
   (document.head || document.documentElement).appendChild(_hlStyleEl);
 }
+
+/**
+ * Suspend the override for the duration of a drag.
+ *
+ * The selector above cannot catch libraries that implement dragging with plain
+ * mouse events on non-[draggable] nodes (react-beautiful-dnd, SortableJS, most
+ * canvas apps). Those sites set `user-select: none` on an ancestor and rely on
+ * it; the override is dropped while a native drag is in flight and restored when
+ * it ends, so both behaviours can coexist.
+ */
+function _hlBindDragGuard() {
+  const suspend = () => { if (_hlEnabled) _hlRemoveStyle(); };
+  const restore = () => { if (_hlEnabled) _hlInjectStyle(); };
+  document.addEventListener('dragstart', suspend, true);
+  document.addEventListener('dragend',   restore, true);
+  document.addEventListener('drop',      restore, true);
+}
+_hlBindDragGuard();
 
 function _hlRemoveStyle() {
   _hlStyleEl?.remove();

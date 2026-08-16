@@ -4,7 +4,7 @@
  * For non-active URLs, reads/writes chrome.storage.local directly.
  */
 
-import { showConfirm, showToast } from './utils.js';
+import { showConfirm, showToast, escHtml } from './utils.js';
 
 const HL_STORAGE_KEY  = 'hl_v1';
 const HL_PATTERNS_KEY = 'hl_patterns_v1';
@@ -184,7 +184,9 @@ export function initHighlight() {
       a.href     = url;
       a.download = 'highlights.json';
       a.click();
-      URL.revokeObjectURL(url);
+      // Deferred: revoking immediately after click() can beat the browser to
+      // reading the blob and produce an empty file for larger exports.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       showToast('Highlights exported', 'success');
     });
   }
@@ -557,7 +559,12 @@ export function initHighlight() {
                         : isWildcard  ? 'hl-pattern-badge hl-pattern-badge--wildcard'
                         : 'hl-pattern-badge';
       const badgeLabel  = isLocalhost ? 'local' : isWildcard ? '* wildcard' : 'exact';
-      const display     = p.replace(/\*/g, '<span class="hl-pattern-wildcard">*</span>');
+      // Escape BEFORE the wildcard markup is spliced in. The pattern is free text
+      // the user typed (or pasted from someone else), and it used to go into
+      // innerHTML raw — the only validation is "no spaces, must contain . or *",
+      // which a payload like <img/src=x/onerror=…>.com satisfies. That would have
+      // executed inside the popup, which holds chrome.storage and chrome.tabs.
+      const display = escHtml(p).replace(/\*/g, '<span class="hl-pattern-wildcard">*</span>');
       li.innerHTML = `
         <span class="${badgeClass}">${badgeLabel}</span>
         <span class="hl-pattern-item-text">${display}</span>
@@ -733,7 +740,7 @@ export function initHighlight() {
       li.innerHTML = `
         <span class="index">${i + 1}</span>
         <span class="type">${cfg.label}</span>
-        <span class="value">${searchQuery ? buildExcerpt(h.text) : esc(preview)}${h.note ? `<span class="hl-note-flag" title="${esc(h.note)}">📝</span>` : ''}</span>`;
+        <span class="value">${searchQuery ? buildExcerpt(h.text) : escHtml(preview)}${h.note ? `<span class="hl-note-flag" title="${escHtml(h.note)}">📝</span>` : ''}</span>`;
 
       // ── btn-row: DOM element, buttons with secondary/danger class ──
       const btnRow  = document.createElement('div');
@@ -972,11 +979,11 @@ export function initHighlight() {
 
   function buildExcerpt(text) {
     const idx = text.toLowerCase().indexOf(searchQuery);
-    if (idx === -1) return esc(text.length > 60 ? text.slice(0, 60) + '…' : text);
+    if (idx === -1) return escHtml(text.length > 60 ? text.slice(0, 60) + '…' : text);
     const start  = Math.max(0, idx - 20);
-    const before = esc((start > 0 ? '…' : '') + text.slice(start, idx));
-    const match  = esc(text.slice(idx, idx + searchQuery.length));
-    const after  = esc(text.slice(idx + searchQuery.length, idx + searchQuery.length + 40));
+    const before = escHtml((start > 0 ? '…' : '') + text.slice(start, idx));
+    const match  = escHtml(text.slice(idx, idx + searchQuery.length));
+    const after  = escHtml(text.slice(idx + searchQuery.length, idx + searchQuery.length + 40));
     return `${before}<mark>${match}</mark>${after}${text.length > idx + searchQuery.length + 40 ? '…' : ''}`;
   }
 
@@ -1030,12 +1037,6 @@ export function initHighlight() {
       el.style.display  = n > 0 ? '' : 'none';
     });
   }
-
-  function esc(s) {
-    return s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  // The local escape helper that used to live here was a duplicate of escHtml in
+  // utils.js, minus its null guard — it threw on a non-string. Now imported.
 }

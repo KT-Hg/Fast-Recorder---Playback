@@ -343,8 +343,12 @@ document.getElementById('nowPlayingBar')?.addEventListener('click', () => {
 
 document.getElementById('pbPanelStop')?.addEventListener('click', (e) => {
   e.stopPropagation();
+  // STOP_SEQUENCE_PLAYBACK, not STOP_SEQUENCE — the latter has no handler and
+  // only produced an unchecked-lastError warning. Sequences happened to stop
+  // anyway because STOP_PLAYBACK also clears sequencePlayback.active, which
+  // would have quietly stopped being true after any refactor of that handler.
   chrome.runtime.sendMessage({ type: 'STOP_PLAYBACK' });
-  chrome.runtime.sendMessage({ type: 'STOP_SEQUENCE' });
+  chrome.runtime.sendMessage({ type: 'STOP_SEQUENCE_PLAYBACK' });
   chrome.runtime.sendMessage({ type: 'STOP_CSV_PLAYBACK' });
   _setPanelOpen(false);
 });

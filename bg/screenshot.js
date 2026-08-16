@@ -10,7 +10,6 @@
  * corruption when two captures race on the same tab.
  */
 
-import { state } from './state.js';
 import { tabMsg } from './utils.js';
 import { isSessionOpen, markSessionClosed } from './cdp-session.js';
 import { ensureLockState, notifyLocked } from './update-check.js';
@@ -228,16 +227,22 @@ export function buildScreenshotFilename(prefix, requestedName) {
 /* ── Tab Capture ────────────────────────────────────────────────────────────── */
 
 /**
- * Capture the visible tab with a one-shot rate-limit retry.
+ * Capture the visible area of `windowId` with a one-shot rate-limit retry.
  * Chrome throttles captureVisibleTab to ~1 call/second.
+ *
+ * `windowId` must be the window owning the tab being captured. Passing null (the
+ * previous behaviour) means "the current window", which during a background CSV
+ * run is whatever window the user happens to be looking at — producing a whole
+ * export full of screenshots of an unrelated page, watermarked with the target
+ * page's URL because the watermark reads it from the real tabId.
  */
-export function captureTab(_retried = false) {
+export function captureTab(windowId = null, _retried = false) {
   return new Promise((resolve) => {
-    chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
+    chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, (dataUrl) => {
       if (chrome.runtime.lastError) {
         const msg = chrome.runtime.lastError.message || '';
         if (!_retried && /rate/i.test(msg)) {
-          setTimeout(() => resolve(captureTab(true)), 1100);
+          setTimeout(() => resolve(captureTab(windowId, true)), 1100);
         } else {
           resolve(null);
         }
@@ -257,10 +262,26 @@ export function captureTab(_retried = false) {
  * waiting ~80 ms (roughly five 60 Hz vsync cycles) lets the compositor finish
  * before the second — stable — frame is taken.
  */
-export async function captureTabDouble() {
-  await captureTab();
+export async function captureTabDouble(windowId = null) {
+  await captureTab(windowId);
   await new Promise(r => setTimeout(r, 80));
-  return captureTab();
+  return captureTab(windowId);
+}
+
+/**
+ * Resolve the window a tab lives in, and whether that tab is the active one there.
+ *
+ * captureVisibleTab can only ever photograph the active tab of a window, so a
+ * request aimed at a background tab cannot be satisfied — better to say so than
+ * to silently return a picture of a different page.
+ */
+function _resolveCaptureTarget(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError || !tab) { resolve(null); return; }
+      resolve({ windowId: tab.windowId, isActive: !!tab.active });
+    });
+  });
 }
 
 /* ── DOM Helper Functions (injected via scripting) ──────────────────────────── */
@@ -387,16 +408,53 @@ export function downloadDataUrl(dataUrl, filename, saveAs) {
   });
 }
 
+/* ── Pending crops ──────────────────────────────────────────────────────────────
+ * Each crop editor window gets its own token, passed in the editor URL and kept
+ * here until that window closes.
+ *
+ * This replaced a single `state.pendingCrop` slot that was cleared the moment the
+ * editor read it, which broke two ordinary cases: reloading the editor window
+ * (F5) found an empty slot and closed itself, losing the capture; and firing two
+ * crop captures in quick succession had the second overwrite the first, so one of
+ * the two windows showed the wrong image or none at all.
+ *
+ * Held in memory rather than chrome.storage.session on purpose — a full-page PNG
+ * data URL runs to several MB and would eat the session quota. The editor reads
+ * its token immediately on load, so the window of exposure to a worker suspend is
+ * very short; if it does happen the editor reports it instead of closing silently.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+const _pendingCrops = new Map(); // token   -> { dataUrl, downloadPath, saveAs }
+const _cropWindows  = new Map(); // windowId -> token
+
+/** Read a pending crop without consuming it, so a reload of the editor still works. */
+export function getPendingCrop(token) {
+  return (token && _pendingCrops.get(token)) || null;
+}
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  const token = _cropWindows.get(windowId);
+  if (!token) return;
+  _pendingCrops.delete(token);
+  _cropWindows.delete(windowId);
+});
+
 /**
- * Open the crop editor window and stash the pending crop data in session state.
- * The editor reads `state.pendingCrop` on load, so the data must be written
- * before the window is created to avoid a race with the editor's LOAD message.
+ * Open the crop editor window with the image attached to a fresh token.
+ * The entry is written before the window is created, so the editor's very first
+ * message can never arrive ahead of the data.
  */
 export async function openCropUI(dataUrl, downloadPath, saveAs) {
-  state.pendingCrop = { dataUrl, downloadPath, saveAs };
-  const url = chrome.runtime.getURL('editor.html');
+  const token = crypto.randomUUID();
+  _pendingCrops.set(token, { dataUrl, downloadPath, saveAs });
+  const url = chrome.runtime.getURL(`editor.html?crop=${token}`);
   chrome.windows.create({ url, type: 'popup' }, (win) => {
-    chrome.windows.update(win.id, { state: 'maximized' });
+    if (chrome.runtime.lastError || !win?.id) {
+      _pendingCrops.delete(token); // window never opened — do not leak the image
+      return;
+    }
+    _cropWindows.set(win.id, token);
+    chrome.windows.update(win.id, { state: 'maximized' }, () => { void chrome.runtime.lastError; });
   });
   return { success: true, cropping: true };
 }
@@ -421,8 +479,18 @@ export function takeVisibleScreenshot(tabId, saveMode, prefix, requestedFilename
 
 async function _takeVisibleScreenshot(tabId, saveMode, prefix, requestedFilename, crop, returnBase64, skipDownload) {
   const filename = buildScreenshotFilename(prefix, requestedFilename);
+
+  // Pin the capture to the target tab's own window, and refuse rather than
+  // photograph the wrong page when that tab is not the one on screen.
+  const target = await _resolveCaptureTarget(tabId);
+  if (!target) return { error: 'Target tab is gone' };
+  if (!target.isActive) {
+    return { error: 'Visible-area capture needs the target tab in the foreground — ' +
+                    'switch to it, or use Full Page / Element capture instead' };
+  }
+
   await scriptingExec(tabId, _hideScrollbarFn);
-  let dataUrl = await captureTabDouble();
+  let dataUrl = await captureTabDouble(target.windowId);
   await scriptingExec(tabId, _showScrollbarFn);
   if (!dataUrl) return { error: 'Capture failed' };
   dataUrl = await applyWatermark(dataUrl, tabId);
@@ -1050,6 +1118,14 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
 
     if (Math.abs(origZoom - 1) > 0.01) {
       await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r));
+    }
+
+    // No strips means CDP returned nothing for every slice — usually an element
+    // that collapsed to zero height once it was scrolled into view. Reported here
+    // rather than carried forward: a null dataUrl used to surface as the very
+    // misleading "Download failed", or open the crop editor on a blank image.
+    if (!dataUrl) {
+      return { error: 'Element produced no image — it may be hidden or have zero size when scrolled into view' };
     }
 
     dataUrl = await applyWatermark(dataUrl, tabId);

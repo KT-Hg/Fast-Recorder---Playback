@@ -127,8 +127,19 @@ export function applyVars(str, vars) {
   return str.replace(/\$\{([^}]+)\}/g, (_, k) => (k in vars ? vars[k] : `\${${k}}`));
 }
 
-// Values must be escaped before injection to prevent breaking out of any JS string context;
-// backslash escaped first to avoid double-escaping downstream.
+/**
+ * Interpolate variables into a `script` action's source.
+ *
+ * Script code is handed to Runtime.evaluate (CDP) or `new Function` (content-script
+ * fallback), so a raw substitution lets any quote in a variable value terminate the
+ * surrounding string literal — at best a SyntaxError the CDP path swallows silently,
+ * at worst arbitrary code from a CSV cell running with the extension's privileges.
+ * Escaping here keeps the value a value. Backslash goes first so the escapes this
+ * function adds are not themselves re-escaped.
+ *
+ * Values that are not inside a string literal (numbers, bare identifiers) contain
+ * none of these characters, so they pass through unchanged.
+ */
 function _applyVarsToCode(code, vars) {
   if (typeof code !== 'string' || !vars) return code;
   return code.replace(/\$\{([^}]+)\}/g, (match, k) => {
@@ -150,7 +161,8 @@ export function interpolateAction(action, vars) {
   if (a.selector)      a.selector      = applyVars(a.selector, vars);
   if (a.value)         a.value         = applyVars(a.value, vars);
   if (a.url)           a.url           = applyVars(a.url, vars);
-  if (a.code)          a.code          = applyVars(a.code, vars);
+  // Code is escaped, not plain-substituted — see _applyVarsToCode.
+  if (a.code)          a.code          = _applyVarsToCode(a.code, vars);
   if (a.expectedValue) a.expectedValue = applyVars(a.expectedValue, vars);
   if (a.switchVar)     a.switchVar     = applyVars(a.switchVar, vars);
   if (a.fileName)               a.fileName   = applyVars(a.fileName,   vars);
@@ -168,7 +180,15 @@ export function interpolateAction(action, vars) {
 
 export function setFileDropZoneViaCdp(tabId, dropSelector, filePaths) {
   return new Promise((resolve, reject) => {
-    const _safetyTimer = setTimeout(() => reject(new Error('dropzone upload: timed out after 20 s')), 20_000);
+    // Set once the attach callback has run and knows whether the session is ours
+    // to close. The timeout path calls it too: it used to reject without
+    // detaching, so a CDP command that never came back left the debugger attached
+    // and Chrome's "is debugging this browser" bar on the tab for good.
+    let detachIfOurs = () => {};
+    const _safetyTimer = setTimeout(() => {
+      detachIfOurs();
+      reject(new Error('dropzone upload: timed out after 20 s'));
+    }, 20_000);
     const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
     const _safeReject  = (msg) => { clearTimeout(_safetyTimer); reject(new Error(msg)); };
 
@@ -180,6 +200,7 @@ export function setFileDropZoneViaCdp(tabId, dropSelector, filePaths) {
           chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
         }
       };
+      detachIfOurs = detach;
       const done = ()    => { detach(); _safeResolve(); };
       const fail = (msg) => { detach(); _safeReject(msg); };
 
@@ -494,7 +515,13 @@ export function tabMsg(tabId, msg, timeout = 10_000, frameId = undefined) {
 // Uses CDP DOM.setFileInputFiles — same mechanism as Selenium/Playwright, bypasses the OS file-picker.
 export function setFileInputViaCdp(tabId, selector, filePaths) {
   return new Promise((resolve, reject) => {
-    const _safetyTimer = setTimeout(() => reject(new Error('uploadFile: timed out after 15 s')), 15_000);
+    // See setFileDropZoneViaCdp: the timeout must detach too, or a hung CDP call
+    // strands the debugger session on the tab.
+    let detachIfOurs = () => {};
+    const _safetyTimer = setTimeout(() => {
+      detachIfOurs();
+      reject(new Error('uploadFile: timed out after 15 s'));
+    }, 15_000);
     const _safeResolve = () => { clearTimeout(_safetyTimer); resolve(); };
     const _safeReject  = (msg) => { clearTimeout(_safetyTimer); reject(new Error(msg)); };
 
@@ -506,6 +533,7 @@ export function setFileInputViaCdp(tabId, selector, filePaths) {
           chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; });
         }
       };
+      detachIfOurs = detach;
       const done = ()    => { detach(); _safeResolve(); };
       const fail = (msg) => { detach(); _safeReject(msg); };
 

@@ -19,7 +19,7 @@ import {
 } from './bg/playback.js';
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
-  openCropUI, buildScreenshotFilename,
+  openCropUI, buildScreenshotFilename, getPendingCrop,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 import {
@@ -36,9 +36,17 @@ const ALARM_PREFIX = "sched_";
 /**
  * Compute milliseconds until the next wall-clock occurrence of a "HH:MM" string.
  * If the time has already passed today, the result is for tomorrow's occurrence.
+ *
+ * Returns null for anything that is not a real time of day. A malformed value
+ * used to produce NaN, which chrome.alarms.create rejects — leaving a schedule
+ * that showed as "enabled" in the list but had no alarm behind it and never fired.
  */
 function _msUntilTime(timeStr) {
-  const [hh, mm] = timeStr.split(":").map(Number);
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(timeStr ?? '').trim());
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (hh > 23 || mm > 59) return null;
   const now = new Date();
   const next = new Date(now);
   next.setHours(hh, mm, 0, 0);
@@ -47,18 +55,48 @@ function _msUntilTime(timeStr) {
 }
 
 function registerScheduleAlarm(schedule) {
-  if (!schedule?.enabled) return;
+  if (!schedule?.enabled) return false;
+  const ms = _msUntilTime(schedule.time);
+  if (ms === null) {
+    console.warn(`[SCHEDULE] Ignoring schedule ${schedule.id}: invalid time "${schedule.time}"`);
+    return false;
+  }
   const name = ALARM_PREFIX + schedule.id;
-  const delayInMinutes = _msUntilTime(schedule.time) / 60000;
+  const delayInMinutes = ms / 60000;
   if (schedule.repeat) {
     chrome.alarms.create(name, { delayInMinutes, periodInMinutes: 24 * 60 });
   } else {
     chrome.alarms.create(name, { delayInMinutes });
   }
+  return true;
 }
 
 function unregisterScheduleAlarm(id) {
   chrome.alarms.clear(ALARM_PREFIX + id);
+}
+
+/* === RECORDING STATE FAN-OUT === */
+
+/**
+ * Tell every content script whether a recording is running.
+ *
+ * The recorder's click/input listeners in content.js are attached unconditionally
+ * on every page and in every frame, so they need to know when to stay quiet.
+ * Broadcast to all tabs rather than only state.recordingTabId: a recorded
+ * navigation can land the session on a different tab, and a stale "recording"
+ * flag left behind in some other tab would keep that tab chattering after the
+ * session ends. Tabs with no content script (chrome://, the Web Store) simply
+ * reject the message; lastError is read to keep it out of the console.
+ */
+function broadcastRecordingState(recording) {
+  chrome.tabs.query({}, (tabs) => {
+    void chrome.runtime.lastError;
+    for (const t of tabs || []) {
+      if (t.id == null) continue;
+      chrome.tabs.sendMessage(t.id, { type: 'RECORDING_STATE', recording },
+        () => { void chrome.runtime.lastError; });
+    }
+  });
 }
 
 // Set defaults on first install only — do not overwrite user settings on extension update.
@@ -96,7 +134,11 @@ initLockWatcher();
 reconcileUpdateState();
 
 // Restore an in-progress recording if the SW was suspended mid-session.
-restoreRecordingState().then(() => { if (state.recording) updateBadge(); });
+// The re-broadcast covers content scripts that loaded while the worker was down
+// and got `recording: false` from REGISTER_FRAME.
+restoreRecordingState().then(() => {
+  if (state.recording) { updateBadge(); broadcastRecordingState(true); }
+});
 
 // Detect an interrupted CSV run and cache it so the popup can offer resume.
 restoreCsvState().then((csvPending) => {
@@ -213,14 +255,17 @@ function handleMessage(request, sender, sendResponse) {
 
   /* --- Forward recorded actions to popup --- */
   if (type === "RECORDED_ACTION") {
-    if (state.recording && !state.pickMode) {
-      const snapshot = [...state.currentActions];
-      const act = request.action;
-      if (act.delay == null) act.delay = 500;
-      state.currentActions.push(act);
-      pushUndo("current", snapshot);
-      persistRecordingState(); // persist across SW suspend
-    }
+    // Both the store and the forward are gated. content.js now stays silent when
+    // no session is running, but a frame injected before the gate existed (or one
+    // that missed the RECORDING_STATE broadcast) can still send; re-broadcasting
+    // its payload would put page input values on the message bus for no reason.
+    if (!state.recording || state.pickMode) { sendResponse({ received: false }); return; }
+    const snapshot = [...state.currentActions];
+    const act = request.action;
+    if (act.delay == null) act.delay = 500;
+    state.currentActions.push(act);
+    pushUndo("current", snapshot);
+    persistRecordingState(); // persist across SW suspend
     chrome.runtime.sendMessage(request).catch(() => {});
     sendResponse({ received: true });
     return;
@@ -261,8 +306,11 @@ function handleMessage(request, sender, sendResponse) {
   // Content script needs its own frameId to tag recorded actions for correct
   // iframe targeting during playback.  sender.frameId is only available on the
   // background side; content scripts cannot access it directly.
+  // `recording` rides along so a script injected mid-session (tab activation,
+  // reconnect after a crash) starts gated correctly instead of waiting for the
+  // next RECORDING_STATE broadcast.
   if (type === "REGISTER_FRAME") {
-    sendResponse({ frameId: sender.frameId ?? 0 });
+    sendResponse({ frameId: sender.frameId ?? 0, recording: state.recording });
     return;
   }
 
@@ -319,6 +367,7 @@ function handleMessage(request, sender, sendResponse) {
       getStack("current").undo = [];
       getStack("current").redo = [];
       updateBadge();
+      broadcastRecordingState(true);
       sendResponse({ started: true });
     };
     if (request.scenarioId) {
@@ -339,6 +388,7 @@ function handleMessage(request, sender, sendResponse) {
     const sid = state.recordingScenarioId;
     state.recordingScenarioId = null;
     updateBadge();
+    broadcastRecordingState(false);
     // Remove session-storage snapshot — persisted only to survive SW suspend
     // during recording, no longer needed after stop.
     chrome.storage.session?.remove?.(['rec_recording','rec_scenarioId','rec_actions','rec_timestamp'], () => {});
@@ -442,9 +492,21 @@ function handleMessage(request, sender, sendResponse) {
     return;
   }
 
+  /**
+   * Index sanity check for the action-mutation handlers.
+   *
+   * These indices come from list positions the popup captured before an async
+   * round-trip, so a fast second click or a concurrent edit could deliver one
+   * that no longer exists. Writing past the end produced a sparse array holding
+   * `undefined`, which then rendered as a shorter list for no visible reason and
+   * threw during playback at interpolateAction(undefined).
+   */
+  const _validIndex = (i, len) => Number.isInteger(i) && i >= 0 && i < len;
+
   if (type === "UPDATE_ACTION") {
     if (request.scenarioId) {
       mutateScenarioActions(request.scenarioId, (a) => {
+        if (!_validIndex(request.index, a.length)) throw new Error("index out of range");
         const next = [...a];
         next[request.index] = request.action;
         return next;
@@ -452,6 +514,7 @@ function handleMessage(request, sender, sendResponse) {
         .catch(() => sendResponse({ success: false }));
       return true;
     }
+    if (!_validIndex(request.index, state.currentActions.length)) { sendResponse({ success: false }); return; }
     pushUndo("current", [...state.currentActions]);
     state.currentActions[request.index] = request.action;
     sendResponse({ success: true });
@@ -460,11 +523,14 @@ function handleMessage(request, sender, sendResponse) {
 
   if (type === "REMOVE_ACTION") {
     if (request.scenarioId) {
-      mutateScenarioActions(request.scenarioId, (a) => a.filter((_, i) => i !== request.index))
-        .then(() => sendResponse({ success: true }))
+      mutateScenarioActions(request.scenarioId, (a) => {
+        if (!_validIndex(request.index, a.length)) throw new Error("index out of range");
+        return a.filter((_, i) => i !== request.index);
+      }).then(() => sendResponse({ success: true }))
         .catch(() => sendResponse({ success: false }));
       return true;
     }
+    if (!_validIndex(request.index, state.currentActions.length)) { sendResponse({ success: false }); return; }
     pushUndo("current", [...state.currentActions]);
     state.currentActions.splice(request.index, 1);
     sendResponse({ success: true });
@@ -490,12 +556,23 @@ function handleMessage(request, sender, sendResponse) {
   }
 
   if (type === "REORDER_ACTIONS") {
+    // A reorder must be a permutation of the existing indices. Anything else —
+    // a duplicate, a gap, a stale index from a racing drag — silently dropped or
+    // cloned actions, so it is refused outright rather than half-applied.
+    const _isPermutation = (order, len) =>
+      Array.isArray(order) && order.length === len &&
+      new Set(order).size === len &&
+      order.every((i) => _validIndex(i, len));
+
     if (request.scenarioId) {
-      mutateScenarioActions(request.scenarioId, (a) => request.newOrder.map((i) => a[i]))
-        .then(() => sendResponse({ success: true }))
+      mutateScenarioActions(request.scenarioId, (a) => {
+        if (!_isPermutation(request.newOrder, a.length)) throw new Error("invalid reorder");
+        return request.newOrder.map((i) => a[i]);
+      }).then(() => sendResponse({ success: true }))
         .catch(() => sendResponse({ success: false }));
       return true;
     }
+    if (!_isPermutation(request.newOrder, state.currentActions.length)) { sendResponse({ success: false }); return; }
     pushUndo("current", [...state.currentActions]);
     state.currentActions = request.newOrder.map((i) => state.currentActions[i]);
     sendResponse({ success: true });
@@ -591,15 +668,69 @@ function handleMessage(request, sender, sendResponse) {
     return true;
   }
 
+  /**
+   * Shape check shared by both import paths. Previously anything JSON-shaped was
+   * accepted, so a folder export (or any unrelated .json) became a scenario with
+   * no actions — see IMPORT_FOLDER.
+   */
+  const _isScenarioShaped = (s) =>
+    !!s && typeof s === 'object' && !Array.isArray(s) && Array.isArray(s.actions);
+
   if (type === "IMPORT_SCENARIO") {
+    if (!_isScenarioShaped(request.scenario)) {
+      sendResponse({ success: false, error: 'Not a scenario: expected an object with an "actions" array' });
+      return true;
+    }
     getScenarios().then(async (scenarios) => {
       const id = generateId();
-      scenarios[id] = { ...request.scenario, createdAt: Date.now() };
+      // folderId is dropped: it refers to a folder id from the exporting profile
+      // that almost certainly does not exist here, which would hide the scenario
+      // behind a folder filter that matches nothing.
+      const { folderId: _ignored, ...rest } = request.scenario;
+      scenarios[id] = { ...rest, folderId: null, createdAt: Date.now() };
       await setScenarios(scenarios);
       // Flag script actions in imported scenarios so the popup can warn the user —
       // imported code runs with the extension's elevated CSP privileges.
-      const hasScriptActions = (request.scenario?.actions || []).some(a => a.type === 'script');
+      const hasScriptActions = (request.scenario.actions || []).some(a => a?.type === 'script');
       sendResponse({ success: true, id, hasScriptActions });
+    });
+    return true;
+  }
+
+  /**
+   * Import a file produced by EXPORT_FOLDER: { name, createdAt, scenarios: {…} }.
+   *
+   * That shape was never importable — the popup treated the whole object as one
+   * scenario, producing an empty entry named after the folder while the real
+   * scenarios were discarded. Recreating the folder here keeps the export
+   * meaningful and preserves the grouping the user set up.
+   */
+  if (type === "IMPORT_FOLDER") {
+    const payload = request.folder;
+    const entries = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? Object.values(payload.scenarios || {})
+      : [];
+    const valid = entries.filter(_isScenarioShaped);
+    if (!valid.length) {
+      sendResponse({ success: false, error: 'Folder export contains no valid scenarios' });
+      return true;
+    }
+    Promise.all([getFolders(), getScenarios()]).then(async ([folders, scenarios]) => {
+      const folderId = generateId();
+      folders[folderId] = { name: payload.name || 'Imported folder', createdAt: Date.now() };
+      let hasScriptActions = false;
+      for (const src of valid) {
+        const { folderId: _ignored, ...rest } = src;
+        scenarios[generateId()] = { ...rest, folderId, createdAt: Date.now() };
+        if ((src.actions || []).some(a => a?.type === 'script')) hasScriptActions = true;
+      }
+      await Promise.all([setFolders(folders), setScenarios(scenarios)]);
+      sendResponse({
+        success: true, folderId, count: valid.length,
+        skipped: entries.length - valid.length,
+        folderName: folders[folderId].name,
+        hasScriptActions,
+      });
     });
     return true;
   }
@@ -655,10 +786,29 @@ function handleMessage(request, sender, sendResponse) {
     return true;
   }
 
-  /* --- Backup / Restore All Data --- */
+  /* --- Backup / Restore All Data ---
+   *
+   * The backup file is the whole chrome.storage.local snapshot with the
+   * chrome.storage.sync settings nested under BACKUP_SYNC_KEY. Both areas are
+   * needed: scenarios, folders, variables and highlights live in `local`, while
+   * hotkeys, screenshot save mode/prefix, segment scroll speed and the completion
+   * notification toggle live in `sync`. Backing up only `local` silently lost the
+   * whole second half.
+   *
+   * Restore filters by *deny*list rather than allowlist. The old allowlist had to
+   * be extended by hand for every new feature and had fallen behind: highlights
+   * (hl_v1), highlight URL patterns, the highlight on/off toggle, the tab order
+   * and the screenshot countdown settings were all written by the app, captured
+   * in the backup file, and then dropped on the way back in — while the toast
+   * still said "Data restored". A denylist only has to name things that are
+   * genuinely not portable, and those change far less often.
+   */
   if (type === "GET_ALL_DATA") {
-    chrome.storage.local.get(null, (items) => {
-      sendResponse({ data: items });
+    Promise.all([
+      new Promise(r => chrome.storage.local.get(null, r)),
+      new Promise(r => chrome.storage.sync.get(null, r)),
+    ]).then(([local, sync]) => {
+      sendResponse({ data: local || {}, sync: sync || {} });
     });
     return true;
   }
@@ -669,40 +819,71 @@ function handleMessage(request, sender, sendResponse) {
       sendResponse({ success: false, error: "Invalid backup format: expected an object" });
       return true;
     }
-    const ALLOWED_KEYS = new Set([
-      "scenarios", "folders", "variables", "schedules", "activatedTabs",
-      "collapsibleStates", "popupTheme", "theme", "advancedMode",
-      "lastSelectedScenario", "lastTab",
-      "pendingRecordScenarioId", "condHelpLang", "screenshotExpanded",
-      "watermarkEnabled", "watermarkFormat", "watermarkFontSize",
-      "csvRunResults", "csvSessionData",
-      "playbackCheckpoint",
+
+    // Keys deliberately NOT carried across a restore.
+    const DENIED_KEYS = new Set([
+      // Machine-local and session-local: tab ids from another profile point at
+      // unrelated tabs, and a stale checkpoint pops a false "resume?" banner.
+      "activatedTabs", "playbackCheckpoint",
+      // Bulk transient run data — large, and meaningless once the run is over.
+      "_csvRows", "csvSessionData", "csvRunResults", "csvSsVarOrder",
+      // Half-finished popup interactions.
+      "pendingEdit", "manualFormDraft", "pendingRecordScenarioId",
+      "elemShotPickPending", "elemShotPickCrop",
+      "lastPickedSelector", "lastPickedSelectors",
+      "dragdropTargetPickPending", "dragdropTargetPickState",
+      // Update bookkeeping belongs to this install, not to the backup. Importing
+      // another machine's grace-period anchors could lock this one out.
+      "updateStatus", "updateAvailableSince", "lastUpdateAt", "remoteConfig",
+      "autoApplyAt", "autoApplyTries", "updateBannerDismissed",
+      // Dead key from builds that wrote an unreadable rollback snapshot.
+      "_preRestoreBackup",
     ]);
+
+    const BACKUP_SYNC_KEY = "__sync";
+    const syncPayload = data[BACKUP_SYNC_KEY];
     const sanitized = {};
     for (const [k, v] of Object.entries(data)) {
-      if (ALLOWED_KEYS.has(k)) sanitized[k] = v;
+      if (k === BACKUP_SYNC_KEY || DENIED_KEYS.has(k)) continue;
+      sanitized[k] = v;
     }
-    if (sanitized.scenarios && typeof sanitized.scenarios !== "object") {
+
+    const isPlainObject = (v) => v && typeof v === "object" && !Array.isArray(v);
+    if (sanitized.scenarios !== undefined && !isPlainObject(sanitized.scenarios)) {
       sendResponse({ success: false, error: "Invalid backup: scenarios must be an object" }); return true;
     }
-    if (sanitized.folders && typeof sanitized.folders !== "object") {
+    if (sanitized.folders !== undefined && !isPlainObject(sanitized.folders)) {
       sendResponse({ success: false, error: "Invalid backup: folders must be an object" }); return true;
     }
-    // Merge (not clear+set) to avoid data loss if the browser crashes between
-    // clear() and set().  Take a snapshot of current data first so the user
-    // can roll back if the restored backup is wrong.
-    chrome.storage.local.get(null, (currentData) => {
-      const preBackup = { _autoBackup: true, _backupDate: new Date().toISOString(), ...currentData };
-      // Store the snapshot under a separate key so it survives the restore write.
-      const withBackup = { ...sanitized, _preRestoreBackup: preBackup };
-      chrome.storage.local.set(withBackup, () => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ success: false, error: chrome.runtime.lastError.message });
-        } else {
-          state.recording = false;
-          state.currentActions = [];
-          sendResponse({ success: true, backedUp: true });
-        }
+    if (sanitized.schedules !== undefined && !Array.isArray(sanitized.schedules)) {
+      sendResponse({ success: false, error: "Invalid backup: schedules must be an array" }); return true;
+    }
+
+    // Merge (not clear+set) to avoid data loss if the browser crashes mid-write.
+    // No rollback snapshot is stored: the one this used to write was never read
+    // by anything, and it doubled storage usage on every restore. The popup warns
+    // to take a backup first instead.
+    const writeLocal = new Promise((resolve) => {
+      chrome.storage.local.set(sanitized, () => resolve(chrome.runtime.lastError?.message || null));
+    });
+    // Backups made before sync settings were included simply have no __sync block.
+    const writeSync = isPlainObject(syncPayload)
+      ? new Promise((resolve) => {
+          chrome.storage.sync.set(syncPayload, () => resolve(chrome.runtime.lastError?.message || null));
+        })
+      : Promise.resolve(null);
+
+    Promise.all([writeLocal, writeSync]).then(([localErr, syncErr]) => {
+      if (localErr) { sendResponse({ success: false, error: localErr }); return; }
+      state.recording = false;
+      state.currentActions = [];
+      broadcastRecordingState(false);
+      // A sync failure (quota, sync disabled) must not fail the whole restore —
+      // the scenarios are already in. Report it so the user can redo the settings.
+      sendResponse({
+        success: true,
+        restoredSync: !!isPlainObject(syncPayload) && !syncErr,
+        warning: syncErr ? `Settings could not be restored: ${syncErr}` : null,
       });
     });
     return true;
@@ -781,13 +962,25 @@ function handleMessage(request, sender, sendResponse) {
     return;
   }
 
+  // Hard stop: abandons the row in flight, so its result is never written.
   if (type === "STOP_CSV_PLAYBACK") {
     state.csvPlayback.active = false;
+    state.csvPlayback.stopAfterRow = false;
     state.playback.active = false;
     updateBadge();
     // Discard the checkpoint so a user-stopped run is never offered as resumable.
     clearCsvState().catch(() => {});
     sendResponse({ stopped: true });
+    return;
+  }
+
+  // Graceful stop: let the current row finish and be recorded, then end the run.
+  // Previously the "After row" button sent STOP_CSV_PLAYBACK too, so it behaved
+  // identically to "Now" and silently dropped the row that was mid-flight.
+  if (type === "STOP_CSV_AFTER_ROW") {
+    if (!state.csvPlayback.active) { sendResponse({ pending: false, alreadyStopped: true }); return; }
+    state.csvPlayback.stopAfterRow = true;
+    sendResponse({ pending: true, currentRow: state.csvPlayback.currentRow });
     return;
   }
 
@@ -846,8 +1039,10 @@ function handleMessage(request, sender, sendResponse) {
         // Always unregister first — ensures a time change takes effect immediately
         // rather than firing at the old time.
         unregisterScheduleAlarm(request.schedule.id);
-        registerScheduleAlarm(request.schedule);
-        sendResponse({ success: true });
+        const armed = registerScheduleAlarm(request.schedule);
+        // Reported so the popup can tell the user their schedule will not run,
+        // instead of showing it as enabled with no alarm behind it.
+        sendResponse({ success: true, armed, invalidTime: request.schedule.enabled && !armed });
       });
     });
     return true;
@@ -916,10 +1111,12 @@ function handleMessage(request, sender, sendResponse) {
     return;
   }
 
-  /* --- Crop UI --- */
+  /* --- Crop UI ---
+   * Keyed by the token in the editor window's URL, and deliberately NOT consumed
+   * on read: the entry lives until that window closes, so reloading the editor
+   * re-loads the same image instead of finding an empty slot and closing. */
   if (type === "GET_PENDING_CROP") {
-    sendResponse({ crop: state.pendingCrop });
-    state.pendingCrop = null;
+    sendResponse({ crop: getPendingCrop(request.token) });
     return;
   }
 
@@ -976,16 +1173,28 @@ function handleMessage(request, sender, sendResponse) {
     updateBadge();
     // Minimal 1×1 transparent PNG — same rationale as _NOTIF_ICON in bg/utils.js.
     const _ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAA+gBkAAAAAAASUVORK5CYII=";
+    const _elemShotErr = (msg) => chrome.notifications.create(
+      "elemshot_err_" + Date.now(),
+      { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: msg },
+      () => { void chrome.runtime.lastError; },
+    );
     chrome.storage.local.get(["elemShotPickPending", "elemShotPickCrop"], (flags) => {
+      // The "could not get a selector" case is checked here, before the branch.
+      // It used to sit *inside* a branch already guarded by `request.selector`,
+      // so it could never run — a pick that yielded no selector fell through to
+      // the else and reopened the popup, giving no clue why nothing was captured.
+      if (flags.elemShotPickPending && !request.selector && !request.selectors) {
+        chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop"]);
+        _elemShotErr("Could not get a selector for that element — try picking a different one");
+        sendResponse({ received: true });
+        return;
+      }
       if (flags.elemShotPickPending && request.selector) {
         chrome.storage.local.remove(["elemShotPickPending", "elemShotPickCrop", "lastPickedSelector", "lastPickedSelectors"]);
         const crop = !!flags.elemShotPickCrop;
         const tabId = request.tabId || sender.tab?.id;
-        if (tabId) {
-          if (!request.selector && !request.selectors) {
-            chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: "Could not get element selector" }, () => { void chrome.runtime.lastError; });
-            return;
-          }
+        if (!tabId) { _elemShotErr("Lost track of the tab — try the capture again"); return; }
+        {
           chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
             const saveMode = settings.screenshotSaveMode || "auto";
             const prefix   = settings.screenshotPrefix   || "screenshot";
@@ -997,7 +1206,7 @@ function handleMessage(request, sender, sendResponse) {
                 if (result.error) _notif("Error: " + result.error);
                 else if (!crop)   _notif("Saved: " + (result.filename || "screenshot"));
               })
-              .catch((e) => chrome.notifications.create("elemshot_err_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: "Error: " + e.message }, () => { void chrome.runtime.lastError; }));
+              .catch((e) => _elemShotErr("Error: " + e.message));
           });
         }
       } else {
