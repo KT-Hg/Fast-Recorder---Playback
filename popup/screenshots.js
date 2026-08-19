@@ -99,6 +99,25 @@ function startElemShotPick(crop) {
   });
 }
 
+/* === Window Capture === */
+
+/**
+ * Ask the background to open the standalone capture window, then get out of the
+ * way. The popup deliberately does none of the work itself: it dies the moment
+ * the permission prompt or the window picker takes focus, so both have to live
+ * in a window of their own.
+ *
+ * No tab is involved: what gets captured is a window the user picks from
+ * Chrome's own picker, which need not belong to the browser at all.
+ */
+function openWindowCapture(crop) {
+  chrome.runtime.sendMessage(
+    { type: 'OPEN_WINDOW_CAPTURE', crop: !!crop },
+    () => { void chrome.runtime.lastError; },
+  );
+  window.close();
+}
+
 /* === Image Diff === */
 
 function initDiff() {
@@ -176,6 +195,10 @@ export function initScreenshots() {
   document.getElementById('screenshotElement')    ?.addEventListener('click', () => startElemShotPick(false));
   document.getElementById('cropScreenshotElement')?.addEventListener('click', () => startElemShotPick(true));
 
+  /* Window capture */
+  document.getElementById('screenshotWindow')    ?.addEventListener('click', () => openWindowCapture(false));
+  document.getElementById('cropScreenshotWindow')?.addEventListener('click', () => openWindowCapture(true));
+
 
   /* Capture sub-tab buttons (data-capture-action dispatcher) */
   const captureActionMap = {
@@ -193,6 +216,8 @@ export function initScreenshots() {
     cropSegmentScrollH:   () => startSegmentCapture('horizontal', true),
     screenshotElement:    () => startElemShotPick(false),
     cropScreenshotElement:() => startElemShotPick(true),
+    screenshotWindow:     () => openWindowCapture(false),
+    cropScreenshotWindow: () => openWindowCapture(true),
   };
   document.addEventListener('click', (e) => {
     const action = e.target.closest('[data-capture-action]')?.dataset.captureAction;

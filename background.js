@@ -22,6 +22,8 @@ import {
   openCropUI, buildScreenshotFilename, getPendingCrop,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
+// Side-effect import: registers the window-capture listener.
+import './bg/screenshot-window.js';
 import {
   UPDATE_ALARM, AUTO_APPLY_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
   initUpdateAvailableListener, applyUpdate, markInstalledVersion,
@@ -195,8 +197,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
  * Actions refused while the update lock is on: anything that *starts* capture,
  * recording or playback. Deliberately absent — every GET_*, every STOP_*, and the
  * export/backup paths, so a locked user can still watch a run finish, stop it, and
- * get their scenarios out. Screenshot messages are guarded in bg/screenshot.js,
- * which owns its own listener.
+ * get their scenarios out. Screenshot messages are guarded in bg/screenshot.js and
+ * bg/screenshot-window.js, which own their own listeners.
  */
 const LOCKED_MESSAGE_TYPES = new Set([
   'START_RECORD',
@@ -238,12 +240,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function handleMessage(request, sender, sendResponse) {
   const { type } = request;
 
-  // Screenshot messages have their own dedicated listener in bg/screenshot.js.
-  // Returning undefined here (not `true`) tells Chrome this handler did not
-  // handle the message, so the screenshot listener can take over.
+  // Screenshot messages have their own dedicated listeners in bg/screenshot.js
+  // and bg/screenshot-window.js. Returning undefined here (not `true`) tells
+  // Chrome this handler did not handle the message, so they can take over.
   if (["TAKE_SCREENSHOT", "TAKE_SCREENSHOT_FULL",
        "TAKE_SCREENSHOT_SCROLL_V", "TAKE_SCREENSHOT_SCROLL_H",
-       "TAKE_SCREENSHOT_ELEMENT"].includes(type)) return;
+       "TAKE_SCREENSHOT_ELEMENT",
+       "OPEN_WINDOW_CAPTURE", "WINDOW_CAPTURE_RESULT", "RESTORE_BADGE"].includes(type)) return;
 
   // Refuse before dispatch so the caller is told the run did not start. The
   // guard is repeated inside each playback entry point for the callers that

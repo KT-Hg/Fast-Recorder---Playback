@@ -2,8 +2,8 @@
  * screenshot.js — Screenshot capture, CDP, watermark, image diff.
  * Exports: takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
  *          compareScreenshots, applyWatermark, downloadDataUrl, openCropUI,
- *          buildScreenshotFilename, uint8ToBase64, scriptingExec, cdpEval,
- *          captureTab, captureTabDouble
+ *          buildScreenshotFilename, buildDateFolder, uint8ToBase64, scriptingExec,
+ *          cdpEval, captureTab, captureTabDouble
  *
  * All three public capture functions go through _queueScreenshot(tabId, fn) so
  * concurrent requests on the same tab are serialized — preventing debugger-session
@@ -166,18 +166,26 @@ export async function compareScreenshots(dataUrlA, dataUrlB, threshold) {
  *
  * @param {string} dataUrl - PNG data URL to stamp.
  * @param {number} tabId   - Used to read the page URL for the {url} token.
+ * @param {string|null} urlOverride - What the {url} token resolves to. `null`
+ *        means "read it from the tab"; any string is used literally, and the
+ *        empty string drops the token — window captures pass '' because they
+ *        photograph something that is often not a tab, or not even a browser.
  * @returns {Promise<string>} Data URL, watermarked or original on error.
  */
-export async function applyWatermark(dataUrl, tabId) {
+export async function applyWatermark(dataUrl, tabId, urlOverride = null) {
   const settings = await new Promise(r => chrome.storage.local.get(['watermarkEnabled','watermarkFormat','watermarkFontSize'], r));
   if (!settings.watermarkEnabled) return dataUrl;
   try {
-    let pageUrl = '';
-    try { const t = await chrome.tabs.get(tabId); pageUrl = t.url || ''; } catch(_) {}
+    let pageUrl = urlOverride;
+    if (pageUrl == null) { pageUrl = ''; try { const t = await chrome.tabs.get(tabId); pageUrl = t.url || ''; } catch(_) {} }
     const now  = new Date().toLocaleString();
-    const text = (settings.watermarkFormat || '{url}  {datetime}')
+    let text = (settings.watermarkFormat || '{url}  {datetime}')
       .replace(/\{url\}/g,      () => pageUrl)
       .replace(/\{datetime\}/g, () => now);
+    // With no URL to stamp — a window capture, or a tab that has gone away — the
+    // token leaves the separator stranded at the front of the bar. Close the gap
+    // instead of stamping padding that was meant to sit between two fields.
+    if (!pageUrl) text = text.replace(/\s{2,}/g, ' ').trim();
     const fontSize = Math.min(48, Math.max(8, settings.watermarkFontSize || 13));
     const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -200,7 +208,7 @@ export async function applyWatermark(dataUrl, tabId) {
 /* ── Filename Builder ───────────────────────────────────────────────────────── */
 
 /** Returns today's date as "YYYY-MM-DD" for use as a subfolder name. */
-function _buildDateFolder() {
+export function buildDateFolder() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
@@ -495,11 +503,11 @@ async function _takeVisibleScreenshot(tabId, saveMode, prefix, requestedFilename
   if (!dataUrl) return { error: 'Capture failed' };
   dataUrl = await applyWatermark(dataUrl, tabId);
   if (crop) {
-    const downloadPath = saveMode === 'auto' ? `screenshots/${_buildDateFolder()}/${filename}` : filename;
+    const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     return openCropUI(dataUrl, downloadPath, saveMode === 'ask');
   }
   if (!skipDownload) {
-    const downloadPath = saveMode === 'auto' ? `screenshots/${_buildDateFolder()}/${filename}` : filename;
+    const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
     if (id == null) return { error: 'Download failed' };
   }
@@ -896,7 +904,7 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
 
     let dataUrl = `data:image/png;base64,${result.data}`;
     dataUrl = await applyWatermark(dataUrl, tabId);
-    const downloadPath = saveMode === 'auto' ? `screenshots/${_buildDateFolder()}/${filename}` : filename;
+    const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     if (crop) return openCropUI(dataUrl, downloadPath, saveMode === 'ask');
     if (!skipDownload) {
       const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
@@ -1129,7 +1137,7 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     }
 
     dataUrl = await applyWatermark(dataUrl, tabId);
-    const downloadPath = saveMode === 'auto' ? `screenshots/${_buildDateFolder()}/${filename}` : filename;
+    const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     if (crop) return openCropUI(dataUrl, downloadPath, saveMode === 'ask');
     if (!skipDownload) {
       const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');

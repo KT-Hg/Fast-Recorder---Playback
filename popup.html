@@ -685,6 +685,7 @@
         <button class="capture-tab-btn" data-capture-tab="scroll">Scroll</button>
         <button class="capture-tab-btn" data-capture-tab="segment">Segment</button>
         <button class="capture-tab-btn" data-capture-tab="element">Element</button>
+        <button class="capture-tab-btn" data-capture-tab="window">Window</button>
       </div>
 
       <!-- All -->
@@ -721,6 +722,13 @@
           <div class="capture-btn-row">
             <button id="screenshotElement"     class="cap-save-btn" title="Capture a specific element">📌 Pick</button>
             <button id="cropScreenshotElement" class="cap-edit-btn" title="Capture a specific element, then open the editor">✂ Pick</button>
+          </div>
+        </div>
+        <div class="capture-group-row">
+          <span class="capture-group-label">Window</span>
+          <div class="capture-btn-row">
+            <button id="screenshotWindow"     class="cap-save-btn" title="Capture a whole application window (browser with DevTools, editor, terminal…)">🖥 Pick</button>
+            <button id="cropScreenshotWindow" class="cap-edit-btn" title="Capture a whole application window, then open the editor">✂ Pick</button>
           </div>
         </div>
       </div>
@@ -789,6 +797,18 @@
             <button class="cap-edit-btn" data-capture-action="cropScreenshotElement" title="Capture a specific element, then open the editor">✂ Edit</button>
           </div>
         </div>
+      </div>
+
+      <!-- Window -->
+      <div class="capture-group" id="captureGroup-window" style="display:none;">
+        <div class="capture-group-row">
+          <span class="capture-group-label">Window</span>
+          <div class="capture-btn-row">
+            <button class="cap-save-btn" data-capture-action="screenshotWindow" title="Capture a whole application window">🖥 Save</button>
+            <button class="cap-edit-btn" data-capture-action="cropScreenshotWindow" title="Capture a whole application window, then open the editor">✂ Edit</button>
+          </div>
+        </div>
+        <span class="helper-text">Captures any application window through the OS — a browser window with DevTools open, an editor, a terminal. A picker window opens so you can choose which one; the first use asks for the screen-capture permission.</span>
       </div>
 
       <!-- Tools row (always visible) -->

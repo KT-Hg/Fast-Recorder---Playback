@@ -13,7 +13,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Actions** | 16 action types including upload file, conditions, switch branching, readDOM, JS script |
 | **Variables** | 4 types: Static, Random (alpha/numeric/alphanumeric/datetime), Pick, Fallback — `${varName}` substitution across selectors, values, URLs, and scripts |
 | **Upload File** | Inject local files into `<input type="file">` or drag-and-drop zones; supports multiple files and `${variable}` filenames |
-| **Screenshot** | Visible, full page, scroll (V/H), segment, element — with crop editor, standalone image editor, image diff, and watermark |
+| **Screenshot** | Visible, full page, scroll (V/H), segment, element, whole OS window — with crop editor, standalone image editor, image diff, and watermark |
 | **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
 | **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
@@ -65,7 +65,7 @@ The popup has five tabs, reorderable by drag-and-drop. The last active tab is re
 - CSV data-driven runs (one scenario execution per CSV row)
 
 ### Capture
-- Screenshot: Visible, Full Page, Scroll V/H, Segment V/H, Element
+- Screenshot: Visible, Full Page, Scroll V/H, Segment V/H, Element, Window
 - Crop/edit mode for all capture types
 - Image diff tool (pixel-level comparison)
 - Standalone image editor for any image from the clipboard or a file
@@ -404,7 +404,7 @@ If all strategies fail, the system waits using `MutationObserver` up to the conf
 
 ## Screenshot Capture
 
-Six capture modes — all support optional watermark overlay and crop/edit:
+Seven capture modes — all support optional watermark overlay and crop/edit:
 
 | Mode | Method | Notes |
 |---|---|---|
@@ -413,6 +413,62 @@ Six capture modes — all support optional watermark overlay and crop/edit:
 | Scroll V/H | CDP + scroll animation | Stitched panorama |
 | Segment V/H | CDP + user-marked range | Start → scroll → stop |
 | Element | CDP + `getBoundingClientRect` | Exact element bounds |
+| Window | `desktopCapture` + `getUserMedia` | A whole OS window, browser chrome and all |
+
+### Window capture
+
+Every other mode goes through the page renderer, which by design sees nothing
+outside the page viewport — no tab strip, no omnibox, no DevTools. This one goes
+through the OS compositor instead, so it photographs **any application window**
+exactly as it appears on screen: a browser window with DevTools docked, but just
+as well an editor, a terminal or a design tool.
+
+- **Optional permission.** `desktopCapture` is not requested at install time. The
+  first use opens a capture window that asks for it; declining leaves every other
+  feature untouched.
+- **Why a separate window** (`capture-window.html`): the action popup is destroyed
+  the moment the permission prompt or the window picker takes focus, and Chrome
+  binds the desktop stream to the render frame that called `chooseDesktopMedia` —
+  so the picker and `getUserMedia` must run in the same long-lived frame. Neither
+  the service worker nor an offscreen document can host that.
+- **The capture window is 960×720 on purpose.** Chrome sizes the window picker to
+  fit its owner window; at the original 460×260 the thumbnail grid consumed the
+  dialog and the Share button was clipped off, unreachable without maximising.
+- **Only windows are offered**, never whole screens: capturing a screen would put
+  the capture window itself into the shot, and it cannot be hidden without also
+  stopping the frame delivery the page depends on.
+- **Blank frames are rejected, not saved.** A desktop capturer's first frames are
+  uniform black — the window is enumerated before its content is composited — and
+  drawing one produces a black PNG with no error anywhere. The page inspects a
+  downscaled copy of each frame and retries for ~5 s before giving up with a real
+  error message.
+- **Physical pixels.** The image is the window at device scale — a 1200×800 window
+  at 128 % DPI produces a 1544×1032 PNG, not 1200×800.
+- **Watermark stamps the timestamp only.** The `{url}` token is dropped rather
+  than filled: this mode photographs whatever window was picked, which is often
+  not a tab and often not a browser at all, so no URL describes it honestly. The
+  separator left behind by the empty token is collapsed, so the bar reads as one
+  clean line.
+- **Countdown**, when *Settings -> screenshot countdown* is on, uses the same
+  seconds as a visible capture. It runs **after** the window is picked, so there
+  is time to switch to that window and open a menu or hover a control before the
+  shot. It is drawn in **two places**, because neither survives on its own: the
+  capture window shrinks to a corner box showing the number, *and* the count runs
+  on the extension's toolbar badge. Arranging the target raises it over the corner
+  box — a maximised target hides it completely, leaving only the badge — while the
+  badge exists only on Chrome windows, leaving only the corner box for a
+  non-browser target. An always-on-top window would solve both, but extensions
+  cannot ask for one. The badge is cleared and given ~300 ms to repaint before the
+  frame is taken, so it is never photographed when the target is a Chrome window.
+- **The capture window closes before the save begins.** Chrome parents the "Save
+  file as" dialog to the focused browser window; while the capture window was
+  still up and closing on its own schedule, it took that dialog down with it
+  before a folder could be chosen. The worker now waits for the window to be gone
+  and only then downloads — and reports the result by notification, since nothing
+  of the extension's own UI is left on screen.
+- **Not automatable.** It needs a user gesture and a manual pick, so it cannot be
+  used as a step inside record/playback.
+- A **minimised** target window cannot be captured; restore it first.
 
 **Browser zoom** is normalised to 100 % before full-page and scroll captures and restored afterwards, so a zoomed page does not produce a distorted image. Segment captures deliberately keep the user's zoom: the segment clip rect was measured at that zoom, and resetting it would reflow the layout and point the clip at the wrong content.
 
@@ -498,6 +554,12 @@ Because this file can disable the extension for everyone, the client treats it a
 | `notifications` | Completion alerts when popup is closed |
 | `tabs` | Read tab info; navigate tabs during playback |
 | `storage` | All persistent data |
+
+**Optional permission** (requested on first use, never at install):
+
+| Permission | Purpose |
+|---|---|
+| `desktopCapture` | Window capture — lets Chrome show the window picker |
 
 ---
 
