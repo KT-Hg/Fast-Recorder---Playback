@@ -16,11 +16,9 @@
  * reuses the normal watermark + naming + save/crop path.
  */
 
-const statusEl    = document.getElementById('status');
-const actionEl    = document.getElementById('action');
-const modeEl      = document.getElementById('mode');
-const countdownEl = document.getElementById('countdown');
-const cardEl      = document.getElementById('card');
+const statusEl = document.getElementById('status');
+const actionEl = document.getElementById('action');
+const modeEl   = document.getElementById('mode');
 
 /* ── Request context ────────────────────────────────────────────────────────────
  * Carried in the URL rather than held in the worker, so a worker suspend between
@@ -154,38 +152,96 @@ function countdownSeconds() {
   });
 }
 
-/* The count is shown in two places because neither one alone is reliable: the
- * whole point of the countdown is that the user goes and arranges the target
- * window, which raises it over this one. A maximised target hides this window
- * entirely, and the toolbar badge is the only surface left; conversely the badge
- * only exists on Chrome windows, so a non-browser target has nothing but this
- * window. Extensions cannot ask for an always-on-top window, or one would do. */
+/* The count is never drawn in this window. By the time it runs the user has been
+ * told to go and arrange the target, which raises that window over this one — so
+ * the count only lives where it stays visible afterwards: a Document
+ * Picture-in-Picture window, the one always-on-top window Chrome grants a page
+ * (chrome.windows has no such option), and the toolbar badge, which rides on the
+ * target itself whenever the target is a Chrome window. */
 
-const SMALL_W = 260, SMALL_H = 180;
-const FULL_W  = 960, FULL_H  = 720;
 const BADGE_COLOR = '#3b82f6';
 
-let _shrunk = false;
+/* ── Cancellation ───────────────────────────────────────────────────────────────
+ * Once the picker's Share is pressed the capture is committed: the stream is
+ * live, the countdown is running, and until now the only ways out were killing
+ * the window or letting the shot happen. Cancelling is checked at the points
+ * where the flow already waits — the frame-ready loop and the countdown — so an
+ * abort never has to interrupt a draw half-done.
+ * ────────────────────────────────────────────────────────────────────────────── */
 
-/** Shrink to a screen corner so the count stays beside, not behind, the target. */
-async function shrinkToCorner() {
-  try {
-    const win = await chrome.windows.getCurrent();
-    const left = Math.max(0, (screen.availLeft || 0) + screen.availWidth  - SMALL_W - 24);
-    const top  = Math.max(0, (screen.availTop  || 0) + screen.availHeight - SMALL_H - 24);
-    await chrome.windows.update(win.id, { left, top, width: SMALL_W, height: SMALL_H });
-    _shrunk = true;
-  } catch (_) { /* geometry is a nicety — never fail a capture over it */ }
+class CaptureCancelled extends Error {
+  constructor() { super('Capture cancelled'); this.name = 'CaptureCancelled'; }
 }
 
-/** Grow back, so an error message and its Try again button have room to land. */
-async function restoreSize() {
-  if (!_shrunk) return;
-  _shrunk = false;
+let _cancelled = false;
+/** Set while something is waiting; cuts that wait short so the abort lands at once. */
+let _wake = null;
+
+function requestCancel() {
+  _cancelled = true;
+  const wake = _wake;
+  _wake = null;
+  wake?.();
+}
+
+function abortIfCancelled() {
+  if (_cancelled) throw new CaptureCancelled();
+}
+
+// Esc anywhere in this window is the keyboard route out.
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') requestCancel(); });
+
+/**
+ * Open an always-on-top box to hold the count.
+ *
+ * Document PiP needs transient user activation, so this must be called while the
+ * click that started the capture is still fresh — the picker below burns seconds
+ * of real time and the activation would be long gone by the time the count runs.
+ * Returns null when unavailable — the badge then carries the count alone.
+ */
+async function openFloatingCounter() {
+  if (!window.documentPictureInPicture) return null;
   try {
-    const win = await chrome.windows.getCurrent();
-    await chrome.windows.update(win.id, { width: FULL_W, height: FULL_H });
-  } catch (_) {}
+    const pip = await documentPictureInPicture.requestWindow({ width: 200, height: 165 });
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const doc  = pip.document;
+    doc.body.style.cssText =
+      'margin:0;height:100vh;display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;gap:8px;text-align:center;' +
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      `background:${dark ? '#0d1829' : '#ffffff'};color:${dark ? '#f5f7fa' : '#111827'}`;
+
+    const num = doc.createElement('div');
+    num.id = 'n';
+    num.textContent = '·';
+    num.style.cssText = 'font-size:74px;font-weight:700;line-height:1;' +
+      `font-variant-numeric:tabular-nums;letter-spacing:-.04em;color:${dark ? '#60a5fa' : '#3b82f6'}`;
+
+    const cap = doc.createElement('div');
+    cap.id = 'c';
+    cap.textContent = 'Pick a window to capture';
+    cap.style.cssText = 'font-size:11px;line-height:1.45;opacity:.7;padding:0 12px';
+
+    const btn = doc.createElement('button');
+    btn.textContent = 'Cancel';
+    btn.style.cssText = 'margin-top:4px;padding:5px 16px;border-radius:6px;cursor:pointer;' +
+      'font:inherit;font-size:11.5px;font-weight:600;background:transparent;' +
+      `border:1px solid ${dark ? '#2d4157' : '#e5e7eb'};color:${dark ? '#f87171' : '#ef4444'}`;
+    btn.addEventListener('click', requestCancel);
+    // The floating window owns the user's attention during the count, so it has to
+    // own the way out too — this is the surface they are actually looking at.
+    doc.addEventListener('keydown', (e) => { if (e.key === 'Escape') requestCancel(); });
+
+    doc.body.append(num, cap, btn);
+    return pip;
+  } catch (_) {
+    return null; // unsupported, blocked, or the activation had already expired
+  }
+}
+
+/** Close the floating box, tolerating one the user already dismissed. */
+function closeFloater(pip) {
+  try { pip?.close(); } catch (_) {}
 }
 
 function setBadge(text) {
@@ -207,22 +263,26 @@ function releaseBadge() {
  * Count down so the user can arrange the target first — open a menu, hover a
  * control, bring the right window forward.
  */
-function runCountdown(seconds) {
+function runCountdown(seconds, pip) {
   return new Promise((resolve) => {
-    cardEl.classList.add('counting');
+    const pipNum = pip?.document.getElementById('n');
+    const pipCap = pip?.document.getElementById('c');
+    if (pipCap) pipCap.textContent = 'Set up the window now';
     let left = seconds;
-    const paint = () => { countdownEl.textContent = String(left); setBadge(String(left)); };
+    const paint = () => {
+      if (pipNum) pipNum.textContent = String(left);
+      setBadge(String(left));
+    };
     paint();
     const timer = setInterval(() => {
       left -= 1;
-      if (left <= 0) {
-        clearInterval(timer);
-        cardEl.classList.remove('counting');
-        resolve();
-        return;
-      }
+      if (left <= 0) { finish(); return; }
       paint();
     }, 1000);
+    const finish = () => { clearInterval(timer); _wake = null; resolve(); };
+    // A cancel during the count ends the wait immediately; the caller checks the
+    // flag straight afterwards and throws.
+    _wake = finish;
   });
 }
 
@@ -268,6 +328,7 @@ async function grabFrame(streamId, beforeShot) {
     let ready = false;
     for (let i = 0; i < 20 && !ready; i++) {
       await nextFrame(video);
+      abortIfCancelled();
       if (video.videoWidth && video.videoHeight) ready = frameHasContent(video, probeCtx);
     }
     if (!video.videoWidth || !video.videoHeight) throw new Error('Captured frame was empty');
@@ -316,38 +377,54 @@ async function startCapture() {
   actionEl.disabled = true;
   if (!hasApi()) { showNeedsPermission('Permission was revoked. Grant it again to capture.'); return; }
 
+  _cancelled = false;
+  _wake = null;
+
+  // Both of these run before the picker, while this click still counts as
+  // transient activation — requestWindow needs it, and the picker takes seconds
+  // of wall-clock time that would leave nothing of the gesture behind.
+  const secs = await countdownSeconds();
+  const pip  = secs > 0 ? await openFloatingCounter() : null;
+
   let streamId;
   try {
     streamId = await chooseWindow();
   } catch (e) {
+    closeFloater(pip);
     setState(`Could not open the window picker: ${e.message}`, 'Try again', startCapture, 'error');
     return;
   }
-  if (!streamId) { window.close(); return; } // user cancelled the picker
+  if (!streamId) { closeFloater(pip); window.close(); return; } // user cancelled the picker
 
-  const secs = await countdownSeconds();
-  setState('Capturing… waiting for the window to produce a frame.', null, null);
+  setState('Capturing… waiting for the window to produce a frame.', 'Cancel', requestCancel);
+  actionEl.classList.add('danger');
   let dataUrl;
   try {
     dataUrl = await grabFrame(streamId, secs > 0 ? async () => {
-      await shrinkToCorner();
-      setState('Switch to the window and set it up.', null, null);
-      await runCountdown(secs);
+      setState('Counting down — switch to the window you are capturing.', 'Cancel', requestCancel);
+      await runCountdown(secs, pip);
+      abortIfCancelled();
       setState('Capturing…', null, null);
       // Clear the badge *before* the shot. When the target is a Chrome window the
       // badge sits in its own toolbar and would be photographed; the pause gives
       // that toolbar time to repaint before the frame is taken.
+      closeFloater(pip);
       releaseBadge();
       await new Promise((r) => setTimeout(r, 300));
     } : null);
   } catch (e) {
-    await restoreSize();
+    closeFloater(pip);
     releaseBadge();
+    actionEl.classList.remove('danger');
+    // Cancelling is not a failure: offer the picker again rather than an error
+    // and a Try again that reads like something broke.
+    if (e instanceof CaptureCancelled) { showReady('Capture cancelled. Nothing was saved.'); return; }
     // A revoked permission surfaces here as a getUserMedia rejection.
     if (!hasApi()) { showNeedsPermission('Permission was revoked mid-capture. Grant it again to continue.'); return; }
     setState(`Capture failed: ${e.message || e.name}`, 'Try again', startCapture, 'error');
     return;
   }
+  actionEl.classList.remove('danger');
 
   setState(CROP ? 'Opening the editor…' : 'Handing the image over…', null, null);
   await deliver(dataUrl);

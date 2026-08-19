@@ -65,24 +65,11 @@
     #action[hidden] { display: none; }
     .foot { margin: 16px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
 
-    /* Countdown. The window shrinks to a corner box for this, so the card strips
-       down to the number and one short line — everything else would not fit and
-       would compete with the only thing worth reading. */
-    #countdown {
-      display: none;
-      font-weight: 700; line-height: 1;
-      font-variant-numeric: tabular-nums; letter-spacing: -.04em;
-      color: var(--primary);
-    }
-    .card.counting #countdown { display: block; margin: 0 0 8px; font-size: 62px; }
-    .card.counting h1,
-    .card.counting .sub,
-    .card.counting .mode,
-    .card.counting ol,
-    .card.counting .foot { display: none; }
-    .card.counting { padding: 14px 16px; max-width: none; }
-    .card.counting #status { font-size: 11.5px; min-height: 0; margin: 0; }
-    body:has(#card.counting) { padding: 10px; }
+    /* The count itself is never drawn here — it lives in the floating window and
+       on the toolbar badge, both of which stay visible once the target window is
+       raised over this one. All this window offers mid-capture is the way out. */
+    #action.danger { background: var(--danger); }
+    #action.danger:hover:not(:disabled) { background: var(--danger); filter: brightness(.93); }
   </style>
 </head>
 <body>
@@ -99,9 +86,9 @@
       <li>Press the button below — Chrome opens its window picker.</li>
       <li>Pick the window, then press <strong>Share</strong>.</li>
       <li id="stepCountdown" hidden>A countdown starts — switch to that window and set up what you want in the shot.
-          This window shrinks into the bottom-right corner, and the count also runs on the extension icon in the Chrome toolbar.</li>
+          The count shows in a small window floating above everything, and on the extension icon in the Chrome toolbar.
+          Either one, or this window, can cancel it.</li>
     </ol>
-    <div id="countdown"></div>
     <p id="status">Loading…</p>
     <button id="action" disabled>…</button>
     <p class="foot">Keep this window open until the capture finishes. It closes itself when done.</p>

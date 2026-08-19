@@ -452,14 +452,24 @@ as well an editor, a terminal or a design tool.
 - **Countdown**, when *Settings -> screenshot countdown* is on, uses the same
   seconds as a visible capture. It runs **after** the window is picked, so there
   is time to switch to that window and open a menu or hover a control before the
-  shot. It is drawn in **two places**, because neither survives on its own: the
-  capture window shrinks to a corner box showing the number, *and* the count runs
-  on the extension's toolbar badge. Arranging the target raises it over the corner
-  box — a maximised target hides it completely, leaving only the badge — while the
-  badge exists only on Chrome windows, leaving only the corner box for a
-  non-browser target. An always-on-top window would solve both, but extensions
-  cannot ask for one. The badge is cleared and given ~300 ms to repaint before the
-  frame is taken, so it is never photographed when the target is a Chrome window.
+  shot. The count is **never drawn in the capture window** — by the time it runs the
+  user has been told to go and arrange the target, which raises that window over
+  this one. It shows in a **Document Picture-in-Picture window**, the one
+  always-on-top window Chrome grants a page (`chrome.windows` has no such option),
+  and on the **toolbar badge**, which rides on the target itself whenever the target
+  is a Chrome window. PiP needs transient user activation, so it is requested on the
+  click that starts the capture, before the picker spends the gesture; where PiP is
+  unavailable (Chrome under 116) the badge carries the count alone. The badge is
+  cleared and given ~300 ms to repaint before the frame is taken, so it is never
+  photographed. Neither surface lands in the image: this mode captures the target
+  window's own surface, which overlapping windows do not appear in.
+- **Cancelling** works from the moment Share is pressed until the shot is taken:
+  the **Cancel** button in the floating countdown window, the **Cancel** button in
+  the capture window, or **Esc** in either. The abort is checked where the flow
+  already waits — the frame-ready loop and the countdown — so it never interrupts a
+  half-finished draw. The stream is stopped, nothing is saved, and the capture
+  window returns to its picker button rather than reporting an error. Before Share,
+  the picker's own Cancel does the same.
 - **The capture window closes before the save begins.** Chrome parents the "Save
   file as" dialog to the focused browser window; while the capture window was
   still up and closing on its own schedule, it took that dialog down with it
