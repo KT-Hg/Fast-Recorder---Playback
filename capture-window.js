@@ -161,6 +161,107 @@ function countdownSeconds() {
 
 const BADGE_COLOR = '#3b82f6';
 
+/**
+ * Make Chrome re-measure the open picker dialog.
+ *
+ * The picker is a web-modal dialog, and it takes its size once, at creation —
+ * when its source list is still empty and one row tall. The windows that stream
+ * in over the next second do not resize the widget, so the dialog stays short
+ * and slices the source labels off under the thumbnails, however many sources
+ * eventually arrive. Anything that forces a re-measure fixes it, which is why
+ * alt-tabbing away and back visibly corrects the dialog.
+ *
+ * The trigger reachable from here is a write to the host window's bounds:
+ * UpdateWidgetModalDialogPosition re-reads GetPreferredSize() every time it runs,
+ * and it runs whenever the host's bounds are set, because a web-modal dialog has
+ * to stay centred on its host. The write does not have to change anything — the
+ * window's own rectangle, written back to it, is enough — so nothing moves and
+ * no focus is stolen, which would drop the dialog behind this window.
+ *
+ * Two earlier attempts are worth not repeating. Resizing by a pixel, and later
+ * moving by a pixel, both worked on the dialog but were visible on the window:
+ * two updates in a cycle are two round-trips through the browser process and
+ * readily land in different frames, so the window twitched once per nudge. And
+ * reading the window back between nudges is worse than useless: every
+ * chrome.windows.update round-trips the bounds through device pixels and DIP, and
+ * under a fractional display scale — 1.2999999523162842 on the machine this was
+ * chased down on — that conversion rounds outwards by a pixel or two. Feeding the
+ * result into the next nudge compounded it, growing the window 38x33 device
+ * pixels over eight cycles. Hence: read the rectangle once, write it back whole
+ * every time, and never read it again.
+ *
+ * Repeatedly, and front-loaded, because there is no event to wait for: the dialog
+ * may not exist yet at the first nudge, and the source list keeps growing for a
+ * second or two after it does. A nudge that lands too early costs nothing — it
+ * re-measures a dialog that is already right, or none at all — so the schedule
+ * starts as soon as the dialog can plausibly be up and thins out from there. The
+ * gaps sit between nudges rather than counting from the start, since each write
+ * is awaited before the next is allowed to begin.
+ */
+const REMEASURE_GAPS = [120, 150, 200, 250, 350, 500, 800, 1000];
+
+function scheduleDialogRemeasure() {
+  let stopped = false;
+  /**
+   * The window as it stood before the first nudge. Read once and never again:
+   * every nudge writes this same rectangle back, so a rounding error can happen
+   * at most once instead of compounding.
+   */
+  let base = null;
+
+  const readBase = () => new Promise((resolve) => {
+    chrome.windows.getCurrent((win) => {
+      void chrome.runtime.lastError;
+      // Only a normal window can be nudged: a bounds update on a maximised one is
+      // ignored, and clearing the state to force it through would be a visible
+      // change to a window the user themselves maximised. Missing coordinates
+      // would reach update as NaN, which throws synchronously.
+      if (win && win.state === 'normal'
+          && typeof win.left === 'number' && typeof win.top === 'number') {
+        base = { id: win.id, left: win.left, top: win.top, width: win.width, height: win.height };
+      }
+      resolve();
+    });
+  });
+
+  /**
+   * Write the rectangle the window is already at.
+   *
+   * Not a move: an earlier version shifted the window a pixel and put it back,
+   * and two separate updates are two round-trips through the browser process,
+   * which readily land in different frames — so the window visibly twitched
+   * eight times while the picker was opening. An unchanged rectangle still
+   * reaches SetWindowPos, which still notifies the widget's observers, and that
+   * is the whole point: the notification is what re-runs the dialog's layout.
+   * Always the whole rectangle, never a single edge, so a rounding error in the
+   * device-pixel conversion cannot compound across nudges.
+   */
+  const rewriteBounds = () => new Promise((resolve) => {
+    chrome.windows.update(
+      base.id,
+      { left: base.left, top: base.top, width: base.width, height: base.height },
+      () => { void chrome.runtime.lastError; resolve(); },
+    );
+  });
+
+  (async () => {
+    await readBase();
+    for (const gap of REMEASURE_GAPS) {
+      await new Promise((r) => setTimeout(r, gap));
+      if (stopped) return;
+      if (base) await rewriteBounds();
+      if (stopped) return;
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    // The last write may have landed a pixel out through the same rounding. One
+    // final write of the rectangle the window started at settles it.
+    if (base) rewriteBounds();
+  };
+}
+
 /* ── Cancellation ───────────────────────────────────────────────────────────────
  * Once the picker's Share is pressed the capture is committed: the stream is
  * live, the countdown is running, and until now the only ways out were killing
@@ -387,12 +488,18 @@ async function startCapture() {
   const pip  = secs > 0 ? await openFloatingCounter() : null;
 
   let streamId;
+  // Started before the picker call because chooseDesktopMedia returns at once —
+  // its callback lands on Share, so this page keeps running while the dialog is
+  // up, which is the only window in which the dialog can be corrected.
+  const cancelRemeasure = scheduleDialogRemeasure();
   try {
     streamId = await chooseWindow();
   } catch (e) {
     closeFloater(pip);
     setState(`Could not open the window picker: ${e.message}`, 'Try again', startCapture, 'error');
     return;
+  } finally {
+    cancelRemeasure();
   }
   if (!streamId) { closeFloater(pip); window.close(); return; } // user cancelled the picker
 
@@ -433,7 +540,89 @@ async function startCapture() {
   setTimeout(() => window.close(), 30_000);
 }
 
+/* ── Window size ────────────────────────────────────────────────────────────────
+ * Chrome shows the window picker as a *web-modal* dialog parented to the
+ * WebContents that called chooseDesktopMedia — this page. Its width is a hard
+ * constant in Chrome (kDialogViewWidth = 600dip) and no window makes it wider,
+ * but its height is only its preferred height: a title, a 3-column grid of
+ * 180x160 thumbnails clipped to two rows, then the Share row. constrained_window
+ * then shrinks whatever that comes to down to the host's maximum dialog size —
+ * the content area of this window. A window too short to hold the dialog does
+ * not make it scroll, it squashes it, which is what sliced the source labels off
+ * under the thumbnails.
+ *
+ * So height is what this window has to buy, and it buys it by filling most of
+ * the display. The sizing lives here rather than in the worker because a service
+ * worker has no screen to measure: it cannot tell a 1366x768 laptop from a 4K
+ * panel, and a window that overflows the work area is clamped back to a short
+ * one — the very thing being avoided.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+/** Share of the display's work area to fill, and the range to stay inside. */
+const FILL  = 0.92;
+const MIN_W = 900,  MIN_H = 640;
+const MAX_W = 1100, MAX_H = 1100;
+
+/** The bounds this display calls for. Cached so the next open starts there. */
+function targetBounds() {
+  const availW = screen.availWidth, availH = screen.availHeight;
+  if (!availW || !availH) return null;
+
+  const fit = (avail, min, max) =>
+    Math.round(Math.max(Math.min(min, avail), Math.min(Math.min(max, avail), avail * FILL)));
+  const width  = fit(availW, MIN_W, MAX_W);
+  const height = fit(availH, MIN_H, MAX_H);
+  // availLeft/availTop are screen coordinates of *this* window's display, so a
+  // second monitor centres on itself rather than being dragged back to the first.
+  const left = Math.round((screen.availLeft || 0) + (availW - width)  / 2);
+  const top  = Math.round((screen.availTop  || 0) + (availH - height) / 2);
+
+  const bounds = { width, height, left, top };
+  chrome.storage.local.set({ windowCaptureBounds: bounds });
+  return bounds;
+}
+
+/**
+ * Put the window at those bounds and resolve only once it is really there.
+ *
+ * Called once, at load, and never again while the window is on screen: a
+ * programmatic resize of a visible window reads as the window growing by itself,
+ * which is worse than the pixels it wins back. The dialog does not need it
+ * either — scheduleDialogRemeasure below is what gets the dialog to its right
+ * size, and this window only has to be roomy enough to hold it.
+ *
+ * The tolerance is deliberately loose. Chrome clamps created bounds to the work
+ * area, and remembered bounds come back a few pixels off across DPI changes; a
+ * tight comparison would turn every one of those into a visible resize for a
+ * difference nobody can see.
+ */
+function applyBounds(bounds) {
+  if (!bounds) return Promise.resolve();
+  const { width, height, left, top } = bounds;
+  return new Promise((resolve) => {
+    chrome.windows.getCurrent((win) => {
+      if (chrome.runtime.lastError || !win) { resolve(); return; }
+      // A window the user maximised is already at least this big, and taller is
+      // only better here — leave it alone rather than shrinking it back.
+      if (win.state === 'maximized' || win.state === 'fullscreen') { resolve(); return; }
+      const settled = win.state === 'normal'
+        && Math.abs(win.width - width) <= 40 && Math.abs(win.height - height) <= 40;
+      if (settled) { resolve(); return; }
+      chrome.windows.update(win.id, { state: 'normal', width, height, left, top }, () => {
+        void chrome.runtime.lastError;
+        // The callback reports the browser-side bounds; the renderer is resized
+        // a beat later, and the renderer is what the dialog is measured against.
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+    });
+  });
+}
+
 /* ── Boot ───────────────────────────────────────────────────────────────────── */
+
+// Sized up front as well as before the picker: a resize is far less jarring
+// while the user is still reading the instructions than under an opening dialog.
+applyBounds(targetBounds());
 
 // Advertise the countdown up front so the picker step is not a surprise. The
 // value is read again when the capture actually runs, in case it changed since.

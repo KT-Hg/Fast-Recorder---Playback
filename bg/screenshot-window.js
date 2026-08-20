@@ -23,15 +23,35 @@ import { ensureLockState, notifyLocked } from './update-check.js';
 import { sendAlertNotification, updateBadge } from './utils.js';
 
 /**
- * Big enough for Chrome's window picker to fit inside.
+ * Fallback size, used only the first time — big enough for Chrome's window
+ * picker to fit inside.
  *
  * The picker is a dialog owned by the window whose frame called
  * chooseDesktopMedia, and Chrome shrinks it to fit that window — at the original
  * 460x260 the thumbnail grid ate the whole dialog and the Share button was
  * clipped off the bottom, unreachable unless the user maximised the window first.
+ * The dialog's width is capped in Chrome (600dip) but its height is not: it is
+ * squashed to whatever the parent's content area allows, which slices the source
+ * labels off the thumbnails. So the page measures its own display and sizes
+ * itself tall enough to hold the dialog whole (see targetBounds/applyBounds in
+ * capture-window.js), remembering the result for the next open.
  */
 const WINDOW_W = 960;
 const WINDOW_H = 720;
+
+/**
+ * The bounds the capture page measured on its own display last time, if any.
+ *
+ * Written by capture-window.js, read here so the window opens at the size it
+ * wants straight away rather than visibly resizing itself a frame later. Stale
+ * or nonsensical values are dropped; Chrome clamps a position on a monitor that
+ * has since been unplugged.
+ */
+async function rememberedBounds() {
+  const { windowCaptureBounds: b } = await chrome.storage.local.get('windowCaptureBounds');
+  if (!b || !(b.width >= 480) || !(b.height >= 360)) return null;
+  return { width: b.width, height: b.height, left: b.left, top: b.top };
+}
 
 /** Id of the open capture window, or null. Guards against opening a second one. */
 let _captureWindowId = null;
@@ -62,13 +82,13 @@ function focusExistingWindow() {
  * worker suspend between the click and the capture cannot lose it — the page
  * echoes it back with the finished image.
  */
-function openCaptureWindow(crop) {
+async function openCaptureWindow(crop) {
+  const bounds = await rememberedBounds();
   return new Promise((resolve) => {
     chrome.windows.create({
       url: chrome.runtime.getURL(`capture-window.html?crop=${crop ? 1 : 0}`),
       type: 'popup',
-      width: WINDOW_W,
-      height: WINDOW_H,
+      ...(bounds || { width: WINDOW_W, height: WINDOW_H }),
     }, (win) => {
       if (chrome.runtime.lastError || !win?.id) {
         resolve({ error: chrome.runtime.lastError?.message || 'Could not open the capture window' });
