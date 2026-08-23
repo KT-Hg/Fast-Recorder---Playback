@@ -27,6 +27,13 @@ function parsePickSpec(val) {
 }
 
 function makeRandomFn(type, length) {
+  // Must mirror resolveRandomVars() in bg/utils.js. The Variables modal offers a
+  // "datetime" type that used to fall through to the alphanumeric branch here, so
+  // an exported ${stamp} produced random junk instead of the run's timestamp.
+  if (type === 'datetime')
+    return "() => { const d = new Date(), p = n => String(n).padStart(2, '0'); "
+         + "return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) + '_' "
+         + "+ p(d.getHours()) + '-' + p(d.getMinutes()) + '-' + p(d.getSeconds()); }";
   if (type === 'alpha')
     return `() => Array.from({length:${length}},()=>'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random()*52)]).join('')`;
   if (type === 'numeric')
@@ -35,6 +42,10 @@ function makeRandomFn(type, length) {
 }
 
 export function previewRandom(type, length) {
+  if (type === 'datetime') {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  }
   const c = {
     alpha: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
     numeric: '0123456789',
@@ -44,12 +55,32 @@ export function previewRandom(type, length) {
   return Array.from({ length }, () => ch[Math.floor(Math.random() * ch.length)]).join('');
 }
 
+// Identifiers the generated bookmarklet declares for itself, plus the JS reserved
+// words. Variable names are free-form in the Variables modal, so one called
+// `sleep` would shadow a helper and one called `class` is a SyntaxError — those
+// get a `_v` suffix instead.
+const _RESERVED_JS = new Set([
+  'sleep', 'getEl', 'setInput', '_qsel', '_findChild', 'err', 'res', 'rej', 'obs',
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete',
+  'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if',
+  'import', 'in', 'instanceof', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw',
+  'true', 'try', 'typeof', 'var', 'void', 'while', 'with', 'let', 'static', 'yield', 'await',
+  'document', 'window', 'undefined', 'NaN', 'Infinity',
+]);
+
 /**
  * Sanitize a string into a valid JS identifier.
  * Prevents code injection when variable names from user input are embedded in generated code.
+ *
+ * Every site that emits *or references* a variable name has to go through this.
+ * The declaration used to be sanitized while valueToJS() passed `${mã đơn}`
+ * through verbatim — a SyntaxError that takes the whole bookmarklet down.
  */
 function _sanitizeVarName(name) {
-  return (name || 'var').replace(/[^a-zA-Z0-9_$]/g, '_').replace(/^\d/, '_');
+  const safe = String(name == null ? 'var' : name)
+    .replace(/[^a-zA-Z0-9_$]/g, '_')
+    .replace(/^\d/, '_') || 'var';
+  return _RESERVED_JS.has(safe) ? safe + '_v' : safe;
 }
 
 function getBestSel(action) {
@@ -71,10 +102,48 @@ function valueToJS(val) {
   if (/\$\{/.test(s)) {
     const escaped = s
       .replace(/\\/g, '\\\\')   // backslash first
-      .replace(/`/g, '\\`');    // backtick — ${varName} is kept to reference declared vars
+      .replace(/`/g, '\\`')     // backtick — ${varName} is kept to reference declared vars
+      // The reference must be sanitized exactly like the declaration: `${user-name}`
+      // otherwise reads as subtraction and `${mã đơn}` is a SyntaxError.
+      .replace(/\$\{([^}]+)\}/g, (_m, name) => '${' + _sanitizeVarName(name.trim()) + '}');
     return '`' + escaped + '`';
   }
   return JSON.stringify(s);
+}
+
+/**
+ * Substitute variables into a `script` action's source.
+ *
+ * A script action's code is emitted verbatim, so a `${name}` sitting inside a
+ * string literal — `console.log("${q}")` — is just text and never picked up the
+ * value, even though playback substitutes it via _applyVarsToCode() in bg/utils.js.
+ *
+ * Static values are known at export time and are inlined the same way playback
+ * escapes them. Random/pick/fallback/readdom values only exist at run time and a
+ * textual placeholder cannot stand in for them, so those are reported back to the
+ * caller: the generated code carries a comment pointing at the declared variable,
+ * which is in scope and can be referenced bare.
+ */
+function _scriptCodeWithVars(rawCode, ctx) {
+  const unresolved = [];
+  const code = String(rawCode).replace(/\$\{([^}]+)\}/g, (match, rawName) => {
+    const name = rawName.trim();
+    if (!(name in (ctx?.staticVars || {}))) {
+      if (!unresolved.includes(name)) unresolved.push(name);
+      return match;
+    }
+    // Same escaping as _applyVarsToCode() — keeps the value a value no matter
+    // which kind of string literal it landed in.
+    return String(ctx.staticVars[name])
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/'/g, "\\'")
+      .replace(/`/g, '\\`')
+      .replace(/\$\{/g, '\\${')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r');
+  });
+  return { code, unresolved };
 }
 
 function indentLines(lines, spaces) {
@@ -131,7 +200,7 @@ function condHeader(action, stepNum) {
 }
 
 // Generates JS lines for a single non-condition action
-function actionLines(action, stepNum, stepDelay, elTimeout) {
+function actionLines(action, stepNum, stepDelay, elTimeout, ctx) {
   const lbl = action.label ? ` — ${action.label}` : '';
   const delay = action.delay != null ? action.delay : stepDelay;
   const sel = getBestSel(action);
@@ -207,7 +276,9 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
     case 'navigate':
       out.push(`// Step ${stepNum}: navigate${lbl}`);
       out.push(`// ⚠ Page will reload — steps after this will not execute unless injected on next load`);
-      out.push(`window.location.href = ${valueToJS(action.url)};`);
+      // The action editor writes navigate targets to .url; imported/older scenarios
+      // sometimes carry .value instead — the Python export already accepted both.
+      out.push(`window.location.href = ${valueToJS(action.url || action.value)};`);
       out.push(`await sleep(1000);`);
       break;
 
@@ -218,18 +289,27 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       break;
     }
 
-    case 'script':
+    case 'script': {
       // Wrap in async IIFE so the user's code cannot leak variables or
       // 'return' statements into the outer bookmarklet closure, and so that
       // top-level 'await' works inside the script without syntax errors.
+      const { code, unresolved } = _scriptCodeWithVars(action.code || action.value || '', ctx);
       out.push(`// Step ${stepNum}: script${lbl}`);
+      if (unresolved.length) {
+        out.push(`// ⚠ Not substituted below: ${unresolved.map(n => '${' + n + '}').join(', ')}`);
+        out.push(`//   Only static variables can be inlined into script code. These are`);
+        out.push(`//   declared above as real JS variables — reference them bare, e.g.`);
+        out.push(`//   \`${_sanitizeVarName(unresolved[0])}\` instead of \`\${${unresolved[0]}}\`.`);
+        ctx.warnings.add(`Script step ${stepNum}: ${unresolved.map(n => '${' + n + '}').join(', ')} left as-is (only static variables inline into script code)`);
+      }
       out.push(`await (async () => {`);
       out.push(`  // [USER SCRIPT BEGIN]`);
-      for (const line of (action.code || action.value || '').split('\n')) out.push(`  ${line}`);
+      for (const line of code.split('\n')) out.push(`  ${line}`);
       out.push(`  // [USER SCRIPT END]`);
       out.push(`})();`);
       if (delay > 0) out.push(`await sleep(${delay});`);
       break;
+    }
 
     case 'readdom': {
       const varName = _sanitizeVarName((action.varName || 'domVar').replace(/^\$\{|\}$/g, ''));
@@ -251,7 +331,7 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
 
 // Recursively processes an action array, grouping condition blocks
 // Disabled actions are skipped inline so skipCount stays aligned with the original array.
-function processActions(actions, baseIdx, stepDelay, elTimeout) {
+function processActions(actions, baseIdx, stepDelay, elTimeout, ctx) {
   const out = [];
   let i = 0;
 
@@ -269,13 +349,13 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
       const skipCount = Math.max(1, action.skipCount || 1);
       out.push(...condHeader(action, stepNum));
       const body = actions.slice(i + 1, i + 1 + skipCount);
-      const bodyLines = processActions(body, baseIdx + i + 1, stepDelay, elTimeout);
+      const bodyLines = processActions(body, baseIdx + i + 1, stepDelay, elTimeout, ctx);
       out.push(...indentLines(bodyLines, '  '));
       out.push('}');
       out.push('');
       i += 1 + skipCount;
     } else {
-      out.push(...actionLines(action, stepNum, stepDelay, elTimeout));
+      out.push(...actionLines(action, stepNum, stepDelay, elTimeout, ctx));
       out.push('');
       i++;
     }
@@ -298,7 +378,8 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 export function generateBookmarklet(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 300, elTimeout = 5000 } = opts;
 
-  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, readdomVars = new Set();
+  const warnings = new Set();
+  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, writtenVars = new Set();
 
   for (const [k, v] of Object.entries(variables || {})) {
     const str  = _activeVal(v);
@@ -311,11 +392,39 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
 
   const enabled = (actions || []).filter(a => !a.disabled);
 
+  // Names a step assigns to. screenshot_tovar belongs here even though the step
+  // itself is skipped: without a declaration a later `${shot}` is a ReferenceError
+  // that takes down the whole run.
   for (const a of enabled) {
-    if (a.type === 'readdom' && a.varName) {
-      readdomVars.add(_sanitizeVarName(a.varName.replace(/^\$\{|\}$/g, '')));
+    if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) {
+      writtenVars.add(_sanitizeVarName(String(a.varName).replace(/^\$\{|\}$/g, '')));
     }
   }
+
+  // Two different variable names can sanitize to the same identifier
+  // (`mã đơn` and `m-a-b-n` both become `m____n`), which silently drops one.
+  const _byIdent = new Map();
+  for (const k of [...Object.keys(staticVars), ...Object.keys(randomSpecs), ...Object.keys(pickSpecs)]) {
+    const ident = _sanitizeVarName(k);
+    if (_byIdent.has(ident) && _byIdent.get(ident) !== k) {
+      warnings.add(`"${_byIdent.get(ident)}" and "${k}" both become the JS identifier \`${ident}\` — rename one`);
+    } else {
+      _byIdent.set(ident, k);
+    }
+    if (ident !== k) {
+      warnings.add(`"${k}" is not a valid JS identifier — exported as \`${ident}\``);
+    }
+  }
+
+  // Fallback variables only mean something inside a Child Condition; anywhere
+  // else the literal spec is what lands in the page, exactly as in playback.
+  for (const [k, v] of Object.entries(staticVars)) {
+    if (/^\{fallback:.+\}$/.test(v)) {
+      warnings.add(`"${k}" is a Fallback variable — resolved only inside Child Conditions, literal everywhere else`);
+    }
+  }
+
+  const ctx = { staticVars, warnings };
 
   let skipped = 0, supported = 0, hasNavigate = false;
   for (const a of enabled) {
@@ -406,24 +515,41 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   const hasVars = Object.keys(staticVars).length > 0
     || Object.keys(randomSpecs).length > 0
     || Object.keys(pickSpecs).length > 0
-    || readdomVars.size > 0;
+    || writtenVars.size > 0;
 
   if (hasVars) {
     out.push('');
     out.push('  // --- VARIABLES ---');
+    // A name a step writes to has to be `let`, and must not also be declared by
+    // the writtenVars pass below: `const result = "seed"` followed by
+    // `let result = ''` is a SyntaxError that kills the entire bookmarklet.
+    const declared = new Set();
+    const kw = (ident) => (writtenVars.has(ident) ? 'let' : 'const');
+
     for (const [k, v] of Object.entries(staticVars)) {
-      out.push(`  const ${_sanitizeVarName(k)} = ${JSON.stringify(v)};`);
+      const safe = _sanitizeVarName(k);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
+      out.push(`  ${kw(safe)} ${safe} = ${JSON.stringify(v)};`);
     }
     for (const k of Object.keys(randomSpecs)) {
       const safe = _sanitizeVarName(k);
-      out.push(`  const ${safe} = _gen_${safe}();`);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
+      out.push(`  ${kw(safe)} ${safe} = _gen_${safe}();`);
     }
     for (const [k, vals] of Object.entries(pickSpecs)) {
       const safe    = _sanitizeVarName(k);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
       const jsArray = '[' + vals.map(v => JSON.stringify(v)).join(', ') + ']';
-      out.push(`  const ${safe} = ${jsArray}[Math.floor(Math.random() * ${vals.length})];`);
+      out.push(`  ${kw(safe)} ${safe} = ${jsArray}[Math.floor(Math.random() * ${vals.length})];`);
     }
-    for (const k of readdomVars) {
+    // Only the written names nothing above already seeded — otherwise this would
+    // wipe the seed the Variables tab supplied.
+    for (const k of writtenVars) {
+      if (declared.has(k)) continue;
+      declared.add(k);
       out.push(`  let ${k} = '';`);
     }
   }
@@ -433,7 +559,7 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('  try {');
   out.push('');
 
-  for (const line of processActions(actions || [], 0, stepDelay, elTimeout)) {
+  for (const line of processActions(actions || [], 0, stepDelay, elTimeout, ctx)) {
     out.push(line === '' ? '' : '    ' + line);
   }
 
@@ -446,13 +572,31 @@ export function generateBookmarklet(scenarioName, actions, variables, opts = {})
   out.push('');
   out.push('})();');
 
+  // A `${name}` with nothing behind it is a ReferenceError at run time, and the
+  // generated code gives no clue where it came from — flag it while the scenario
+  // is still on screen.
+  const knownNames = new Set([
+    ...Object.keys(staticVars), ...Object.keys(randomSpecs), ...Object.keys(pickSpecs),
+  ]);
+  for (const a of enabled) {
+    if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) {
+      knownNames.add(String(a.varName).replace(/^\$\{|\}$/g, ''));
+    }
+  }
+  for (const name of getUsedVarNames(enabled)) {
+    if (!knownNames.has(name)) {
+      warnings.add(`\${${name}} is used by a step but not defined in the Variables tab`);
+    }
+  }
+
   return {
     code: out.join('\n'),
     stats: {
       total: enabled.length, supported, skipped, hasNavigate,
       staticVarCount: Object.keys(staticVars).length,
       randomVarCount: Object.keys(randomSpecs).length
-    }
+    },
+    warnings: [...warnings]
   };
 }
 
@@ -559,11 +703,19 @@ function _renderModal(scenarioName, result, variables) {
   const codeEl = document.querySelector('#exportBmCode code');
   if (codeEl) codeEl.textContent = result.code;
 
-  // Warning bar
+  // Warning bar — skipped steps plus anything the generator could not express
+  // faithfully (renamed identifiers, unresolved ${...}, script placeholders).
+  // These used to surface only as a runtime error in the page's console.
   const warning = document.getElementById('exportBmWarning');
   const skipMsg = document.getElementById('exportBmSkipMsg');
+  const msgs = [];
   if (result.stats.skipped > 0) {
-    skipMsg.textContent = `${result.stats.skipped} action(s) skipped (screenshot/switch — requires Extension API)`;
+    msgs.push(`${result.stats.skipped} action(s) skipped (screenshot/switch — requires Extension API)`);
+  }
+  msgs.push(...(result.warnings || []));
+  if (msgs.length) {
+    skipMsg.style.whiteSpace = 'pre-line';
+    skipMsg.textContent = msgs.join('\n');
     warning.style.display = '';
   } else {
     warning.style.display = 'none';
@@ -588,6 +740,9 @@ function _renderModal(scenarioName, result, variables) {
       const pick    = parsePickSpec(val);
       const isRand  = !!spec;
       const isPick  = !!pick;
+      // Fallback specs match neither parser and used to be listed as "Static"
+      // showing the raw {fallback:...} text, which reads like a broken value.
+      const fbMatch = val.match(/^\{fallback:(.+)\}$/);
       let icon, badgeLabel, badgeCls, preview;
       if (isRand) {
         icon = '🎲'; badgeLabel = 'Random'; badgeCls = 'rand';
@@ -595,6 +750,11 @@ function _renderModal(scenarioName, result, variables) {
       } else if (isPick) {
         icon = '⚄'; badgeLabel = `Pick (${pick.length})`; badgeCls = 'rand';
         preview = pick.join(' | ');
+        if (preview.length > 40) preview = preview.slice(0, 40) + '…';
+      } else if (fbMatch) {
+        const fbVals = fbMatch[1].split('|').map(s => s.trim()).filter(Boolean);
+        icon = '⛓'; badgeLabel = `Fallback (${fbVals.length})`; badgeCls = 'rand';
+        preview = fbVals.join(' → ');
         if (preview.length > 40) preview = preview.slice(0, 40) + '…';
       } else {
         icon = '🔤'; badgeLabel = 'Static'; badgeCls = 'static';

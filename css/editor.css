@@ -157,7 +157,7 @@ body {
 .ctx-tbtn:hover { background: var(--bg-tertiary); }
 
 /* === Viewport === */
-#viewport { flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:16px; scrollbar-width:thin; scrollbar-color:var(--bg-tertiary) transparent; }
+#viewport { flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;justify-content:safe center;padding:16px; scrollbar-width:thin; scrollbar-color:var(--bg-tertiary) transparent; }
 #viewport::-webkit-scrollbar { width:6px;height:6px; }
 #viewport::-webkit-scrollbar-track { background:transparent; }
 #viewport::-webkit-scrollbar-thumb { background:var(--bg-tertiary);border-radius:3px; }

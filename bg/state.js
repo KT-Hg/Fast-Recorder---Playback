@@ -48,7 +48,7 @@ export const state = {
     // which clears `active` and drops the partial row.
     stopAfterRow: false,
   },
-  segmentCapture: { active: false, tabId: null, dir: null },
+  segmentCapture: { active: false, tabId: null, dir: null, fromHotkey: false },
 };
 
 /* === CSV Playback State Persistence ===

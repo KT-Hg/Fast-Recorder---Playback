@@ -1026,7 +1026,11 @@
         Ask before saving
       </label>
       <input id="screenshotPrefix" placeholder="Filename prefix (e.g. screenshot)" style="margin-top: 8px;" />
-      <span class="helper-text">Format: {prefix}_{YYYY-MM-DD_HH-MM-SS}.png</span>
+      <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0; margin-top:6px;">
+        <input type="checkbox" id="screenshotTypeInName" style="width:auto; margin:0; cursor:pointer;" />
+        Include capture type in filename
+      </label>
+      <span class="helper-text" id="screenshotNameHint">Format: {prefix}_{YYYY-MM-DD_HH-MM-SS}.png</span>
 
       <div class="step-label step-label-divider-top">Countdown</div>
       <label style="display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer; padding:3px 0;">
@@ -1074,13 +1078,26 @@
       <button id="saveScreenshotSettings" class="success" style="margin-top: 8px;">Save Settings</button>
     </div>
 
-    <!-- Notifications card -->
+    <!-- Notifications card — one toggle per category in bg/utils.js (NOTIFY_KEY). -->
     <div class="card">
       <h3>Notifications</h3>
       <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
         <input type="checkbox" id="notifyOnComplete" style="width: auto; margin: 0; cursor: pointer;" />
-        Show notification when playback/sequence finishes
+        Run finished — playback, sequence, CSV
       </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
+        <input type="checkbox" id="notifyOnError" style="width: auto; margin: 0; cursor: pointer;" />
+        Errors &amp; warnings — failed actions, closed tab, storage full
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
+        <input type="checkbox" id="notifyOnCapture" style="width: auto; margin: 0; cursor: pointer;" />
+        Capture results — where a hotkey screenshot was saved
+      </label>
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; padding: 3px 0;">
+        <input type="checkbox" id="notifyOnSchedule" style="width: auto; margin: 0; cursor: pointer;" />
+        Scheduled runs starting on their own
+      </label>
+      <span class="helper-text">Once an update deadline has passed, the "update required" notice is always shown — it is the only thing explaining why an action did nothing. The reminder before the deadline follows "Errors &amp; warnings".</span>
     </div>
 
     <!-- Version / update card — status written by bg/update-check.js -->

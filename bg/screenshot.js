@@ -2,17 +2,52 @@
  * screenshot.js — Screenshot capture, CDP, watermark, image diff.
  * Exports: takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
  *          compareScreenshots, applyWatermark, downloadDataUrl, openCropUI,
- *          buildScreenshotFilename, buildDateFolder, uint8ToBase64, scriptingExec,
- *          cdpEval, captureTab, captureTabDouble
+ *          buildScreenshotFilename, typeTagEnabled, buildDateFolder, uint8ToBase64, scriptingExec,
+ *          cdpEval, captureTab, captureTabDouble, reportCaptureResult
  *
  * All three public capture functions go through _queueScreenshot(tabId, fn) so
  * concurrent requests on the same tab are serialized — preventing debugger-session
  * corruption when two captures race on the same tab.
  */
 
-import { tabMsg } from './utils.js';
+import { tabMsg, sendCaptureNotification } from './utils.js';
 import { isSessionOpen, markSessionClosed } from './cdp-session.js';
 import { ensureLockState, notifyLocked } from './update-check.js';
+
+/* ── Capture result reporting ───────────────────────────────────────────────────
+ * Every capture ends by broadcasting SCREENSHOT_RESULT, which the popup turns
+ * into a toast. That works for captures started from a popup button, because the
+ * popup is still open when they finish.
+ *
+ * It does nothing for a capture started from a hotkey: the popup is closed by
+ * definition, so the toast has no window to appear in. Alt+V, Alt+H and the
+ * segment hotkeys saved a file and reported absolutely nothing; a failure on any
+ * hotkey path was equally silent. Element capture (Alt+E) already notified —
+ * this makes the other hotkeys behave the same way.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Broadcast a capture result, and notify when the capture came from a hotkey.
+ *
+ * @param {{error?: string, filename?: string, cropping?: boolean}} result
+ * @param {Object}  [opts]
+ * @param {boolean} [opts.fromHotkey=false] — notify only when this is true
+ * @param {string}  [opts.label='Screenshot'] — notification title prefix
+ */
+export function reportCaptureResult(result, { fromHotkey = false, label = 'Screenshot' } = {}) {
+  chrome.runtime.sendMessage({ type: 'SCREENSHOT_RESULT', result }).catch(() => {});
+  if (!fromHotkey) return;
+  const r = result || {};
+  // The user dismissed the Save As dialog. They know what they did; announcing it
+  // as an outcome would be noise, and announcing it as a failure would be wrong.
+  if (r.cancelled) return;
+  // One id for the whole hotkey family: rapid-fire captures replace each other
+  // rather than stacking, and the last one is always the one still on screen.
+  if (r.error) sendCaptureNotification(`${label} failed`, r.error, 'hotkey_capture');
+  // `cropping` means the crop editor window just opened — that IS the feedback,
+  // and the real save happens later inside the editor.
+  else if (!r.cropping) sendCaptureNotification(`${label} saved`, r.filename || 'Saved', 'hotkey_capture');
+}
 
 /* ── Per-tab screenshot serialization queue ─────────────────────────────────────
  * Chrome's CDP debugger is attached/detached around every CDP capture. If two
@@ -215,21 +250,35 @@ export function buildDateFolder() {
 }
 
 /**
+ * Whether auto-generated names carry the capture-type tag ("_full", "_elem", ...).
+ *
+ * Defaults to on, so an install that has never opened Settings keeps the names it
+ * has always produced. Only an explicit `false` drops the tag — every capture mode
+ * then saves as plain `{prefix}_{timestamp}.png`. Same-second captures of different
+ * modes can then collide on a name; Chrome's downloader disambiguates with " (1)".
+ */
+export async function typeTagEnabled() {
+  const res = await chrome.storage.sync.get(['screenshotTypeInName']);
+  return res.screenshotTypeInName !== false;
+}
+
+/**
  * Resolve the final .png filename for a screenshot.
  * If `requestedName` is provided it is used as-is (`.png` appended if absent).
- * Otherwise a timestamped name is generated: `{prefix}_YYYY-MM-DD_HH-MM-SS.png`.
+ * Otherwise a timestamped name is generated: `{prefix}{typeTag}_YYYY-MM-DD_HH-MM-SS.png`.
  *
- * @param {string} prefix        - Fallback prefix (e.g. "screenshot", "screenshot_full").
+ * @param {string} prefix        - Fallback prefix (e.g. "screenshot").
  * @param {string|null} requestedName - Caller-supplied override, or null for auto-name.
+ * @param {string} typeTag       - Capture-type tag (e.g. "_full", "_elem"); pass "" to omit.
  * @returns {string} Resolved filename.
  */
-export function buildScreenshotFilename(prefix, requestedName) {
+export function buildScreenshotFilename(prefix, requestedName, typeTag = '') {
   if (requestedName) return requestedName.endsWith('.png') ? requestedName : `${requestedName}.png`;
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const d = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
   const t = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-  return `${prefix}_${d}_${t}.png`;
+  return `${prefix}${typeTag}_${d}_${t}.png`;
 }
 
 /* ── Tab Capture ────────────────────────────────────────────────────────────── */
@@ -340,11 +389,14 @@ export function restorePageDom(tabId) {
 
 /**
  * Inject and run `fn` in the tab's main-frame context via the Scripting API.
- * Errors are swallowed — callers that need the result should use `tabMsg` instead.
+ * `fn` is serialised, so it cannot close over anything — pass values it needs via
+ * `args`. Errors are swallowed — callers that need the result should use `tabMsg`.
  */
-export function scriptingExec(tabId, fn) {
+export function scriptingExec(tabId, fn, args) {
   return new Promise((resolve) => {
-    chrome.scripting.executeScript({ target: { tabId }, func: fn }, () => resolve());
+    const opts = { target: { tabId }, func: fn };
+    if (args) opts.args = args;
+    chrome.scripting.executeScript(opts, () => { void chrome.runtime.lastError; resolve(); });
   });
 }
 
@@ -374,9 +426,10 @@ const CDP_HIDE_SCROLLBAR = `(function(){
 
 const CDP_SHOW_SCROLLBAR = `document.getElementById('__ext_no_scroll')?.remove()`;
 
-// Restores fixed/sticky elements hidden by the element-capture path (it tags them
-// `data-fxhide`). The full-page tile-stitch path no longer hides anything — see the
-// tiling loop for why fixed/sticky render correctly there on their own.
+// Restores fixed/sticky elements tagged `data-fxhide`. Neither capture path hides
+// anything any more — both shift the page with a transform instead, which renders
+// fixed/sticky correctly on its own (see either tiling loop). Kept as a safety net so
+// a page left tagged by an older build or an interrupted run still recovers.
 const CDP_SHOW_FIXED = `document.querySelectorAll('[data-fxhide]').forEach(el=>{
   el.style.visibility=el.getAttribute('data-fxhide');
   el.removeAttribute('data-fxhide');
@@ -403,15 +456,23 @@ const CDP_SHOW_EXT_OVERLAYS = `document.querySelectorAll('[data-exthide]').forEa
 /* ── Download & Crop ────────────────────────────────────────────────────────── */
 
 /**
- * Trigger a browser download from a data URL.
- * Returns the download ID on success, or null if the download API reported an
- * error (e.g. invalid filename, disk full).
+ * Download a data URL, telling a cancelled Save As dialog apart from a real failure.
+ *
+ * Resolves `{ id }` on success, `{ cancelled: true }` when the user dismissed the
+ * dialog, or `{ error }` otherwise. It used to collapse all three into `null`,
+ * which was fine while an in-popup toast was the only consumer of the outcome.
+ * Hotkey captures now report through a notification, and telling someone their
+ * capture "failed" because they closed the Save dialog themselves is worse than
+ * saying nothing — `cancelled` is a result shape the popup already understands.
+ *
+ * @returns {Promise<{id?: number, cancelled?: boolean, error?: string}>}
  */
 export function downloadDataUrl(dataUrl, filename, saveAs) {
   return new Promise((resolve) => {
     chrome.downloads.download({ url: dataUrl, filename, saveAs }, (id) => {
-      if (chrome.runtime.lastError) resolve(null);
-      else resolve(id);
+      const err = chrome.runtime.lastError?.message || '';
+      if (id != null) { resolve({ id }); return; }
+      resolve(/cancel/i.test(err) ? { cancelled: true } : { error: err || 'Download failed' });
     });
   });
 }
@@ -508,8 +569,9 @@ async function _takeVisibleScreenshot(tabId, saveMode, prefix, requestedFilename
   }
   if (!skipDownload) {
     const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
-    const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
-    if (id == null) return { error: 'Download failed' };
+    const dl = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
+    if (dl.cancelled) return { cancelled: true };
+    if (dl.error) return { error: dl.error };
   }
   const r = { success: true, filename };
   if (returnBase64) r.base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
@@ -547,8 +609,8 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
   const effectiveDir = segmentClip
     ? (segmentDir === 'horizontal' ? 'segH' : segmentDir === 'elem' ? 'elem' : 'segV')
     : scrollDir;
-  const suffix   = requestedFilename ? '' : suffixMap[effectiveDir] || '_full';
-  const filename = buildScreenshotFilename(prefix + suffix, requestedFilename);
+  const suffix   = (requestedFilename || !(await typeTagEnabled())) ? '' : suffixMap[effectiveDir] || '_full';
+  const filename = buildScreenshotFilename(prefix, requestedFilename, suffix);
 
   // Clear any stale cancel request from a prior capture, then expose a checker the
   // capture loop calls at safe points to abort cooperatively on ESC.
@@ -907,8 +969,9 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
     const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     if (crop) return openCropUI(dataUrl, downloadPath, saveMode === 'ask');
     if (!skipDownload) {
-      const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
-      if (id == null) return { error: 'Download failed' };
+      const dl = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
+      if (dl.cancelled) return { cancelled: true };
+      if (dl.error) return { error: dl.error };
     }
     const r = { success: true, filename };
     if (partialCapture) r.partial = true;
@@ -946,9 +1009,10 @@ async function _takeFullPageScreenshot(tabId, saveMode, prefix, requestedFilenam
 /* ── Element Screenshot ─────────────────────────────────────────────────────── */
 
 /**
- * Capture a specific DOM element, scrolling in strips if it is taller than the
- * viewport. Uses CDP for precise clip coordinates so the result excludes
- * surrounding page content.
+ * Capture a specific DOM element, tiling it if it is larger than the viewport.
+ * Uses CDP for precise clip coordinates so the result excludes surrounding page
+ * content, and shifts the page with a CSS transform rather than scrolling — see
+ * the tiling loop for why.
  *
  * @param {number}      tabId         - Target tab.
  * @param {string}      selector      - CSS selector fallback.
@@ -965,14 +1029,14 @@ export function takeElementScreenshot(tabId, selector, saveMode, prefix, crop = 
 }
 
 async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, returnBase64, skipDownload, selectors) {
-  const filename = buildScreenshotFilename(prefix + '_elem', null);
+  const filename = buildScreenshotFilename(prefix, null, (await typeTagEnabled()) ? '_elem' : '');
 
   const rect0 = await tabMsg(tabId, { type: 'GET_ELEMENT_RECT', selector, selectors });
   if (!rect0 || rect0.error) return { error: rect0?.error || 'Could not get element rect' };
 
   const dims = await tabMsg(tabId, { type: 'GET_PAGE_DIMENSIONS' });
   if (!dims || dims.failed) return { error: 'Could not get page dimensions' };
-  const { viewportHeight, scrollX: origScrollX = 0, scrollY: origScrollY = 0 } = dims;
+  const { viewportWidth, viewportHeight, scrollX: origScrollX = 0, scrollY: origScrollY = 0 } = dims;
 
   // Non-1 browser zoom scales the viewport layout, which shifts getBoundingClientRect
   // values and makes clip coordinates mismatch the actual pixel positions in the
@@ -1002,29 +1066,43 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
       const sx  = document.documentElement.scrollLeft || document.body.scrollLeft || 0;
       const sy  = document.documentElement.scrollTop  || document.body.scrollTop  || 0;
       return { x: r.left + sx, y: r.top + sy, width: r.width, height: r.height,
-               dpr: window.devicePixelRatio || 1, vpH: window.innerHeight };
+               dpr: window.devicePixelRatio || 1,
+               vpW: window.innerWidth, vpH: window.innerHeight };
     })()`;
     chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
       expression: expr, returnByValue: true,
     }, (res) => resolve(res?.result?.value || null));
   });
 
-  // Process strips sequentially — release each GPU texture immediately after drawing
-  // to prevent OOM on tall elements that need many strips.
-  const stitchStrips = async (strips, totalWidth, totalHeight) => {
-    if (!strips.length) return null;
-    const firstBlob = await fetch(strips[0].dataUrl).then(r => r.blob());
-    const firstBmp  = await createImageBitmap(firstBlob);
-    const physDpr   = firstBmp.width / totalWidth;
-    const canvas    = new OffscreenCanvas(Math.round(totalWidth * physDpr), Math.round(totalHeight * physDpr));
-    const ctx       = canvas.getContext('2d');
-    ctx.drawImage(firstBmp, 0, 0, firstBmp.width, firstBmp.height,
-      0, Math.round(strips[0].dy * physDpr), firstBmp.width, firstBmp.height);
-    firstBmp.close();
-    for (let i = 1; i < strips.length; i++) {
-      const bmp = await createImageBitmap(await fetch(strips[i].dataUrl).then(r => r.blob()));
-      ctx.drawImage(bmp, 0, 0, bmp.width, bmp.height,
-        0, Math.round(strips[i].dy * physDpr), bmp.width, bmp.height);
+  // Process tiles sequentially — release each GPU texture immediately after drawing
+  // to prevent OOM on large elements that need many tiles.
+  const stitchTiles = async (tiles, totalWidth, totalHeight) => {
+    if (!tiles.length) return null;
+    // Derive the real device-pixel scale from an actual captured tile rather than
+    // trusting window.devicePixelRatio: without setDeviceMetricsOverride the CDP
+    // screenshot renders at the monitor's native scale, which on a browser-zoomed page
+    // differs from devicePixelRatio (= display scale × browser zoom). Measuring the
+    // captured pixels keeps canvas and tiles in lockstep at any zoom. Measured against
+    // the tile's own width, not the element width, since a tile may be a partial column.
+    const firstBmp = await createImageBitmap(await fetch(tiles[0].dataUrl).then(r => r.blob()));
+    const physDpr  = tiles[0].tileW > 0 ? firstBmp.width / tiles[0].tileW : 1;
+    const canvas   = new OffscreenCanvas(Math.round(totalWidth * physDpr), Math.round(totalHeight * physDpr));
+    const ctx      = canvas.getContext('2d');
+
+    // Place each tile by accumulating the bitmaps' own pixel sizes rather than by
+    // scaling its CSS offset. Scaling rounds every seam on its own, so a fractional
+    // device-pixel ratio (a 642 px viewport at dpr 1.25 lands on 802.5) left a
+    // transparent hair-line between rows. `tiles` arrives row-major, so a change in
+    // `dy` means a new row starts.
+    let destX = 0, destY = 0, rowH = 0, curRow = tiles[0].dy;
+    for (let i = 0; i < tiles.length; i++) {
+      const bmp = i === 0
+        ? firstBmp
+        : await createImageBitmap(await fetch(tiles[i].dataUrl).then(r => r.blob()));
+      if (tiles[i].dy !== curRow) { destY += rowH; rowH = 0; destX = 0; curRow = tiles[i].dy; }
+      ctx.drawImage(bmp, destX, destY);
+      destX += bmp.width;
+      if (bmp.height > rowH) rowH = bmp.height;
       bmp.close();
     }
     const blob = await canvas.convertToBlob({ type: 'image/png' });
@@ -1063,62 +1141,95 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     await cdpEval(tabId, CDP_HIDE_EXT_OVERLAYS);
     await cdpRaf();
 
-    const rect = await cdpGetRect(selector, selectors) || rect0;
-    const effectiveVpH = rect.vpH || viewportHeight;
+    const probe = await cdpGetRect(selector, selectors) || rect0;
 
-    const scrollToY = Math.max(0, rect.y - Math.max(0, (effectiveVpH - rect.height) / 2));
-    await cdpEval(tabId, `window.scrollTo(${rect.x}, ${scrollToY})`);
+    // Scroll the element into view once before capturing. The tiling below never
+    // scrolls, so without this pass an element sitting below the fold would be captured
+    // before its IntersectionObserver-driven lazy content (images, virtualised rows) had
+    // any reason to load — the old strip loop got that for free by scrolling to it.
+    const warmVpH = probe.vpH || viewportHeight;
+    const warmY   = Math.max(0, probe.y - Math.max(0, (warmVpH - probe.height) / 2));
+    await cdpEval(tabId, `window.scrollTo(${probe.x}, ${warmY})`);
     await cdpRaf();
     await new Promise(r => setTimeout(r, 150));
 
-    // Hide fixed/sticky elements that fall outside the capture rect (capped at 3 000).
-    const hideFixedOutside = `(function(rx,ry,rw,rh){
-      const els=document.querySelectorAll('*');
-      const limit=Math.min(els.length,3000);
-      for(let i=0;i<limit;i++){
-        const el=els[i];
-        const p=getComputedStyle(el).position;
-        if((p==='fixed'||p==='sticky')&&!el.hasAttribute('data-fxhide')){
-          const b=el.getBoundingClientRect();
-          const sx=document.documentElement.scrollLeft||document.body.scrollLeft||0;
-          const sy=document.documentElement.scrollTop||document.body.scrollTop||0;
-          const ex=b.left+sx,ey=b.top+sy;
-          const overlaps=ex<rx+rw&&ex+b.width>rx&&ey<ry+rh&&ey+b.height>ry;
-          if(!overlaps){el.setAttribute('data-fxhide',el.style.visibility);el.style.visibility='hidden';}
-        }
-      }
-    })(${rect.x},${rect.y},${rect.width},${rect.height})`;
-    await cdpEval(tabId, hideFixedOutside);
+    // Park the page at 0,0 with no transform, then re-measure. Measuring here rather
+    // than above is what makes the rect trustworthy: cdpGetRect converts to page
+    // coordinates as `boundingClientRect + scrollTop`, which is only correct for a
+    // fixed/sticky target when the scroll offset is 0 — at any other offset a fixed
+    // element's rect would be reported that many pixels too low.
+    await cdpEval(tabId, `document.documentElement.style.transform='';window.scrollTo(0,0)`);
     await cdpRaf();
+    await new Promise(r => setTimeout(r, 150));
 
-    const strips  = [];
-    let remaining = rect.height;
-    let offsetY   = 0;
+    const rect = await cdpGetRect(selector, selectors) || probe;
 
-    while (remaining > 0) {
-      const chunkH = Math.min(remaining, effectiveVpH);
-      const clipX  = rect.x, clipY = rect.y + offsetY;
-      await cdpEval(tabId, `window.scrollTo(${clipX}, ${clipY})`);
-      await cdpRaf();
-      await new Promise(r => setTimeout(r, 100));
-
-      const cap = await new Promise((resolve) => {
-        chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', {
-          format: 'png', captureBeyondViewport: true,
-          clip: { x: clipX, y: clipY, width: rect.width, height: chunkH, scale: 1 },
-        }, (res) => resolve(res));
+    // Effective capture viewport, measured AFTER attach. cssVisualViewport is the true
+    // visible box — a tile clip that exceeds it renders as a blank band, because the
+    // tiling below uses captureBeyondViewport:false (see the loop). Falls back to the
+    // page's own innerWidth/innerHeight if the command is unavailable.
+    let vpW = rect.vpW || viewportWidth, vpH = rect.vpH || viewportHeight;
+    try {
+      const lm = await new Promise((resolve, reject) => {
+        chrome.debugger.sendCommand({ tabId }, 'Page.getLayoutMetrics', {}, (res) => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve(res);
+        });
       });
+      const vv = lm?.cssVisualViewport || lm?.visualViewport;
+      if (vv && vv.clientWidth > 0 && vv.clientHeight > 0) {
+        vpW = Math.floor(vv.clientWidth);
+        vpH = Math.floor(vv.clientHeight);
+      }
+    } catch (_) { /* keep the page-reported viewport */ }
 
-      if (cap?.data) strips.push({ dataUrl: `data:image/png;base64,${cap.data}`, dy: offsetY, clipH: chunkH });
-      offsetY   += chunkH;
-      remaining -= chunkH;
+    // Tile the element by shifting `documentElement` with a CSS transform instead of
+    // scrolling it into view.
+    //
+    // Scrolling re-rendered every position:fixed element at the top of the viewport for
+    // each strip, baking a duplicate of the site's fixed header into every seam — and it
+    // clamps at maxScrollY, so the last strip's scroll position silently stopped matching
+    // its clip. A transform on documentElement makes it the containing block for its
+    // fixed descendants, so a fixed header translates with the page and renders exactly
+    // once, at its real position; sticky elements never enter their stuck state at
+    // scroll 0, so they likewise render once, in flow. This is the same technique the
+    // full-page tile path uses — hiding fixed/sticky is no longer needed here either.
+    //
+    // captureBeyondViewport:false means a clip may never exceed the visible viewport,
+    // so elements wider or taller than it are tiled on both axes.
+    const chunkW = Math.max(1, Math.min(vpW, rect.width));
+    const chunkH = Math.max(1, Math.min(vpH, rect.height));
+    const tiles  = [];
+
+    // The 0.5 slack stops a fractional element size from emitting a final sub-pixel
+    // tile, which CDP answers with an empty or 1-px image.
+    for (let rowY = 0; rowY < rect.height - 0.5; rowY += chunkH) {
+      const tileH = Math.min(chunkH, rect.height - rowY);
+      for (let colX = 0; colX < rect.width - 0.5; colX += chunkW) {
+        const tileW = Math.min(chunkW, rect.width - colX);
+        await cdpEval(tabId, `document.documentElement.style.transform='translate(${-(rect.x + colX)}px,${-(rect.y + rowY)}px)'`);
+        await cdpRaf();
+        await new Promise(r => setTimeout(r, 30));
+
+        const cap = await new Promise((resolve) => {
+          chrome.debugger.sendCommand({ tabId }, 'Page.captureScreenshot', {
+            format: 'png', captureBeyondViewport: false,
+            clip: { x: 0, y: 0, width: tileW, height: tileH, scale: 1 },
+          }, (res) => resolve(res));
+        });
+
+        if (cap?.data) tiles.push({ dataUrl: `data:image/png;base64,${cap.data}`, dx: colX, dy: rowY, tileW, tileH });
+      }
     }
 
+    await cdpEval(tabId, `document.documentElement.style.transform=''`);
     await cdpEval(tabId, `window.scrollTo(${origScrollX}, ${origScrollY})`);
+    // Nothing tags `data-fxhide` any more; kept so a page left mid-capture by an older
+    // build (or an interrupted run) still gets its fixed/sticky elements back.
     await cdpEval(tabId, CDP_SHOW_FIXED);
     await cdpEval(tabId, CDP_SHOW_EXT_OVERLAYS);
 
-    let dataUrl = await stitchStrips(strips, rect.width, rect.height);
+    let dataUrl = await stitchTiles(tiles, rect.width, rect.height);
 
     await cdpEval(tabId, CDP_SHOW_SCROLLBAR);
     await new Promise((r) => chrome.debugger.detach({ tabId }, r));
@@ -1128,7 +1239,7 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
       await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r));
     }
 
-    // No strips means CDP returned nothing for every slice — usually an element
+    // No tiles means CDP returned nothing for every slice — usually an element
     // that collapsed to zero height once it was scrolled into view. Reported here
     // rather than carried forward: a null dataUrl used to surface as the very
     // misleading "Download failed", or open the crop editor on a blank image.
@@ -1140,8 +1251,9 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
     if (crop) return openCropUI(dataUrl, downloadPath, saveMode === 'ask');
     if (!skipDownload) {
-      const id = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
-      if (id == null) return { error: 'Download failed' };
+      const dl = await downloadDataUrl(dataUrl, downloadPath, saveMode === 'ask');
+      if (dl.cancelled) return { cancelled: true };
+      if (dl.error) return { error: dl.error };
     }
     const r = { success: true, filename };
     if (returnBase64) r.base64 = dataUrl.replace(/^data:image\/[^;]+;base64,/, '');
@@ -1153,6 +1265,9 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
     await new Promise((r) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; r(); }));
     markSessionClosed(tabId);
     await restorePageDom(tabId);
+    // restorePageDom clears the tiling transform but not the scroll position, which the
+    // tiling loop parks at 0,0 — put the user back where they were.
+    await scriptingExec(tabId, (x, y) => window.scrollTo(x, y), [origScrollX, origScrollY]);
     if (Math.abs(origZoom - 1) > 0.01) {
       await new Promise(r => chrome.tabs.setZoom(tabId, origZoom, r)).catch(() => {});
     }
@@ -1192,7 +1307,7 @@ function handleScreenshotRequest(request, sender, sendResponse) {
       takeElementScreenshot(tabId, request.selector, saveMode, prefix, !!request.crop, false, false, request.selectors)
         .then((result) => {
           sendResponse(result);
-          chrome.runtime.sendMessage({ type: 'SCREENSHOT_RESULT', result }).catch(() => {});
+          reportCaptureResult(result, { fromHotkey: !!request.fromHotkey, label: 'Element screenshot' });
         }).catch(e => sendResponse({ error: e.message }));
     });
     return;
@@ -1207,6 +1322,13 @@ function handleScreenshotRequest(request, sender, sendResponse) {
       TAKE_SCREENSHOT_SCROLL_V: 'vertical',
       TAKE_SCREENSHOT_SCROLL_H: 'horizontal',
     };
+    // Named per capture kind so a hotkey notification says which shortcut fired.
+    const LABELS = {
+      TAKE_SCREENSHOT:          'Screenshot',
+      TAKE_SCREENSHOT_FULL:     'Full-page screenshot',
+      TAKE_SCREENSHOT_SCROLL_V: 'Vertical scroll screenshot',
+      TAKE_SCREENSHOT_SCROLL_H: 'Horizontal scroll screenshot',
+    };
     const isFull = FULL_TYPES.includes(request.type);
     // Tell the page a cancellable capture is running so ESC can abort it. Toggled
     // off when the task settles — done at this single choke point so every exit
@@ -1217,7 +1339,7 @@ function handleScreenshotRequest(request, sender, sendResponse) {
       : takeVisibleScreenshot(tabId, saveMode, prefix, request.filename, crop);
     task.then((result) => {
       sendResponse(result);
-      chrome.runtime.sendMessage({ type: 'SCREENSHOT_RESULT', result }).catch(() => {});
+      reportCaptureResult(result, { fromHotkey: !!request.fromHotkey, label: LABELS[request.type] || 'Screenshot' });
     }).catch(e => sendResponse({ error: e.message }))
       .finally(() => { if (isFull) tabMsg(tabId, { type: 'FULL_CAPTURE_STATE', active: false }).catch(() => {}); });
   });

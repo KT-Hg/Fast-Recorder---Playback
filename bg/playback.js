@@ -103,14 +103,24 @@ export function refuseRecordingIfPlaying() {
   return true;
 }
 
+/** " — n action(s) failed", or nothing at all for a clean run. */
+function _failSuffix(failedActions) {
+  const n = failedActions?.length || 0;
+  return n ? ` — ${n} action${n === 1 ? '' : 's'} failed` : '';
+}
+
 function _notifyActionFailed(index, action, reason) {
   const r = reason || 'element not found';
   chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index, action, reason: r }).catch(() => {});
   if (!state.csvPlayback.active) {
     const label = action?.label || action?.type || '';
+    // Stable id: playback continues past a failed action, so without one a run
+    // with many failures buries the notification centre under a separate entry
+    // per action. Re-using the id keeps a single, always-current "latest failure".
     sendAlertNotification(
       `⚠ Action ${index + 1} Failed`,
       label ? `${label}: ${r}` : r,
+      'action_failed',
     );
   }
 }
@@ -364,13 +374,22 @@ export async function playActionsOnTab(
               state.playback.totalActions  = targetScenario.actions.length;
               chrome.runtime.sendMessage({ type: 'SWITCH_SCENARIO', scenarioName: switchedName, caseLabel }).catch(() => {});
               if (!state.csvPlayback.active) {
-                sendAlertNotification('🔀 Scenario Switched', `[${caseLabel}] → "${switchedName}"`);
+                // Same reasoning as action_failed: a scenario can switch many times
+                // in one run, and only the most recent hop is worth showing.
+                sendAlertNotification('🔀 Scenario Switched', `[${caseLabel}] → "${switchedName}"`, 'scenario_switched');
               }
               // Pass a copy of vars so the nested scenario cannot mutate the parent's
               // variable map; merge returned vars back after completion.
+              //
+              // failedActions, by contrast, is shared with the nested run rather than
+              // dropped: a failure is a failure whichever scenario it happened in.
+              // Passing null here meant a switch branch could fail every one of its
+              // actions and still be reported as a clean run — a CSV row with only
+              // nested failures counted as passed, and its exported `failures` list
+              // came back empty.
               const nestedVars = await playActionsOnTab(
                 tabId, targetScenario.actions, { ...resolvedVars },
-                screenshotsResult, forceAutoSave, skipDownload, 0, null, _depth + 1,
+                screenshotsResult, forceAutoSave, skipDownload, 0, failedActions, _depth + 1,
               );
               Object.assign(resolvedVars, nestedVars);
             } else {
@@ -502,15 +521,23 @@ export async function startPlaybackFromCheckpoint(scenarioId, fromIndex, tabId) 
   updateBadge();
   chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   await _startKeepalive();
+  // Collected so the completion notification can say whether "finished" means
+  // "finished cleanly". Sequence and CSV runs already reported their failure
+  // counts; single and resumed runs claimed success no matter how many actions
+  // had failed along the way — playback does not stop at the first one.
+  const failedActions = [];
   try {
-    await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex);
+    await playActionsOnTab(tabId, actions, null, null, false, false, fromIndex, failedActions);
   } finally {
     await _stopKeepalive();
     chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
-    await sendCompletionNotification('Playback complete', `"${scenario.name}" resumed & finished`);
+    await sendCompletionNotification(
+      'Playback complete',
+      `"${scenario.name}" resumed & finished${_failSuffix(failedActions)}`,
+    );
   }
 }
 
@@ -541,6 +568,8 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
   chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
   await _startKeepalive();
 
+  // Accumulates across every loop iteration, so a 10-loop run reports the total.
+  const failedActions = [];
   try {
     // Pass resolved vars from one loop to the next so readdom variables
     // accumulate across loop iterations.
@@ -550,7 +579,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
       state.playback.loopCurrent = loop + 1;
       state.playback.actionIndex = 0;
       updateBadge();
-      loopVars = await playActionsOnTab(tabId, actions, loopVars);
+      loopVars = await playActionsOnTab(tabId, actions, loopVars, null, false, false, 0, failedActions);
       if (loop < loops - 1 && loopDelay > 0) await new Promise(r => setTimeout(r, loopDelay));
     }
   } finally {
@@ -559,7 +588,10 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
     state.playback.active = false;
     updateBadge();
     chrome.storage.local.remove('playbackCheckpoint');
-    await sendCompletionNotification('Playback complete', `"${scenario.name}" finished${loops > 1 ? ` (${loops} loops)` : ''}`);
+    await sendCompletionNotification(
+      'Playback complete',
+      `"${scenario.name}" finished${loops > 1 ? ` (${loops} loops)` : ''}${_failSuffix(failedActions)}`,
+    );
   }
 }
 

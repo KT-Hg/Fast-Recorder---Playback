@@ -1,3 +1,30 @@
+import { sendAlertNotification } from './utils.js';
+
+/* === Storage health notifications ═══════════════════════════════════════════
+ * A failed write means the scenario the user just recorded was NOT saved, and a
+ * near-full quota means the next one probably won't be either. Both used to be
+ * reported only as a popup toast — which nobody sees, because a save is normally
+ * the last thing done before closing the popup.
+ *
+ * Rate-limited per kind rather than per call: setScenarios() runs on every edit,
+ * and a user at 90 % capacity would otherwise be notified on every keystroke-level
+ * save. The fixed notification ids mean a repeat updates the existing entry.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+const STORAGE_NOTICE_COOLDOWN_MS = 10 * 60 * 1000;
+const _lastStorageNotice = { warn: 0, error: 0 };
+
+function _notifyStorage(kind, title, message) {
+  const now = Date.now();
+  if (now - _lastStorageNotice[kind] < STORAGE_NOTICE_COOLDOWN_MS) return;
+  _lastStorageNotice[kind] = now;
+  sendAlertNotification(title, message, `storage_${kind}`);
+}
+
+function _mb(bytes) {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
 /* === Scenarios === */
 
 export function getScenarios() {
@@ -10,8 +37,10 @@ export function setScenarios(scenarios) {
   return new Promise((resolve) => {
     chrome.storage.local.set({ scenarios }, () => {
       if (chrome.runtime.lastError) {
-        console.error('[STORAGE] setScenarios failed:', chrome.runtime.lastError.message);
-        chrome.runtime.sendMessage({ type: 'STORAGE_ERROR', msg: chrome.runtime.lastError.message }).catch(() => {});
+        const err = chrome.runtime.lastError.message;
+        console.error('[STORAGE] setScenarios failed:', err);
+        chrome.runtime.sendMessage({ type: 'STORAGE_ERROR', msg: err }).catch(() => {});
+        _notifyStorage('error', '⚠ Save failed', `Your scenarios were not saved: ${err}`);
       } else {
         // Warn at 85 % capacity — below the hard limit but early enough to act.
         // chrome.storage.local quota is 5 MB by default; QUOTA_BYTES is not
@@ -20,6 +49,12 @@ export function setScenarios(scenarios) {
           const limit = chrome.storage.local.QUOTA_BYTES || 5242880;
           if (bytes > limit * 0.85) {
             chrome.runtime.sendMessage({ type: 'STORAGE_WARNING', bytes, limit }).catch(() => {});
+            _notifyStorage(
+              'warn',
+              '⚠ Storage almost full',
+              `${_mb(bytes)} of ${_mb(limit)} used (${Math.round(bytes / limit * 100)}%). ` +
+              'Export and delete old scenarios before saves start failing.',
+            );
           }
         });
       }

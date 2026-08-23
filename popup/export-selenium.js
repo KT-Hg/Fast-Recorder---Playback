@@ -23,6 +23,10 @@ function parsePickSpec(val) {
 }
 
 function previewRandom(type, length) {
+  if (type === 'datetime') {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  }
   const c = {
     alpha: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',
     numeric: '0123456789',
@@ -86,21 +90,112 @@ function selToPy(selInfo) {
 
 // Converts a value that may contain ${varName} to a Python string/f-string.
 // Sanitizes variable names to valid Python identifiers (${var-name} → {var_name}).
+//
+// Escaping order matters and the braces are the subtle part: in an f-string a
+// literal { or } has to be doubled, so a value like `{"id":1} for ${host}` used
+// to emit `f"{\"id\":1} for {host}"` — Python reads `{\"id\":1}` as a replacement
+// field and raises SyntaxError (a backslash inside one is illegal before 3.12).
+// Braces are doubled first, then the placeholders are written in, so the names we
+// insert are never themselves doubled.
 function valueToPy(val) {
   if (val == null) return '""';
   const s = String(val);
+  const escapeText = (t) => t
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+
   if (/\$\{/.test(s)) {
     const inner = s
-      .replace(/\$\{([^}]+)\}/g, (_, name) => `{${name.replace(/[^a-zA-Z0-9_]/g, '_')}}`)
-      .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"');
+      .split(/(\$\{[^}]+\})/g)
+      .map(part => {
+        const m = part.match(/^\$\{([^}]+)\}$/);
+        // A placeholder becomes a replacement field; everything else is literal
+        // text and gets its braces doubled so Python keeps them as characters.
+        return m ? `{${safeVarName(m[1])}}` : escapeText(part).replace(/([{}])/g, '$1$1');
+      })
+      .join('');
     return `f"${inner}"`;
   }
   return JSON.stringify(s);
 }
 
+// Names the generated script binds for itself, plus the Python keywords. A
+// variable called `driver` or `class` would otherwise overwrite the WebDriver or
+// fail to parse, so those get a `_v` suffix.
+const _RESERVED_PY = new Set([
+  'driver', 'time', 'random', 'string', 'datetime', 'By', 'EC', 'WebDriverWait',
+  'Select', 'ActionChains', 'NoSuchElementException', 'webdriver', 'e', 'print',
+  'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue', 'def', 'del',
+  'elif', 'else', 'except', 'False', 'finally', 'for', 'from', 'global', 'if', 'import',
+  'in', 'is', 'lambda', 'None', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return',
+  'True', 'try', 'while', 'with', 'yield',
+]);
+
+// Python identifiers cannot start with a digit — a variable named `2fa` used to
+// emit `2fa = "999"`, a SyntaxError that takes the whole script down.
 function safeVarName(name) {
-  return (name || 'var').replace(/^\$\{|\}$/g, '').replace(/[^a-zA-Z0-9_]/g, '_');
+  const safe = String(name == null ? 'var' : name)
+    .replace(/^\$\{|\}$/g, '')
+    .replace(/[^a-zA-Z0-9_]/g, '_')
+    .replace(/^\d/, '_') || 'var';
+  return _RESERVED_PY.has(safe) ? safe + '_v' : safe;
+}
+
+// True when a `script` action's source references a variable, which decides
+// whether the generated file needs the _js() escaping helper.
+function scriptUsesVars(action) {
+  return /\$\{[^}]+\}/.test(String(action.code || action.value || ''));
+}
+
+/**
+ * Emits the driver.execute_script(...) call for a `script` action.
+ *
+ * The source used to be passed through verbatim, so a `${q}` sitting inside a JS
+ * string literal stayed literal text and never picked up the value — playback
+ * substitutes it via _applyVarsToCode() in bg/utils.js. Emitting an f-string lets
+ * Python do the same substitution at run time, which works for random and readdom
+ * values too, and _js() applies the same escaping so a quote in a value cannot
+ * terminate the surrounding JS literal.
+ *
+ * Literal braces are doubled — JS code is mostly braces, so without that every
+ * block would read as an f-string replacement field.
+ */
+function _scriptToPy(rawCode) {
+  const code    = String(rawCode);
+  const hasVars = /\$\{[^}]+\}/.test(code);
+
+  // Escape for a triple-quoted Python literal: backslashes first, then any run
+  // that could close the literal early.
+  let body = code.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
+  if (hasVars) {
+    body = body
+      .split(/(\$\{[^}]+\})/g)
+      .map(part => {
+        const m = part.match(/^\$\{([^}]+)\}$/);
+        return m ? `{_js(${safeVarName(m[1])})}` : part.replace(/([{}])/g, '$1$1');
+      })
+      .join('');
+  }
+
+  const prefix = hasVars ? 'f' : '';
+  if (!body.includes('\n')) return [`driver.execute_script(${prefix}"""${body}""")`];
+
+  // The closing delimiter goes on its own line so a source ending in `"` cannot
+  // run into it.
+  return [`driver.execute_script(${prefix}"""`, ...body.split('\n'), `""")`];
+}
+
+// The _js() runtime helper — same escaping as _applyVarsToCode() in bg/utils.js.
+function _jsEscapeHelperPy() {
+  return [
+    'def _js(v):',
+    '    """Escape a value for inlining into JS source (mirrors the extension\'s playback)."""',
+    '    return (str(v).replace("\\\\", "\\\\\\\\").replace(\'"\', \'\\\\"\').replace("\'", "\\\\\'")',
+    '            .replace("`", "\\\\`").replace("${", "\\\\${")',
+    '            .replace("\\n", "\\\\n").replace("\\r", "\\\\r"))',
+  ];
 }
 
 // Generates the Python if-condition expression for a condition action
@@ -132,11 +227,13 @@ function condExprPy(action, selPy) {
     case 'hasAttribute': {
       // If expectedValue is "attr=value", split on the first '=' and generate
       // a proper attribute-value comparison (get_attribute("attr=value") always returns None).
-      const rawExp = action.expectedValue || '';
+      const rawExp = String(action.expectedValue || '');
       const eqIdx  = rawExp.indexOf('=');
       if (eqIdx > 0) {
-        const attrNamePy = JSON.stringify(rawExp.slice(0, eqIdx));
-        const attrValPy  = JSON.stringify(rawExp.slice(eqIdx + 1));
+        // Both halves go through valueToPy: JSON.stringify used to freeze a
+        // `data-id=${host}` into the literal string "${host}".
+        const attrNamePy = valueToPy(rawExp.slice(0, eqIdx));
+        const attrValPy  = valueToPy(rawExp.slice(eqIdx + 1));
         return `(driver.find_element(${selPy}).get_attribute(${attrNamePy}) == ${attrValPy}) if driver.find_elements(${selPy}) else False`;
       }
       // No '=' — check that the attribute exists (non-null, non-empty)
@@ -147,80 +244,92 @@ function condExprPy(action, selPy) {
   }
 }
 
-// Builds Python lines to locate a child element matching action.conditions.
-// Supports {fallback:A|B|C} in condition fields by generating a nested for-loop.
+const COND_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
+
+/**
+ * The _find_child() runtime helper, mirroring _findChild in the JS bookmarklet
+ * export and findElementByCondition in content.js.
+ *
+ * Each `lambda el, n=...` binds its needle as a default argument on purpose:
+ * Python closures capture the variable, not the value, so a plain `lambda el: n
+ * in ...` would make every check see the last needle assigned.
+ */
+function _findChildHelperPy() {
+  return [
+    '_FALLBACK_RE = re.compile(r"^\\{fallback:(.+)\\}$")',
+    '',
+    '',
+    'def _find_child(parent, cond, mode="any"):',
+    '    """First descendant of `parent` matching `cond`.',
+    '',
+    '    A field may hold a {fallback:A|B|C} spec — Fallback variables only expand',
+    '    into one at run time — and each candidate is then tried in order.',
+    '    """',
+    '    fb_field, fb_values = None, None',
+    '    for _f in ("valueEquals", "textContains", "idContains", "classContains", "typeEquals"):',
+    '        _m = _FALLBACK_RE.match(str(cond.get(_f, "")))',
+    '        if _m:',
+    '            fb_field = _f',
+    '            fb_values = [v.strip() for v in _m.group(1).split("|") if v.strip()]',
+    '            break',
+    '',
+    '    def norm(s):',
+    '        return "" if s is None else str(s).strip().lower()',
+    '',
+    '    def try_find(c):',
+    '        checks = []',
+    '        if c.get("valueEquals"):',
+    '            checks.append(lambda el, v=str(c["valueEquals"]): (el.get_attribute("value") or "") == v)',
+    '        if c.get("textContains"):',
+    '            checks.append(lambda el, n=norm(c["textContains"]): n in norm(el.text))',
+    '        if c.get("idContains"):',
+    '            checks.append(lambda el, n=norm(c["idContains"]): n in norm(el.get_attribute("id")))',
+    '        if c.get("classContains"):',
+    '            checks.append(lambda el, n=norm(c["classContains"]): n in norm(el.get_attribute("class")))',
+    '        if c.get("typeEquals"):',
+    '            checks.append(lambda el, v=str(c["typeEquals"]): (el.get_attribute("type") or "") == v)',
+    '        if not checks:',
+    '            return None',
+    '        test = all if mode == "all" else any',
+    '        for el in parent.find_elements(By.XPATH, ".//*"):',
+    '            if test(fn(el) for fn in checks):',
+    '                return el',
+    '        return None',
+    '',
+    '    if fb_field and fb_values:',
+    '        for fv in fb_values:',
+    '            el = try_find({**cond, fb_field: fv})',
+    '            if el is not None:',
+    '                return el',
+    '        return None',
+    '    return try_find(cond)',
+  ];
+}
+
+/**
+ * Builds Python lines to locate a child element matching action.conditions.
+ *
+ * The criteria are handed to the generated _find_child() helper as a dict rather
+ * than being unrolled into loops here. That is what makes Fallback variables work:
+ * a `{fallback:A|B|C}` spec reaching a field through `${city}` only exists once
+ * the f-string has been evaluated, so deciding at export time — as the old
+ * unrolled version did — compared against the literal spec text and never matched.
+ * The JS bookmarklet's _findChild has always resolved this at run time.
+ */
 function _buildChildCondPy(conditions, elVar, tout, selPy, stepNum) {
-  const cond      = conditions;
-  const matchMode = cond.matchMode || 'any';
-  const ccVar     = `_cc${stepNum}`;
-  const lines     = [];
+  const cond  = conditions;
+  const mode  = cond.matchMode || 'any';
+  const lines = [];
 
-  const FALLBACK_RE = /^\{fallback:(.+)\}$/;
-
-  // Detect the first condition field with a fallback spec.
-  const FB_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
-  let fbField = null, fbVals = null;
-  for (const f of FB_FIELDS) {
-    const m = cond[f] != null && String(cond[f]).match(FALLBACK_RE);
-    if (m) { fbField = f; fbVals = m[1].split('|').map(s => s.trim()).filter(Boolean); break; }
+  const parts = [];
+  for (const f of COND_FIELDS) {
+    if (cond[f] != null && String(cond[f]) !== '') {
+      parts.push(`"${f}": ${valueToPy(String(cond[f]))}`);
+    }
   }
 
   lines.push(`${elVar}_p = WebDriverWait(driver, ${tout}).until(EC.presence_of_element_located((${selPy})))`);
-  lines.push(`${elVar} = None`);
-
-  if (fbField && fbVals) {
-    // Fallback: outer loop over candidate values, inner loop over children.
-    const fvVar = `_fv${stepNum}`;
-    const fbListPy = '[' + fbVals.map(v => JSON.stringify(v)).join(', ') + ']';
-    lines.push(`for ${fvVar} in ${fbListPy}:`);
-    lines.push(`    for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
-
-    // Build the single check for the fallback field (other fields stay fixed).
-    let fbCheck;
-    if (fbField === 'valueEquals')  fbCheck = `(${ccVar}.get_attribute("value") or "") == ${fvVar}`;
-    if (fbField === 'textContains') fbCheck = `${fvVar}.lower() in (${ccVar}.text or "").strip().lower()`;
-    if (fbField === 'idContains')   fbCheck = `${fvVar}.lower() in (${ccVar}.get_attribute("id") or "").lower()`;
-    if (fbField === 'classContains') fbCheck = `${fvVar}.lower() in (${ccVar}.get_attribute("class") or "").lower()`;
-    if (fbField === 'typeEquals')   fbCheck = `(${ccVar}.get_attribute("type") or "") == ${fvVar}`;
-
-    lines.push(`        if ${fbCheck}:`);
-    lines.push(`            ${elVar} = ${ccVar}`);
-    lines.push(`            break`);
-    lines.push(`    if ${elVar} is not None:`);
-    lines.push(`        break`);
-  } else {
-    // Normal single-value path.
-    lines.push(`for ${ccVar} in ${elVar}_p.find_elements(By.XPATH, ".//*"):`);
-
-    const checks = [];
-    if (cond.valueEquals  != null && cond.valueEquals  !== '')
-      checks.push(`(${ccVar}.get_attribute("value") or "") == ${valueToPy(String(cond.valueEquals))}`);
-    if (cond.textContains != null && cond.textContains !== '') {
-      const needle = valueToPy(String(cond.textContains).trim());
-      checks.push(`${needle}.lower() in (${ccVar}.text or "").strip().lower()`);
-    }
-    if (cond.idContains   != null && cond.idContains   !== '') {
-      const n = valueToPy(String(cond.idContains).trim());
-      checks.push(`${n}.lower() in (${ccVar}.get_attribute("id") or "").lower()`);
-    }
-    if (cond.classContains != null && cond.classContains !== '') {
-      const n = valueToPy(String(cond.classContains).trim());
-      checks.push(`${n}.lower() in (${ccVar}.get_attribute("class") or "").lower()`);
-    }
-    if (cond.typeEquals   != null && cond.typeEquals   !== '')
-      checks.push(`(${ccVar}.get_attribute("type") or "") == ${valueToPy(String(cond.typeEquals))}`);
-
-    if (checks.length === 0) {
-      lines.push(`    pass  # no child condition criteria defined`);
-    } else {
-      const joiner   = matchMode === 'all' ? ' \\\n        and ' : ' \\\n        or ';
-      const condExpr = checks.length === 1 ? checks[0] : `(${checks.join(joiner)})`;
-      lines.push(`    if ${condExpr}:`);
-      lines.push(`        ${elVar} = ${ccVar}`);
-      lines.push(`        break`);
-    }
-  }
-
+  lines.push(`${elVar} = _find_child(${elVar}_p, {${parts.join(', ')}}, ${JSON.stringify(mode)})`);
   lines.push(`if ${elVar} is None:`);
   lines.push(`    raise Exception("Child condition not matched (step ${stepNum})")`);
   return lines;
@@ -316,13 +425,7 @@ function actionLines(action, stepNum, stepDelay, elTimeout) {
       const code = (action.code || action.value || '').trim();
       out.push(`# Step ${stepNum}: execute script${lbl}`);
       out.push(`# ⚠ Original JS — verify logic works via execute_script()`);
-      if (code.includes('\n')) {
-        out.push(`driver.execute_script("""`);
-        for (const line of code.split('\n')) out.push(`    ${line}`);
-        out.push(`""")`);
-      } else {
-        out.push(`driver.execute_script(${JSON.stringify(code)})`);
-      }
+      out.push(..._scriptToPy(code));
       if (delay > 0) out.push(`time.sleep(${delay})`);
       break;
     }
@@ -449,7 +552,8 @@ function processActions(actions, baseIdx, stepDelay, elTimeout) {
 export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) {
   const { stepDelay = 500, elTimeout = 10000, driverType = 'Chrome', startUrl = '' } = opts;
 
-  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, readdomVars = new Set();
+  const warnings = new Set();
+  const staticVars = {}, randomSpecs = {}, pickSpecs = {}, writtenVars = new Set();
   for (const [k, v] of Object.entries(variables || {})) {
     const str  = _activeVal(v);
     const spec = parseRandomSpec(str);
@@ -461,9 +565,27 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
 
   const enabled = (actions || []).filter(a => !a.disabled);
 
+  // Names a step assigns to. screenshot_tovar belongs here too: it writes inside
+  // the flow, so a run where its branch never executes leaves a later reference
+  // with nothing bound (NameError).
   for (const a of enabled) {
-    if (a.type === 'readdom' && a.varName) {
-      readdomVars.add(safeVarName(a.varName));
+    if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) {
+      writtenVars.add(safeVarName(a.varName));
+    }
+  }
+
+  // Two different names can sanitize to the same Python identifier, which
+  // silently drops one of them.
+  const _byIdent = new Map();
+  for (const k of [...Object.keys(staticVars), ...Object.keys(randomSpecs), ...Object.keys(pickSpecs)]) {
+    const ident = safeVarName(k);
+    if (_byIdent.has(ident) && _byIdent.get(ident) !== k) {
+      warnings.add(`"${_byIdent.get(ident)}" and "${k}" both become the Python identifier \`${ident}\` — rename one`);
+    } else {
+      _byIdent.set(ident, k);
+    }
+    if (ident !== k) {
+      warnings.add(`"${k}" is not a valid Python identifier — exported as \`${ident}\``);
     }
   }
 
@@ -476,14 +598,19 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   }
 
   const needsRandom       = Object.keys(randomSpecs).length > 0 || Object.keys(pickSpecs).length > 0;
+  const needsDatetime     = Object.values(randomSpecs).some(s => s.type === 'datetime');
   const needsActionChains = enabled.some(a => ['hover', 'dragdrop'].includes(a.type));
   const needsCondition    = enabled.some(a => a.type === 'condition');
+  const needsChildCond    = enabled.some(a => a.conditions && typeof a.conditions === 'object');
+  const needsJsEscape     = enabled.some(a => a.type === 'script' && scriptUsesVars(a));
 
   const out = [];
 
   // ── Imports ──
   out.push('import time');
-  if (needsRandom) { out.push('import random'); out.push('import string'); }
+  if (needsRandom)   { out.push('import random'); out.push('import string'); }
+  if (needsChildCond) out.push('import re');
+  if (needsDatetime)  out.push('from datetime import datetime');
   out.push('from selenium import webdriver');
   out.push('from selenium.webdriver.common.by import By');
   out.push('from selenium.webdriver.support.ui import WebDriverWait, Select');
@@ -492,6 +619,18 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   if (needsCondition)    out.push('from selenium.common.exceptions import NoSuchElementException');
   out.push('');
   out.push('');
+
+  // ── Runtime helpers ──
+  if (needsChildCond) {
+    out.push(..._findChildHelperPy());
+    out.push('');
+    out.push('');
+  }
+  if (needsJsEscape) {
+    out.push(..._jsEscapeHelperPy());
+    out.push('');
+    out.push('');
+  }
 
   // ── Header ──
   out.push(`# ============================`);
@@ -516,25 +655,48 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   }
 
   // ── Variables ──
-  const hasVars = Object.keys(staticVars).length > 0 || needsRandom || readdomVars.size > 0;
+  const hasVars = Object.keys(staticVars).length > 0 || needsRandom || writtenVars.size > 0;
   if (hasVars) {
     out.push('# --- VARIABLES ---');
+    const declared = new Set();
+
     for (const [k, v] of Object.entries(staticVars)) {
-      out.push(`${safeVarName(k)} = ${JSON.stringify(v)}`);
+      const safe = safeVarName(k);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
+      out.push(`${safe} = ${JSON.stringify(v)}`);
     }
     for (const [k, spec] of Object.entries(randomSpecs)) {
+      const safe = safeVarName(k);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
+      // "datetime" is a type the Variables modal offers and resolveRandomVars()
+      // in bg/utils.js implements; it used to fall through to the alphanumeric
+      // charset here and produce random junk instead of the run's timestamp.
+      if (spec.type === 'datetime') {
+        out.push(`${safe} = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")`);
+        continue;
+      }
       const charset = spec.type === 'alpha'
         ? 'string.ascii_letters'
         : spec.type === 'numeric'
           ? 'string.digits'
           : 'string.ascii_letters + string.digits';
-      out.push(`${safeVarName(k)} = ''.join(random.choices(${charset}, k=${spec.length}))`);
+      out.push(`${safe} = ''.join(random.choices(${charset}, k=${spec.length}))`);
     }
     for (const [k, vals] of Object.entries(pickSpecs)) {
+      const safe = safeVarName(k);
+      if (declared.has(safe)) continue;
+      declared.add(safe);
       const pyList = '[' + vals.map(v => JSON.stringify(v)).join(', ') + ']';
-      out.push(`${safeVarName(k)} = random.choice(${pyList})`);
+      out.push(`${safe} = random.choice(${pyList})`);
     }
-    for (const k of readdomVars) {
+    // Only the written names nothing above already seeded. This loop used to run
+    // unconditionally, so `seed = "INIT"` from the Variables tab was immediately
+    // followed by `seed = ''` and the seed never reached the first step.
+    for (const k of writtenVars) {
+      if (declared.has(k)) continue;
+      declared.add(k);
       out.push(`${k} = ''`);
     }
     out.push('');
@@ -559,9 +721,27 @@ export function generateSeleniumPy(scenarioName, actions, variables, opts = {}) 
   out.push('finally:');
   out.push('    driver.quit()');
 
+  // A `${name}` with nothing behind it becomes a NameError the moment the step
+  // runs, and the generated file gives no clue where it came from — flag it while
+  // the scenario is still on screen.
+  const knownNames = new Set([
+    ...Object.keys(staticVars), ...Object.keys(randomSpecs), ...Object.keys(pickSpecs),
+  ]);
+  for (const a of enabled) {
+    if ((a.type === 'readdom' || a.type === 'screenshot_tovar') && a.varName) {
+      knownNames.add(String(a.varName).replace(/^\$\{|\}$/g, ''));
+    }
+  }
+  for (const name of getUsedVarNames(enabled)) {
+    if (!knownNames.has(name)) {
+      warnings.add(`\${${name}} is used by a step but not defined in the Variables tab`);
+    }
+  }
+
   return {
     code: out.join('\n'),
     stats: { total: enabled.length, supported, skipped, hasScript, hasScreenshot },
+    warnings: [...warnings],
   };
 }
 
@@ -690,8 +870,12 @@ function _renderModal(scenarioName, result, variables) {
   const msgs = [];
   if (result.stats.skipped > 0)  msgs.push(`${result.stats.skipped} action(s) skipped (switch)`);
   if (result.stats.hasScript)    msgs.push('script → driver.execute_script() — please review');
+  // Anything the generator could not express faithfully (renamed identifiers,
+  // unresolved ${...}). These used to surface only when the script was run.
+  msgs.push(...(result.warnings || []));
   if (msgs.length > 0) {
-    skipMsg.textContent  = msgs.join(' · ');
+    skipMsg.style.whiteSpace = 'pre-line';
+    skipMsg.textContent  = msgs.join('\n');
     warning.style.display = '';
   } else {
     warning.style.display = 'none';
@@ -716,6 +900,9 @@ function _renderModal(scenarioName, result, variables) {
       const pick    = parsePickSpec(val);
       const isRand  = !!spec;
       const isPick  = !!pick;
+      // Fallback specs match neither parser and used to be listed as "Static"
+      // showing the raw {fallback:...} text, which reads like a broken value.
+      const fbMatch = val.match(/^\{fallback:(.+)\}$/);
       let icon, badgeLabel, badgeCls, preview;
       if (isRand) {
         icon = '🎲'; badgeLabel = 'Random'; badgeCls = 'rand';
@@ -723,6 +910,11 @@ function _renderModal(scenarioName, result, variables) {
       } else if (isPick) {
         icon = '⚄'; badgeLabel = `Pick (${pick.length})`; badgeCls = 'rand';
         preview = pick.join(' | ');
+        if (preview.length > 40) preview = preview.slice(0, 40) + '…';
+      } else if (fbMatch) {
+        const fbVals = fbMatch[1].split('|').map(s => s.trim()).filter(Boolean);
+        icon = '⛓'; badgeLabel = `Fallback (${fbVals.length})`; badgeCls = 'rand';
+        preview = fbVals.join(' → ');
         if (preview.length > 40) preview = preview.slice(0, 40) + '…';
       } else {
         icon = '🔤'; badgeLabel = 'Static'; badgeCls = 'static';

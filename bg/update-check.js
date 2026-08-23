@@ -24,8 +24,9 @@
  *   autoApplyTries       installs a critical update.
  */
 
-import { computeLockState, evaluateRemoteConfig, compareVersions, LOCK_MESSAGE } from './update-lock.js';
+import { computeLockState, evaluateRemoteConfig, compareVersions, LOCK_MESSAGE, DAY_MS } from './update-lock.js';
 import { fetchRemoteConfig } from './remote-config.js';
+import { sendAlertNotification } from './utils.js';
 
 export { compareVersions };
 
@@ -91,6 +92,7 @@ export async function runUpdateCheck() {
       },
     });
     await markUpdatePending();
+    await remindBeforeDeadline();
     await maybeAutoApply();
     return;
   }
@@ -255,6 +257,42 @@ export async function maybeAutoApply() {
     autoApplyTries: (res.autoApplyTries || 0) + 1,
   });
   chrome.runtime.reload();
+}
+
+/* === Deadline reminder ══════════════════════════════════════════════════════
+ * notifyLocked() only fires once features have ALREADY been locked, which makes
+ * the first system notification about an update also the first sign that the
+ * extension has stopped working. The in-popup banner warns earlier, but only for
+ * someone who happens to open the popup during the final days.
+ *
+ * This closes that gap: once the countdown enters its urgent window, say so once
+ * a day until the deadline passes, after which notifyLocked() takes over.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Warn once per day while an update is pending and the grace period is nearly up.
+ *
+ * The stamp lives in storage rather than a module variable because the service
+ * worker is torn down constantly — an in-memory guard would reset on every wake
+ * and re-notify on each startup catch-up check.
+ */
+async function remindBeforeDeadline() {
+  const lock = await refreshLockState();
+  // Locked or hard-locked cases belong to notifyLocked(), which every blocked
+  // action already routes through — a second channel would just double up.
+  if (!lock.pending || lock.locked || lock.critical || !lock.warning) return;
+
+  const { updateReminderAt } = await localGet(['updateReminderAt']);
+  if (updateReminderAt && Date.now() - updateReminderAt < DAY_MS) return;
+  await chrome.storage.local.set({ updateReminderAt: Date.now() });
+
+  const days = lock.daysLeft;
+  sendAlertNotification(
+    '⏳ Update required soon',
+    `Fast Recorder & Playback locks recording, playback and capture in ` +
+    `${days} day${days === 1 ? '' : 's'}. Update from the Chrome Web Store to keep using them.`,
+    'update_reminder',
+  );
 }
 
 /* === Notification for blocked actions === */

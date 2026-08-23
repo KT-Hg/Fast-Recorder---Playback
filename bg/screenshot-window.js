@@ -17,10 +17,10 @@
  */
 
 import {
-  openCropUI, buildScreenshotFilename, buildDateFolder, applyWatermark,
+  openCropUI, buildScreenshotFilename, buildDateFolder, applyWatermark, downloadDataUrl,
 } from './screenshot.js';
 import { ensureLockState, notifyLocked } from './update-check.js';
-import { sendAlertNotification, updateBadge } from './utils.js';
+import { sendCaptureNotification, updateBadge } from './utils.js';
 
 /**
  * Fallback size, used only the first time — big enough for Chrome's window
@@ -139,37 +139,24 @@ function closeCaptureWindow(windowId) {
  * honestly.
  */
 async function handleCaptureResult({ dataUrl, crop }) {
-  const settings = await chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix']);
+  const settings = await chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix', 'screenshotTypeInName']);
   const saveMode = settings.screenshotSaveMode || 'auto';
   const prefix   = settings.screenshotPrefix   || 'screenshot';
-  const filename = buildScreenshotFilename(`${prefix}_window`, null);
+  const typeTag  = settings.screenshotTypeInName === false ? '' : '_window';
+  const filename = buildScreenshotFilename(prefix, null, typeTag);
   const downloadPath = saveMode === 'auto' ? `screenshots/${buildDateFolder()}/${filename}` : filename;
 
   const stamped = await applyWatermark(dataUrl, null, '');
   if (crop) return openCropUI(stamped, downloadPath, saveMode === 'ask');
 
-  const res = await saveDataUrl(stamped, downloadPath, saveMode === 'ask');
+  // Cancel detection used to live in a private saveDataUrl() here, because the
+  // shared downloadDataUrl() collapsed "cancelled" and "failed" into a bare null.
+  // It no longer does — every capture path needs the distinction now that hotkey
+  // captures report through notifications — so this uses the shared one.
+  const res = await downloadDataUrl(stamped, downloadPath, saveMode === 'ask');
   if (res.cancelled) return { cancelled: true };
   if (res.error) return { error: res.error };
   return { success: true, filename };
-}
-
-/**
- * Save, telling a cancelled Save As dialog apart from a real failure.
- *
- * The shared downloadDataUrl collapses both into null, which is fine where a
- * toast reports the outcome. Here the only channel left is a notification, and
- * telling someone their capture "failed" because they closed the dialog
- * themselves is worse than saying nothing at all.
- */
-function saveDataUrl(dataUrl, filename, saveAs) {
-  return new Promise((resolve) => {
-    chrome.downloads.download({ url: dataUrl, filename, saveAs }, (id) => {
-      const err = chrome.runtime.lastError?.message || '';
-      if (id != null) { resolve({ ok: true }); return; }
-      resolve(/cancel/i.test(err) ? { cancelled: true } : { error: err || 'Download failed' });
-    });
-  });
 }
 
 const WINDOW_CAPTURE_TYPES = ['OPEN_WINDOW_CAPTURE', 'WINDOW_CAPTURE_RESULT', 'RESTORE_BADGE'];
@@ -201,8 +188,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // The capture window is gone and the popup was closed on click, so a
       // notification is the only place left to report a straight-to-disk save.
       // A cancelled Save As dialog is silent — the user already knows.
-      if (result.error) sendAlertNotification('Window capture failed', result.error);
-      else if (result.filename) sendAlertNotification('Window capture saved', result.filename);
+      // Capture channel, not the alert channel: "saved" is a completion, and it
+      // used to be the one success notification that ignored every Settings
+      // toggle. Both branches share one id so a retry replaces the failure notice.
+      if (result.error) sendCaptureNotification('Window capture failed', result.error, 'window_capture');
+      else if (result.filename) sendCaptureNotification('Window capture saved', result.filename, 'window_capture');
     })();
     return; // answered synchronously above
   }

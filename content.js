@@ -1306,7 +1306,10 @@ function _setFullCaptureActive(active) {
   }
 }
 
-function _startVisibleCountdown(seconds, crop) {
+// `fromHotkey` is carried all the way to the background so the capture result
+// can be reported as a notification. A hotkey capture happens with the popup
+// closed, so the SCREENSHOT_RESULT toast has nobody to show it to.
+function _startVisibleCountdown(seconds, crop, fromHotkey = false) {
   if (_countdownOverlay) return;
   let remaining = seconds;
 
@@ -1330,7 +1333,7 @@ function _startVisibleCountdown(seconds, crop) {
 
   const tick = () => {
     remaining--;
-    if (remaining <= 0) { _fireVisibleCapture(crop); return; }
+    if (remaining <= 0) { _fireVisibleCapture(crop, fromHotkey); return; }
     numEl.textContent = remaining;
     _countdownTimer = setTimeout(tick, 1000);
   };
@@ -1344,10 +1347,10 @@ function _teardownCountdown() {
   _countdownTimer = null;
 }
 
-function _fireVisibleCapture(crop) {
+function _fireVisibleCapture(crop, fromHotkey = false) {
   _teardownCountdown();
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    safeSend({ type: 'TAKE_SCREENSHOT', crop: !!crop });
+    safeSend({ type: 'TAKE_SCREENSHOT', crop: !!crop, fromHotkey });
   }));
 }
 
@@ -1399,14 +1402,14 @@ document.addEventListener('keydown', (e) => {
       chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
         try {
           void chrome.runtime.lastError;
-          if (res.screenshotCountdownEnabled) _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true);
-          else safeSend({ type: 'TAKE_SCREENSHOT', crop: true });
+          if (res.screenshotCountdownEnabled) _startVisibleCountdown(res.screenshotCountdownSeconds || 3, true, true);
+          else safeSend({ type: 'TAKE_SCREENSHOT', crop: true, fromHotkey: true });
         } catch (_) {}
       });
     } catch (_) {}
-  } else if (combo === activeHotkeys.screenshotFull)   { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_FULL', crop: true }); }
-  else if (activeHotkeys.screenshotScrollV && combo === activeHotkeys.screenshotScrollV) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_V' }); }
-  else if (activeHotkeys.screenshotScrollH && combo === activeHotkeys.screenshotScrollH) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_H' }); }
+  } else if (combo === activeHotkeys.screenshotFull)   { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_FULL', crop: true, fromHotkey: true }); }
+  else if (activeHotkeys.screenshotScrollV && combo === activeHotkeys.screenshotScrollV) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_V', fromHotkey: true }); }
+  else if (activeHotkeys.screenshotScrollH && combo === activeHotkeys.screenshotScrollH) { e.preventDefault(); safeSend({ type: 'TAKE_SCREENSHOT_SCROLL_H', fromHotkey: true }); }
   else if (activeHotkeys.segV && combo === activeHotkeys.segV)   { e.preventDefault(); safeSend({ type: 'HOTKEY_SEG_START', dir: 'vertical'   }); }
   else if (activeHotkeys.segH && combo === activeHotkeys.segH)   { e.preventDefault(); safeSend({ type: 'HOTKEY_SEG_START', dir: 'horizontal' }); }
   else if (activeHotkeys.segStop && combo === activeHotkeys.segStop) {

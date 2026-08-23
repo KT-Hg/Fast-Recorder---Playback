@@ -218,7 +218,7 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
   let fitScale;
   function recalcFit() {
     const maxW = viewport.clientWidth  - 32;
-    const maxH = viewport.clientHeight - 16;
+    const maxH = viewport.clientHeight - 32;
     fitScale = Math.min(1, maxW / workCanvas.width, maxH / workCanvas.height);
   }
   recalcFit();
@@ -236,8 +236,8 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     cvs.style.width = zW + "px"; cvs.style.height = zH + "px";
     const w = document.getElementById("wrapper");
     w.style.width = zW + "px"; w.style.height = zH + "px";
-    // Switch justify-content so scrollLeft=0 aligns to the true left edge when canvas overflows
-    viewport.style.justifyContent = (zW > viewport.clientWidth || zH > viewport.clientHeight) ? "flex-start" : "center";
+    // Alignment is CSS "safe center": centred while the canvas fits, falling back to start on
+    // whichever axis overflows, so scroll 0 still reaches the true top-left edge.
   }
   applyCanvasSize();
 
@@ -295,12 +295,20 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     const newZ = clamp(zoomLevel * factor, MIN_ZOOM, MAX_ZOOM);
     if (newZ === zoomLevel) return;
     const r = cvs.getBoundingClientRect();
+    const vr0 = viewport.getBoundingClientRect();
+    // Work-space point under the anchor, plus where that anchor sits inside the viewport box.
     const wx = (clientX - r.left) / es(), wy = (clientY - r.top) / es();
+    const offX = clientX - vr0.left, offY = clientY - vr0.top;
     zoomLevel = newZ;
     applyCanvasSize(); render(); updateZoomUI();
-    const vr = viewport.getBoundingClientRect();
-    viewport.scrollLeft = wx * es() - (clientX - vr.left);
-    viewport.scrollTop  = wy * es() - (clientY - vr.top);
+    // Measure where the canvas origin sits at scroll 0 rather than assuming the viewport edge:
+    // that assumption ignored the 16px viewport padding and the centering offset, so the image
+    // slid sideways a little on every zoom step instead of staying put under the anchor.
+    const vr = viewport.getBoundingClientRect(), r2 = cvs.getBoundingClientRect();
+    const originX = r2.left - vr.left + viewport.scrollLeft;
+    const originY = r2.top  - vr.top  + viewport.scrollTop;
+    viewport.scrollLeft = originX + wx * es() - offX;
+    viewport.scrollTop  = originY + wy * es() - offY;
   }
 
   function resetZoom() {

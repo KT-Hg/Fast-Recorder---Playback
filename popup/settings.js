@@ -25,6 +25,22 @@ export function updateRangeFill(slider) {
   slider.style.setProperty('--pct', pct.toFixed(2) + '%');
 }
 
+/**
+ * Redraw the filename-format hint under the prefix input.
+ *
+ * Shows a real example rather than the abstract template: the capture-type tag is
+ * the whole point of the checkbox, and "_full" reads clearer than "{type}".
+ */
+export function updateScreenshotNameHint() {
+  const hint = document.getElementById('screenshotNameHint');
+  if (!hint) return;
+  const prefix  = document.getElementById('screenshotPrefix')?.value?.trim() || 'screenshot';
+  const withTag = !!document.getElementById('screenshotTypeInName')?.checked;
+  hint.textContent = withTag
+    ? `Format: ${prefix}_full_2026-01-31_09-45-00.png (type tag: _full, _elem, _window, _scrollV…)`
+    : `Format: ${prefix}_2026-01-31_09-45-00.png`;
+}
+
 export function loadScreenshotSettings() {
   chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
     const cb  = document.getElementById('screenshotCountdownEnabled');
@@ -45,14 +61,17 @@ export function loadScreenshotSettings() {
     if (sliderFS) { sliderFS.value = fontSize; updateRangeFill(sliderFS); }
     if (numFS) numFS.value = fontSize;
   });
-  chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix', 'segScrollSpeedV', 'segScrollSpeedH'], (res) => {
+  chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix', 'screenshotTypeInName', 'segScrollSpeedV', 'segScrollSpeedH'], (res) => {
     const mode   = res.screenshotSaveMode || 'auto';
     const prefix = res.screenshotPrefix   || 'screenshot';
+    // Absent means "never configured" — keep the type tag that older versions always wrote.
+    const typeInName = res.screenshotTypeInName !== false;
     const speedV = res.segScrollSpeedV    ?? 2;
     const speedH = res.segScrollSpeedH    ?? 2;
     const autoRadio   = document.getElementById('saveModeAuto');
     const askRadio    = document.getElementById('saveModeAsk');
     const prefixInput = document.getElementById('screenshotPrefix');
+    const typeCb      = document.getElementById('screenshotTypeInName');
     const sliderV = document.getElementById('segScrollSpeedV');
     const numV    = document.getElementById('segScrollSpeedVNum');
     const sliderH = document.getElementById('segScrollSpeedH');
@@ -60,6 +79,8 @@ export function loadScreenshotSettings() {
     if (autoRadio)   autoRadio.checked = mode === 'auto';
     if (askRadio)    askRadio.checked  = mode === 'ask';
     if (prefixInput) prefixInput.value = prefix;
+    if (typeCb) typeCb.checked = typeInName;
+    updateScreenshotNameHint();
     if (sliderV) { sliderV.value = speedV; updateRangeFill(sliderV); }
     if (numV) numV.value = speedV;
     if (sliderH) { sliderH.value = speedH; updateRangeFill(sliderH); }
@@ -115,17 +136,35 @@ export function cancelHotkeyCapture() {
 }
 
 /**
- * Read the completion-notification toggle from storage into the checkbox.
+ * Notification categories, mirroring NOTIFY_KEY / NOTIFY_DEFAULT in bg/utils.js.
  *
- * Load only — the change listener is bound once in initSettings(). This function
+ * The defaults must stay in sync with that file: an absent key is not simply
+ * "off" — errors, captures and scheduled runs default to on, so the checkbox has
+ * to render checked before the user has ever touched it. Reading `!!res[key]`
+ * here would show three unticked boxes for notifications that do fire.
+ */
+const NOTIFY_TOGGLES = {
+  notifyOnComplete: false,
+  notifyOnError:    true,
+  notifyOnCapture:  true,
+  notifyOnSchedule: true,
+};
+
+/**
+ * Read the notification toggles from storage into their checkboxes.
+ *
+ * Load only — the change listeners are bound once in initSettings(). This function
  * runs again on every visit to the Settings tab (reloadSettings), and it used to
  * attach a fresh listener each time. Ten tab switches meant one click writing
  * chrome.storage.sync eleven times, against a hard quota of 120 writes/minute.
  */
 export function loadNotificationSetting() {
-  chrome.storage.sync.get(['notifyOnComplete'], (res) => {
-    const cb = document.getElementById('notifyOnComplete');
-    if (cb) cb.checked = !!res.notifyOnComplete;
+  const keys = Object.keys(NOTIFY_TOGGLES);
+  chrome.storage.sync.get(keys, (res) => {
+    for (const key of keys) {
+      const cb = document.getElementById(key);
+      if (cb) cb.checked = res[key] === undefined ? NOTIFY_TOGGLES[key] : !!res[key];
+    }
   });
 }
 
@@ -218,6 +257,10 @@ export function initSettings() {
   sliderFS?.addEventListener('input', () => { if (numFS) numFS.value = sliderFS.value; updateRangeFill(sliderFS); });
   numFS   ?.addEventListener('input', () => { if (sliderFS) { sliderFS.value = numFS.value; updateRangeFill(sliderFS); } });
 
+  /* --- Filename hint follows the prefix + type-tag controls --- */
+  document.getElementById('screenshotPrefix')?.addEventListener('input', updateScreenshotNameHint);
+  document.getElementById('screenshotTypeInName')?.addEventListener('change', updateScreenshotNameHint);
+
   /* --- Countdown checkbox toggles delay row visibility --- */
   document.getElementById('screenshotCountdownEnabled')?.addEventListener('change', (e) => {
     const row = document.getElementById('screenshotCountdownRow');
@@ -228,6 +271,7 @@ export function initSettings() {
   document.getElementById('saveScreenshotSettings')?.addEventListener('click', () => {
     const mode   = document.querySelector('input[name="screenshotSaveMode"]:checked')?.value || 'auto';
     const prefix = document.getElementById('screenshotPrefix')?.value?.trim() || 'screenshot';
+    const typeInName = !!document.getElementById('screenshotTypeInName')?.checked;
     const speedV = Math.min(10, Math.max(0.1, parseFloat(document.getElementById('segScrollSpeedVNum')?.value) || 2));
     const speedH = Math.min(10, Math.max(0.1, parseFloat(document.getElementById('segScrollSpeedHNum')?.value) || 2));
     const watermarkEnabled  = !!document.getElementById('watermarkEnabled')?.checked;
@@ -236,7 +280,7 @@ export function initSettings() {
     const countdownEnabled  = !!document.getElementById('screenshotCountdownEnabled')?.checked;
     const countdownSeconds  = parseInt(document.getElementById('screenshotCountdownSeconds')?.value, 10) || 3;
     chrome.storage.local.set({ watermarkEnabled, watermarkFormat, watermarkFontSize, screenshotCountdownEnabled: countdownEnabled, screenshotCountdownSeconds: countdownSeconds });
-    chrome.storage.sync.set({ screenshotSaveMode: mode, screenshotPrefix: prefix, segScrollSpeedV: speedV, segScrollSpeedH: speedH }, () => {
+    chrome.storage.sync.set({ screenshotSaveMode: mode, screenshotPrefix: prefix, screenshotTypeInName: typeInName, segScrollSpeedV: speedV, segScrollSpeedH: speedH }, () => {
       const btn = document.getElementById('saveScreenshotSettings');
       if (btn) {
         btn.textContent = 'Saved';
@@ -286,11 +330,16 @@ export function initSettings() {
     chrome.storage.sync.set({ hotkeys: DEFAULT_HOTKEYS }, loadHotkeySettings);
   });
 
-  /* --- Completion notification toggle ---
-   * Bound here, exactly once. reloadSettings() only refreshes values. */
-  document.getElementById('notifyOnComplete')?.addEventListener('change', (e) => {
-    chrome.storage.sync.set({ notifyOnComplete: e.target.checked });
-  });
+  /* --- Notification category toggles ---
+   * Bound here, exactly once. reloadSettings() only refreshes values.
+   * Written explicitly even when the value equals the default, so the stored key
+   * always exists once touched — bg/utils.js distinguishes "absent" (use default)
+   * from "false" (user turned it off). */
+  for (const key of Object.keys(NOTIFY_TOGGLES)) {
+    document.getElementById(key)?.addEventListener('change', (e) => {
+      chrome.storage.sync.set({ [key]: e.target.checked });
+    });
+  }
 
   /* --- Load initial state --- */
   loadScreenshotSettings();

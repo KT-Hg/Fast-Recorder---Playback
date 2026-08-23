@@ -263,15 +263,45 @@ export function debounce(fn, delay = 200) {
 
 /* === Variable Usage Scanning === */
 
+/**
+ * Variable names a scenario actually references.
+ *
+ * The field list must stay in step with interpolateAction() in bg/utils.js: a
+ * field that gets variables substituted at playback but is not scanned here is
+ * dropped from the export's variable list, so the generated code references an
+ * identifier it never declared (ReferenceError in JS, NameError in Python).
+ * conditions.* and fileNames used to be missed — a Child Condition matching on
+ * `${label}` ran fine in the extension but exported a broken script.
+ *
+ * Variables a step *writes* (readdom / screenshot_tovar varName) count as used
+ * too, so a scenario that seeds one statically keeps that seed on export.
+ */
 export function getUsedVarNames(actions) {
   const used = new Set();
-  const re = /\$\{([^}]+)\}/g;
+  const re   = /\$\{([^}]+)\}/g;
+
+  const FIELDS   = [
+    'selector', 'value', 'url', 'code', 'expectedValue', 'switchVar',
+    'folderPath', 'fileName',
+  ];
+  const C_FIELDS = ['valueEquals', 'textContains', 'idContains', 'classContains', 'typeEquals'];
+
+  const scan = (v) => {
+    if (typeof v !== 'string') return;
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(v)) !== null) used.add(m[1]);
+  };
+
   for (const action of (actions || [])) {
-    for (const val of Object.values(action)) {
-      if (typeof val !== 'string') continue;
-      let m;
-      re.lastIndex = 0;
-      while ((m = re.exec(val)) !== null) used.add(m[1]);
+    if (!action) continue;
+    for (const f of FIELDS) scan(action[f]);
+    if (Array.isArray(action.fileNames)) action.fileNames.forEach(scan);
+    if (action.conditions && typeof action.conditions === 'object') {
+      for (const f of C_FIELDS) scan(action.conditions[f]);
+    }
+    if ((action.type === 'readdom' || action.type === 'screenshot_tovar') && action.varName) {
+      used.add(String(action.varName).replace(/^\$\{|\}$/g, ''));
     }
   }
   return used;

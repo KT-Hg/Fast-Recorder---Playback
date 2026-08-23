@@ -12,14 +12,16 @@ import {
   getScenarios, setScenarios, getFolders, setFolders,
   getVariables, generateId, getStack, pushUndo, mutateScenarioActions,
 } from './bg/storage.js';
-import { updateBadge } from './bg/utils.js';
+import {
+  updateBadge, sendAlertNotification, sendCaptureNotification, sendScheduleNotification,
+} from './bg/utils.js';
 import {
   startPlayback, startPlaybackFromCheckpoint, startSequence, startCsvPlayback,
   refuseIfRecording, refuseRecordingIfPlaying,
 } from './bg/playback.js';
 import {
   takeFullPageScreenshot, takeElementScreenshot, compareScreenshots, downloadDataUrl,
-  openCropUI, buildScreenshotFilename, getPendingCrop,
+  openCropUI, buildScreenshotFilename, getPendingCrop, reportCaptureResult,
 } from './bg/screenshot.js';
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 // Side-effect import: registers the window-capture listener.
@@ -156,7 +158,42 @@ restoreCsvState().then((csvPending) => {
     type: 'CSV_RUN_INTERRUPTED',
     pending: state.csvInterrupted,
   }).catch(() => {});
+  // The message above only reaches an open popup, and this code runs on service
+  // worker startup — i.e. the worker died mid-run, most likely while the user was
+  // doing something else entirely. Without a notification the run simply stops
+  // and the badge clears, which is indistinguishable from a run that finished.
+  //
+  // Announced once per interrupted run, not once per worker spawn: the worker is
+  // torn down and revived constantly (every popup open, every hotkey), and the
+  // checkpoint survives all of it, so an unguarded call would re-alert all day
+  // until the user got round to resuming. The checkpoint's own timestamp
+  // identifies the run, and session storage has exactly the right lifetime —
+  // it is cleared when the browser closes, as is the checkpoint itself.
+  notifyCsvInterruptedOnce(csvPending.timestamp);
 }).catch(() => {});
+
+/**
+ * Raise the "run interrupted" notification unless this exact run has already
+ * been announced in this browser session.
+ *
+ * @param {number} runStamp — csv_pending.timestamp, stable for one interrupted run
+ */
+async function notifyCsvInterruptedOnce(runStamp) {
+  if (!chrome.storage?.session) return; // < Chrome 102: no checkpoint to speak of
+  try {
+    const res = await chrome.storage.session.get(['csvInterruptNotified']);
+    if (res?.csvInterruptNotified === runStamp) return;
+    await chrome.storage.session.set({ csvInterruptNotified: runStamp });
+  } catch (_) {
+    return; // cannot dedupe — better silent than repeating on every wake
+  }
+  const resumeAt = (state.csvInterrupted.resumeRow ?? 0) + 1;
+  sendAlertNotification(
+    '⚠ CSV Run Interrupted',
+    `Stopped at row ${resumeAt} of ${state.csvInterrupted.totalRows} — open the popup to resume`,
+    'csv_interrupted',
+  );
+}
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   // Renew the playback keep-alive alarm while any playback is still running.
@@ -171,7 +208,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === AUTO_APPLY_ALARM) { maybeAutoApply(); return; }
   if (!alarm.name.startsWith(ALARM_PREFIX)) return;
   const id = alarm.name.slice(ALARM_PREFIX.length);
-  chrome.storage.local.get(["schedules"], (res) => {
+  chrome.storage.local.get(["schedules", "scenarios"], (res) => {
     const schedules = res.schedules || [];
     const s = schedules.find((x) => x.id === id);
     if (!s || !s.enabled) return;
@@ -179,6 +216,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     // why, but leave the schedule enabled so it resumes after the update.
     ensureLockState().then((lock) => {
       if (lock.locked) { notifyLocked(); return; }
+      // Announced before the call, not after: startPlayback() resolves only once
+      // the entire run has finished, which is far too late to say "started", and
+      // an unattended run is exactly the one the user cannot see beginning. If it
+      // is refused (recording in progress, no open tab) startPlayback raises its
+      // own alert immediately after this one, which reads correctly in sequence.
+      const schedName = res.scenarios?.[s.scenarioId]?.name || s.scenarioId;
+      sendScheduleNotification(
+        "⏰ Scheduled run started",
+        s.label ? `${s.label} — "${schedName}"` : `"${schedName}"`,
+        "schedule_start",
+      );
       startPlayback(s.scenarioId);
       // A one-shot schedule burns itself only when it actually ran; a slot skipped
       // by the lock stays armed for the next occurrence.
@@ -710,10 +758,10 @@ function handleMessage(request, sender, sendResponse) {
    */
   if (type === "IMPORT_FOLDER") {
     const payload = request.folder;
-    const entries = payload && typeof payload === 'object' && !Array.isArray(payload)
-      ? Object.values(payload.scenarios || {})
+    const allEntries = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? Object.entries(payload.scenarios || {})
       : [];
-    const valid = entries.filter(_isScenarioShaped);
+    const valid = allEntries.filter(([, s]) => _isScenarioShaped(s));
     if (!valid.length) {
       sendResponse({ success: false, error: 'Folder export contains no valid scenarios' });
       return true;
@@ -721,16 +769,29 @@ function handleMessage(request, sender, sendResponse) {
     Promise.all([getFolders(), getScenarios()]).then(async ([folders, scenarios]) => {
       const folderId = generateId();
       folders[folderId] = { name: payload.name || 'Imported folder', createdAt: Date.now() };
+      // Every scenario gets a fresh id, which used to break `switch` actions that
+      // branch to a sibling in the same folder: their cases still named ids from
+      // the exporting profile, so the branch failed with "scenario not found".
+      // Allocate the new ids up front and rewrite the cases as they are imported.
+      const idMap = new Map(valid.map(([oldId]) => [oldId, generateId()]));
       let hasScriptActions = false;
-      for (const src of valid) {
+      for (const [oldId, src] of valid) {
         const { folderId: _ignored, ...rest } = src;
-        scenarios[generateId()] = { ...rest, folderId, createdAt: Date.now() };
-        if ((src.actions || []).some(a => a?.type === 'script')) hasScriptActions = true;
+        const actions = (src.actions || []).map((a) => {
+          if (a?.type !== 'switch' || !Array.isArray(a.cases)) return a;
+          return {
+            ...a,
+            cases: a.cases.map(c =>
+              c && idMap.has(c.scenarioId) ? { ...c, scenarioId: idMap.get(c.scenarioId) } : c),
+          };
+        });
+        scenarios[idMap.get(oldId)] = { ...rest, actions, folderId, createdAt: Date.now() };
+        if (actions.some(a => a?.type === 'script')) hasScriptActions = true;
       }
       await Promise.all([setFolders(folders), setScenarios(scenarios)]);
       sendResponse({
         success: true, folderId, count: valid.length,
-        skipped: entries.length - valid.length,
+        skipped: allEntries.length - valid.length,
         folderName: folders[folderId].name,
         hasScriptActions,
       });
@@ -1124,8 +1185,10 @@ function handleMessage(request, sender, sendResponse) {
   }
 
   if (type === "SAVE_CROPPED") {
-    downloadDataUrl(request.dataUrl, request.downloadPath, request.saveAs).then((id) => {
-      if (id == null) { sendResponse({ error: "Download failed" }); return; }
+    downloadDataUrl(request.dataUrl, request.downloadPath, request.saveAs).then((dl) => {
+      if (dl.cancelled) { sendResponse({ cancelled: true }); return; }
+      if (dl.error) { sendResponse({ error: dl.error }); return; }
+      const id = dl.id;
       let responded = false;
       const respond = (r) => { if (!responded) { responded = true; sendResponse(r); } };
 
@@ -1174,13 +1237,12 @@ function handleMessage(request, sender, sendResponse) {
   if (type === "ELEMENT_PICKED") {
     state.pickMode = false;
     updateBadge();
-    // Minimal 1×1 transparent PNG — same rationale as _NOTIF_ICON in bg/utils.js.
-    const _ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAbElEQVR42mNkYGBg+E8BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPhhFAABAAD//wMAA+gBkAAAAAAASUVORK5CYII=";
-    const _elemShotErr = (msg) => chrome.notifications.create(
-      "elemshot_err_" + Date.now(),
-      { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: msg },
-      () => { void chrome.runtime.lastError; },
-    );
+    // Routed through sendCaptureNotification rather than chrome.notifications
+    // directly: this path used to build its own notification with a 1×1
+    // transparent icon and no category, so it was the one capture notification
+    // that ignored the Settings toggles entirely. One id for both helpers means a
+    // retry replaces the previous notice instead of stacking beside it.
+    const _elemShotErr = (msg) => sendCaptureNotification("Element Screenshot", msg, "elemshot");
     chrome.storage.local.get(["elemShotPickPending", "elemShotPickCrop"], (flags) => {
       // The "could not get a selector" case is checked here, before the branch.
       // It used to sit *inside* a branch already guarded by `request.selector`,
@@ -1205,7 +1267,7 @@ function handleMessage(request, sender, sendResponse) {
             takeElementScreenshot(tabId, request.selector, saveMode, prefix, crop, false, false, request.selectors)
               .then((result) => {
                 chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result }).catch(() => {});
-                const _notif = (msg) => chrome.notifications.create("elemshot_" + Date.now(), { type: "basic", iconUrl: _ICON, title: "Element Screenshot", message: msg }, () => { void chrome.runtime.lastError; });
+                const _notif = (msg) => sendCaptureNotification("Element Screenshot", msg, "elemshot");
                 if (result.error) _notif("Error: " + result.error);
                 else if (!crop)   _notif("Saved: " + (result.filename || "screenshot"));
               })
@@ -1242,7 +1304,10 @@ function handleMessage(request, sender, sendResponse) {
     chrome.tabs.getZoom(tabId, (origZoom) => {
       void chrome.runtime.lastError;
       const needReset = typeof origZoom === 'number' && Math.abs(origZoom - 1) > 0.01;
-      state.segmentCapture = { active: true, tabId, dir: request.dir, crop: false, origZoom: needReset ? origZoom : null };
+      // fromHotkey rides along in the session state because the capture itself is
+      // triggered later by a second message (CAPTURE_SEGMENT), which has no way of
+      // knowing whether the session started from a hotkey or from the popup.
+      state.segmentCapture = { active: true, tabId, dir: request.dir, crop: false, origZoom: needReset ? origZoom : null, fromHotkey: true };
       const startSelection = () => chrome.tabs.sendMessage(tabId, { type: "START_SEGMENT_TAB", dir: request.dir });
       if (needReset) chrome.tabs.setZoom(tabId, 1, () => { void chrome.runtime.lastError; setTimeout(startSelection, 300); });
       else startSelection();
@@ -1274,7 +1339,7 @@ function handleMessage(request, sender, sendResponse) {
     chrome.tabs.getZoom(segTabId, (origZoom) => {
       void chrome.runtime.lastError;
       const needReset = typeof origZoom === 'number' && Math.abs(origZoom - 1) > 0.01;
-      state.segmentCapture = { active: true, tabId: segTabId, dir: request.dir, crop: !!request.crop, origZoom: needReset ? origZoom : null };
+      state.segmentCapture = { active: true, tabId: segTabId, dir: request.dir, crop: !!request.crop, origZoom: needReset ? origZoom : null, fromHotkey: false };
       const startSelection = () => chrome.tabs.sendMessage(segTabId, { type: "START_SEGMENT_TAB", dir: request.dir });
       if (needReset) {
         chrome.tabs.setZoom(segTabId, 1, () => { void chrome.runtime.lastError; setTimeout(startSelection, 300); });
@@ -1288,8 +1353,8 @@ function handleMessage(request, sender, sendResponse) {
 
   /* --- Segment capture: stop & capture --- */
   if (type === "CAPTURE_SEGMENT") {
-    const { tabId, dir, crop, origZoom } = state.segmentCapture;
-    state.segmentCapture = { active: false, tabId: null, dir: null, crop: false };
+    const { tabId, dir, crop, origZoom, fromHotkey } = state.segmentCapture;
+    state.segmentCapture = { active: false, tabId: null, dir: null, crop: false, fromHotkey: false };
     // Restore the user's zoom once the capture settles (success or error).
     const restoreZoom = () => { if (origZoom != null && tabId != null) chrome.tabs.setZoom(tabId, origZoom, () => { void chrome.runtime.lastError; }); };
     chrome.storage.sync.get(["screenshotSaveMode", "screenshotPrefix"], (settings) => {
@@ -1299,10 +1364,10 @@ function handleMessage(request, sender, sendResponse) {
       const segClip = { x: xStart, y: yStart, width: xEnd - xStart, height: yEnd - yStart };
       takeFullPageScreenshot(tabId, saveMode, prefix, null, crop, 'full', false, false, segClip, dir)
         .then(result => {
-          chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result }).catch(() => {});
+          reportCaptureResult(result, { fromHotkey, label: "Segment screenshot" });
         })
         .catch(e => {
-          chrome.runtime.sendMessage({ type: "SCREENSHOT_RESULT", result: { error: e.message } }).catch(() => {});
+          reportCaptureResult({ error: e.message }, { fromHotkey, label: "Segment screenshot" });
         })
         .finally(restoreZoom);
     });
