@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<!-- sqlcases.html — SQL Test Case Designer: parse a query, generate test cases.
+
+     Static text carries data-i18n="<key>" (textContent) or data-i18n-ph="<key>"
+     (placeholder); ui.js fills both in on load and on every language switch.
+     The help modal is the exception: its prose is long enough that keeping two
+     hand-written language blocks and toggling them reads better than threading
+     a dozen markup-bearing strings through the catalog. -->
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>SQL Test Case Designer</title>
+  <link rel="stylesheet" href="css/sqlcases.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <span class="topbar-title">🧪 <span data-i18n="ui.title"></span></span>
+    <span class="topbar-sub" data-i18n="ui.subtitle"></span>
+    <div class="topbar-actions">
+      <button id="toggleLang" class="t-btn" data-i18n-title="ui.langTip">🌐 <span id="langLabel">VI</span></button>
+      <button id="btnHelp" class="t-btn" data-i18n="ui.help"></button>
+      <button id="toggleTheme" class="t-btn" data-i18n-title="ui.themeTip">🌙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <!-- ===== LEFT: input & options ===== -->
+    <section class="pane pane-input">
+
+      <div class="card">
+        <div class="card-head">
+          <h3 data-i18n="ui.sqlQuery"></h3>
+          <div class="card-head-actions">
+            <select id="sampleSelect" class="mini-select"></select>
+            <button id="btnClear" class="t-btn t-btn-sm" data-i18n="ui.clear"></button>
+          </div>
+        </div>
+        <textarea id="sqlInput" spellcheck="false" placeholder="SELECT u.id, u.name, COUNT(o.id) AS orders
+  FROM users u
+  LEFT JOIN orders o ON o.user_id = u.id
+ WHERE u.age BETWEEN 18 AND 65
+   AND u.country IN ('VN', 'SG')
+ GROUP BY u.id, u.name
+HAVING COUNT(o.id) > 3
+ ORDER BY orders DESC
+ LIMIT 20"></textarea>
+        <div class="input-foot">
+          <span class="helper" id="parseStatus"></span>
+          <button id="btnAnalyze" class="primary-gradient" data-i18n="ui.analyze"></button>
+        </div>
+        <div id="parseErrors" class="parse-errors" hidden></div>
+      </div>
+
+      <details class="card panel" id="techPanel" open>
+        <summary class="panel-head">
+          <h3 data-i18n="ui.techniques"></h3>
+          <span class="panel-sum" id="techSummary"></span>
+        </summary>
+        <div class="panel-body">
+        <ul class="tech-list" id="techList"></ul>
+
+        <div class="opt-row">
+          <label for="optMaxFull" data-i18n="ui.fullTableUpTo"></label>
+          <select id="optMaxFull" class="mini-select">
+            <option value="3"></option>
+            <option value="4" selected></option>
+            <option value="5"></option>
+            <option value="6"></option>
+          </select>
+        </div>
+        <p class="helper" data-i18n="ui.mcdcHint"></p>
+
+        <label class="check-row">
+          <input type="checkbox" id="optJoinConds" checked />
+          <span data-i18n="ui.alsoOnClauses"></span>
+        </label>
+        </div>
+      </details>
+
+      <details class="card panel" id="schemaCard" hidden>
+        <summary class="panel-head">
+          <h3 data-i18n="dg.schema"></h3>
+          <span class="panel-sum" id="schemaSummary"></span>
+        </summary>
+        <div class="panel-body">
+          <div id="schemaBody"></div>
+          <p class="helper" data-i18n="dg.schemaHint"></p>
+        </div>
+      </details>
+
+      <details class="card panel" id="valuesCard" hidden>
+        <summary class="panel-head">
+          <h3 data-i18n="vb.title"></h3>
+          <span class="panel-sum" id="valuesSummary"></span>
+        </summary>
+        <div class="panel-body">
+          <div class="vb-head">
+            <p class="helper" data-i18n="vb.hint"></p>
+            <button id="btnResetValues" class="t-btn t-btn-sm" data-i18n="vb.resetAll" data-i18n-title="vb.resetAllTip"></button>
+          </div>
+          <div id="valuesBody"></div>
+        </div>
+      </details>
+
+      <details class="card panel" id="analysisCard" hidden>
+        <summary class="panel-head">
+          <h3 data-i18n="ui.whatParsed"></h3>
+          <span class="panel-sum" id="analysisSummary"></span>
+        </summary>
+        <div class="panel-body"><div id="analysisBody"></div></div>
+      </details>
+
+    </section>
+
+    <!-- ===== RIGHT: results ===== -->
+    <section class="pane pane-results">
+
+      <div class="results-head">
+        <div class="stat-row" id="statRow">
+          <div class="stat"><span class="stat-num" id="statTotal">0</span><span class="stat-lbl" data-i18n="ui.statCases"></span></div>
+          <div class="stat"><span class="stat-num" id="statHigh">0</span><span class="stat-lbl" data-i18n="ui.statHigh"></span></div>
+          <div class="stat"><span class="stat-num" id="statConds">0</span><span class="stat-lbl" data-i18n="ui.statConditions"></span></div>
+          <div class="stat"><span class="stat-num" id="statJoins">0</span><span class="stat-lbl" data-i18n="ui.statJoins"></span></div>
+          <div class="stat"><span class="stat-num" id="statTables">0</span><span class="stat-lbl" data-i18n="ui.statTables"></span></div>
+        </div>
+        <div class="export-row">
+          <button id="btnCsv" class="t-btn" data-i18n="ui.csv" disabled></button>
+          <button id="btnJson" class="t-btn" data-i18n="ui.json" disabled></button>
+          <button id="btnCopyJson" class="t-btn" data-i18n="ui.copyJson" disabled></button>
+          <button id="btnDataCsv" class="t-btn" data-i18n="dg.exportCsv" disabled></button>
+          <button id="btnVerifySql" class="t-btn" data-i18n="dg.exportVerify" disabled></button>
+        </div>
+      </div>
+
+      <details class="strip" id="findingsPanel" hidden>
+        <summary class="panel-head">
+          <span class="panel-title" data-i18n="ui.findings"></span>
+          <span class="panel-sum" id="findingsSummary"></span>
+        </summary>
+        <div class="panel-body findings" id="findings"></div>
+      </details>
+
+      <details class="strip" id="coveragePanel" hidden>
+        <summary class="panel-head">
+          <span class="panel-title" data-i18n="ui.coverage"></span>
+          <span class="panel-sum" id="coverageSummary"></span>
+        </summary>
+        <div class="panel-body coverage" id="coverage"></div>
+      </details>
+
+      <div class="filter-bar">
+        <div class="pill-row" id="techFilter"></div>
+        <span class="helper data-hint" data-i18n="dg.dataHint"></span>
+        <div class="filter-right">
+          <select id="prioFilter" class="mini-select">
+            <option value="" data-i18n="ui.allPriorities"></option>
+            <option value="High" data-i18n="ui.highOnly"></option>
+            <option value="Medium" data-i18n="ui.mediumOnly"></option>
+            <option value="Low" data-i18n="ui.lowOnly"></option>
+          </select>
+          <input type="search" id="searchBox" class="search" data-i18n-ph="ui.search" />
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="case-table" id="caseTable">
+          <thead>
+            <tr>
+              <th class="col-id" data-i18n="ui.colId"></th>
+              <th class="col-tech" data-i18n="ui.colTech"></th>
+              <th class="col-target" data-i18n="ui.colTarget"></th>
+              <th class="col-title" data-i18n="ui.colCase"></th>
+              <th class="col-data" data-i18n="ui.colData"></th>
+              <th class="col-exp" data-i18n="ui.colExpected"></th>
+              <th class="col-prio" data-i18n="ui.colPrio"></th>
+            </tr>
+          </thead>
+          <tbody id="caseBody"></tbody>
+        </table>
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">🧪</div>
+          <div class="empty-title"></div>
+          <div class="empty-sub"></div>
+        </div>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- Help overlay -->
+  <div class="modal-backdrop" id="helpModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h3 data-i18n="ui.helpTitle"></h3>
+        <button class="t-btn t-btn-sm" id="btnHelpClose">✕</button>
+      </div>
+
+      <div class="modal-body help-lang" data-help-lang="vi">
+        <p>Câu truy vấn được tách token và phân tích thành cây cú pháp, rồi rút gọn thành một mô hình phẳng:
+           các điều kiện lá được đánh số, danh sách join, phần gom nhóm, sắp xếp và phân trang. Bốn kỹ thuật
+           chạy trên mô hình đó.</p>
+
+        <h4>EP + BVA</h4>
+        <p><b>Phân hoạch tương đương (Equivalence Partitioning)</b> chia miền giá trị của mỗi điều kiện thành
+           các lớp mà câu truy vấn đối xử như nhau, rồi lấy một giá trị đại diện cho mỗi lớp.
+           <b>Phân tích giá trị biên (Boundary Value Analysis)</b> bổ sung những giá trị mà lỗi lệch một đơn vị
+           thực sự nằm ở đó — chính giá trị biên và hai giá trị kề nó. Bước nhảy theo kiểu dữ liệu suy được:
+           1 với số nguyên, 0.01 với tiền tệ, một ngày với kiểu date, một giây với timestamp. Cột chuỗi không có
+           giá trị liền kề dạng số, nên case biên của chúng xoay quanh độ dài, chuỗi rỗng và khoảng trắng.</p>
+
+        <h4>Bảng quyết định + độ phủ</h4>
+        <p>Mệnh đề WHERE là một biểu thức logic, nên các luật của nó chính là một bảng quyết định: mỗi điều kiện
+           một cột, mỗi tổ hợp một dòng. Trong ngưỡng cấu hình, bạn nhận đủ bảng 2ⁿ. Vượt ngưỡng, công cụ chuyển
+           sang <b>MC/DC</b> — với mỗi điều kiện, một cặp luật giống hệt nhau ngoại trừ điều kiện đó, và việc lật
+           riêng nó làm đổi kết quả chung. Điều kiện nào không tìm được cặp như vậy sẽ bị báo cáo: nó không thể
+           tác động độc lập lên kết quả, thường nghĩa là thừa hoặc sai logic. Biểu thức <b>CASE</b> được phủ theo
+           nhánh, bao gồm cả nhánh NULL ngầm định khi thiếu ELSE.</p>
+
+        <h4>NULL &amp; logic 3 trạng thái</h4>
+        <p>Điều kiện trong SQL trả về TRUE, FALSE hoặc UNKNOWN, và chỉ TRUE mới giữ lại dòng. Kỹ thuật này chỉ
+           đích danh giá trị NULL đứng sau từng hành vi: <code>status &lt;&gt; 'x'</code> làm rơi mất các dòng NULL,
+           <code>NOT IN</code> trả về rỗng khi subquery sinh ra NULL, <code>COUNT(col)</code> lệch với
+           <code>COUNT(*)</code>, khoá join mang NULL không bao giờ khớp, khoá gom nhóm NULL gộp thành một nhóm,
+           và vị trí NULL trong ORDER BY khác nhau tuỳ hệ quản trị.</p>
+
+        <h4>JOIN / GROUP BY / ORDER-LIMIT</h4>
+        <p>Nơi lỗi nằm ở hình dạng kết quả chứ không phải ở một giá trị: mỗi join được test ở ba mức lực lượng
+           1:1, mồ côi và 1:n; một điều kiện WHERE đặt trên bảng thuộc outer join âm thầm biến nó thành inner
+           join; nhóm rỗng, một nhóm và nhiều nhóm; các dòng bằng nhau trong ORDER BY; và các trang ở mức bằng,
+           dưới, vượt quá số dòng thực có.</p>
+
+        <h4>Giá trị mẫu</h4>
+        <p>Mọi giá trị trong kết quả hoặc là đọc được từ câu truy vấn, hoặc là do công cụ tự nghĩ ra. Những giá trị
+           tự nghĩ ra được gom hết vào bảng <b>Giá trị mẫu</b> ở cột trái: các tham số truyền vào (<code>:amount</code>,
+           <code>?</code>) mà câu truy vấn không cho biết giá trị, và giá trị lấp chỗ trống cho những cột không bị
+           điều kiện nào ràng buộc. Sửa một ô ở đó là toàn bộ case và dữ liệu mẫu dùng giá trị ấy được sinh lại theo,
+           thay vì phải sửa từng case một.</p>
+        <p>Tham số một khi đã có giá trị sẽ được coi như hằng số viết thẳng trong câu lệnh, nên
+           <code>age &gt;= :min</code> với <code>:min = 18</code> cho ra đúng bộ biên 17 / 18 / 19 chứ không còn ghi
+           <code>:min - 1</code>. Các cột khoá chính và khoá ngoại cố tình không cho sửa: chúng là thứ nối các dòng
+           dữ liệu với nhau, ghi đè lên là hỏng chính cái join mà dữ liệu mẫu sinh ra để kiểm thử. Vì những giá trị
+           này không nằm trong câu truy vấn, chúng được báo ngay phía trên danh sách case.</p>
+
+        <h4>Những giới hạn nên biết</h4>
+        <ul>
+          <li>Chỉ câu lệnh ngoài cùng được phân tích. Hãy dán riêng từng CTE hoặc subquery để có bộ case riêng.</li>
+          <li>Không có lược đồ bảng, nên kiểu cột được suy từ giá trị so sánh trước, tên cột sau. Khi cả hai đều
+              không quyết định được, giá trị biên chỉ là chỗ điền tạm và case sẽ nói rõ điều đó.</li>
+          <li>Kết quả mong đợi mô tả điều mà ngữ nghĩa SQL bắt buộc, không phải điều dữ liệu hiện tại của bạn đang có.</li>
+        </ul>
+      </div>
+
+      <div class="modal-body help-lang" data-help-lang="en" hidden>
+        <p>The query is tokenised and parsed into a statement tree, then reduced to a flat model: numbered leaf
+           conditions, join list, grouping, ordering and paging. Four techniques run over that model.</p>
+
+        <h4>EP + BVA</h4>
+        <p><b>Equivalence Partitioning</b> splits each predicate's input domain into classes the query treats the
+           same way and takes one value from each. <b>Boundary Value Analysis</b> adds the values where off-by-one
+           defects live — the boundary and its two neighbours. The step size follows the inferred type: 1 for an
+           integer, 0.01 for money, a day for a date, a second for a timestamp. String columns have no numeric
+           neighbour, so their boundary cases are about length, empty string and whitespace instead.</p>
+
+        <h4>Decision Table + Coverage</h4>
+        <p>The WHERE clause is a boolean expression, so its rules are a decision table: one column per condition,
+           one row per combination. Up to the configured limit you get the full 2ⁿ table. Past it, the tool switches
+           to <b>MC/DC</b> — for each condition, a pair of otherwise-identical rules where flipping only that
+           condition flips the result. A condition with no such pair is reported: it cannot independently affect the
+           outcome, which usually means it is redundant or the logic is wrong. <b>CASE</b> expressions get branch
+           coverage, including the implicit NULL branch a missing ELSE leaves behind.</p>
+
+        <h4>NULL &amp; 3-valued logic</h4>
+        <p>SQL predicates return TRUE, FALSE or UNKNOWN, and only TRUE keeps a row. This technique names the
+           specific NULL behind each behaviour: <code>status &lt;&gt; 'x'</code> dropping NULL rows,
+           <code>NOT IN</code> returning nothing when the subquery yields a NULL, <code>COUNT(col)</code>
+           disagreeing with <code>COUNT(*)</code>, NULL join keys never matching, NULL grouping keys collapsing
+           into one group, engine-specific NULL placement in ORDER BY.</p>
+
+        <h4>JOIN / GROUP BY / ORDER-LIMIT</h4>
+        <p>Where the defect is in the shape of the result rather than a value: each join tested at 1:1, orphan and
+           1:n cardinality; a WHERE predicate on an outer-joined table silently turning it into an inner join;
+           empty, single and multiple groups; ties in ORDER BY; and pages at, below and beyond the row count.</p>
+
+        <h4>Sample values</h4>
+        <p>Every value in the results is either read from the query or invented by the tool. The invented ones are
+           collected into the <b>Sample values</b> panel on the left: the bind parameters (<code>:amount</code>,
+           <code>?</code>) whose value the query does not carry, and the filler used for columns no predicate
+           constrains. Editing one there re-runs generation, so every case and every fixture row that uses it
+           changes together rather than case by case.</p>
+        <p>A parameter with a value is treated as a literal written into the statement, so
+           <code>age &gt;= :min</code> with <code>:min = 18</code> produces the real 17 / 18 / 19 boundary trio
+           instead of <code>:min - 1</code>. Primary and foreign keys are deliberately not editable: they are what
+           links the fixture rows to each other, and typing over them breaks the very join the fixture exists to
+           exercise. Because these values are not in the query text, they are reported above the case list.</p>
+
+        <h4>Limits worth knowing</h4>
+        <ul>
+          <li>Only the outer statement is analysed. Paste a CTE or a subquery separately for its own cases.</li>
+          <li>There is no schema, so column types are inferred from comparison literals first and column names
+              second. When neither settles it, the boundary value is a placeholder and the case says so.</li>
+          <li>Expected results describe what the SQL semantics require, not what your data currently contains.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="sqlcases/ui.js"></script>
+</body>
+</html>

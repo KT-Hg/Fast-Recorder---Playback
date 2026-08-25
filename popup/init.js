@@ -58,6 +58,32 @@ function initCaptureTabs() {
   });
 }
 
+/**
+ * Open the SQL Test Case Designer in its own tab.
+ *
+ * The generated case table is far too wide for a 480px popup, so this is a
+ * full page rather than a sixth tab. An already-open instance is focused
+ * instead of duplicated — the page keeps unsaved query text in storage, and a
+ * second tab would silently compete with the first over that key.
+ */
+function initSqlCases() {
+  const btn = document.getElementById('openSqlCases');
+  if (!btn) return;
+  const url = chrome.runtime.getURL('sqlcases.html');
+  btn.addEventListener('click', () => {
+    chrome.tabs.query({ url }, (tabs) => {
+      const existing = tabs && tabs[0];
+      if (existing) {
+        chrome.tabs.update(existing.id, { active: true });
+        chrome.windows.update(existing.windowId, { focused: true });
+      } else {
+        chrome.tabs.create({ url });
+      }
+      window.close();
+    });
+  });
+}
+
 function initTabs() {
   const tabNav = document.getElementById('tabNav');
   const tabPanels = document.querySelectorAll('.tab-panel');
@@ -155,6 +181,7 @@ function step(name, fn) {
 step('initHeaderSpacer',       initHeaderSpacer);
 step('initTabs',               initTabs);
 step('initCaptureTabs',        initCaptureTabs);
+step('initSqlCases',           initSqlCases);
 step('initTheme',              initTheme);
 step('initScreenshots',        initScreenshots);
 step('initVariables',          initVariables);

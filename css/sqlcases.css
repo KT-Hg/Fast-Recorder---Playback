@@ -1,0 +1,790 @@
+/**
+ * sqlcases.css — SQL Test Case Designer page.
+ *
+ * Standalone rather than an extension of popup.css: that file is built around
+ * a 480px popup body, and this page is a full tab. The theme variables are
+ * kept name-for-name identical to popup.css so the shared `popupTheme` storage
+ * key produces the same colours in both surfaces.
+ */
+
+:root {
+  --primary: #3b82f6;
+  --primary-dark: #2563eb;
+  --danger: #ef4444;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --warning-text: #b45309;
+  --secondary: #8b5cf6;
+  --bg: #f9fafb;
+  --card: #ffffff;
+  --border: #e5e7eb;
+  --text: #111827;
+  --muted: #6b7280;
+  --secondary-bg: #f3f4f6;
+  --list-bg: #f3f4f6;
+  --inner-bg: rgba(0, 0, 0, 0.035);
+  --code-bg: #f1f5f9;
+  --code-text: #334155;
+  --modal-backdrop: rgba(0, 0, 0, 0.52);
+  --row-hover: rgba(59, 130, 246, 0.06);
+}
+
+[data-theme="dark"] {
+  --primary: #60a5fa;
+  --primary-dark: #3b82f6;
+  --danger: #f87171;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --warning-text: #fbbf24;
+  --secondary: #a78bfa;
+  --bg: #050f1f;
+  --card: #0d1829;
+  --border: #2d4157;
+  --text: #f5f7fa;
+  --muted: #b8c8da;
+  --secondary-bg: #1a2938;
+  --list-bg: #0d1829;
+  --inner-bg: rgba(255, 255, 255, 0.05);
+  --code-bg: #1e2231;
+  --code-text: #abb2bf;
+  --row-hover: rgba(96, 165, 250, 0.09);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+/* The panels below set display:flex/grid on a class, which outranks the UA
+   sheet's [hidden] rule — without this the help modal and the toast render on
+   every load. Keep this ahead of every layout rule. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ===== Top bar ===== */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--card);
+  border-bottom: 2px solid var(--border);
+  flex: 0 0 auto;
+}
+.topbar-title { font-size: 15px; font-weight: 700; }
+.topbar-sub { font-size: 12px; color: var(--muted); }
+.topbar-actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* ===== Buttons & controls ===== */
+button {
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--secondary-bg);
+  color: var(--text);
+  padding: 6px 12px;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+button:hover:not(:disabled) { border-color: var(--primary); }
+button:disabled { opacity: 0.45; cursor: default; }
+
+.t-btn-sm { padding: 3px 8px; font-size: 12px; }
+
+.primary-gradient {
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+  color: #fff;
+  border: none;
+  font-weight: 600;
+  padding: 7px 16px;
+}
+.primary-gradient:hover:not(:disabled) { filter: brightness(1.08); }
+
+.mini-select, .search, select, input[type="search"] {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+}
+.search { min-width: 180px; }
+
+/* ===== Layout ===== */
+.layout {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(340px, 30%) 1fr;
+  gap: 12px;
+  padding: 10px 12px 12px;
+  min-height: 0;
+}
+.pane { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+
+/* The sidebar is a column of controls, so it scrolls as a whole. */
+.pane-input { overflow-y: auto; }
+
+/*
+ * The results column is a fixed shell: it never scrolls itself, and every
+ * band inside it keeps its natural height except the case table, which takes
+ * whatever is left. Previously this column scrolled *and* the table inside it
+ * scrolled, which put two vertical scrollbars side by side and shrank the
+ * table as soon as a query produced findings and a coverage card.
+ */
+.pane-results { gap: 8px; overflow: hidden; }
+.pane-results > * { flex: 0 0 auto; }
+.pane-results > .table-wrap { flex: 1 1 auto; min-height: 0; }
+
+/* ===== Cards ===== */
+.card {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+}
+.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.card-head h3 {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+/* Vietnamese labels run longer than their English counterparts. Let the
+   heading keep one line and give the controls beside it room to shrink,
+   rather than letting a two-line heading push them out of the card. */
+.card-head h3 { white-space: nowrap; }
+.card-head-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.card-head-actions .mini-select {
+  min-width: 0;
+  flex: 1 1 auto;
+  text-overflow: ellipsis;
+}
+
+.helper { font-size: 11.5px; color: var(--muted); margin: 6px 0 0; }
+
+/* ===== SQL input ===== */
+#sqlInput {
+  width: 100%;
+  /* Sized so the sidebar's default contents fit without a scrollbar; the
+     textarea is resizable, so a long query is still the user's call. */
+  min-height: 196px;
+  resize: vertical;
+  font-family: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--code-text);
+}
+#sqlInput:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
+
+.input-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.input-foot .helper { margin: 0; flex: 1; }
+
+.parse-errors {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 3px solid var(--danger);
+  background: var(--inner-bg);
+  font-size: 12px;
+}
+.parse-errors b { color: var(--danger); }
+.parse-errors code {
+  display: block;
+  margin-top: 4px;
+  font-family: Consolas, monospace;
+  white-space: pre-wrap;
+  color: var(--muted);
+}
+
+/* ===== Technique list ===== */
+.tech-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tech-list li { border-radius: 7px; }
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  border-radius: 7px;
+}
+.check-row:hover { background: var(--inner-bg); }
+.check-row input { margin: 2px 0 0; flex: 0 0 auto; cursor: pointer; }
+.check-row .tech-name { flex: 1 1 auto; }
+.check-row .tech-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.opt-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-top: 4px; }
+.opt-row label { color: var(--muted); }
+.opt-row .mini-select { margin-left: auto; }
+
+/* ===== Parsed-analysis summary ===== */
+.an-group { margin-bottom: 10px; }
+.an-group:last-child { margin-bottom: 0; }
+.an-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--inner-bg);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+}
+.chip code { font-family: Consolas, monospace; color: var(--primary); }
+.chip-id {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  color: var(--secondary);
+}
+.chip-type { color: var(--muted); font-size: 10.5px; }
+
+/* ===== Collapsible panels =====
+ *
+ * Native <details>, so keyboard and screen-reader behaviour come for free. The
+ * summary carries a count, which is the point: collapsed, the panel still says
+ * how much it is hiding, so nothing important becomes invisible.
+ */
+.panel > summary, .strip > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.panel > summary::-webkit-details-marker,
+.strip > summary::-webkit-details-marker { display: none; }
+
+.panel-head::before, .strip > summary::before {
+  content: '\25B8';
+  color: var(--muted);
+  font-size: 11px;
+  flex: 0 0 auto;
+  transition: transform 0.12s;
+}
+details[open] > .panel-head::before { transform: rotate(90deg); }
+
+.panel-head h3 { margin: 0; }
+.panel-title {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.panel-sum {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-sum .sum-error { color: var(--danger); font-weight: 600; }
+.panel-sum .sum-warn { color: var(--warning-text); font-weight: 600; }
+
+details.card > summary { padding: 0; }
+details.card[open] > .panel-body { margin-top: 8px; }
+
+/* A strip is the results-column form: one line when shut, a bordered card
+   when open, so it reads as part of the toolbar rather than as a big panel. */
+.strip {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 5px 12px;
+}
+.strip[open] { padding-bottom: 10px; }
+.strip[open] > .panel-body { margin-top: 8px; }
+.strip .findings, .strip .coverage { display: flex; }
+
+/* Open panels must not push the table away without limit. */
+.strip[open] > .panel-body {
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+/* ===== Results header ===== */
+.results-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+.stat-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.stat { display: flex; align-items: baseline; gap: 5px; }
+.stat-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.export-row { margin-left: auto; display: flex; gap: 6px; }
+
+/* ===== Findings ===== */
+.findings { display: flex; flex-direction: column; gap: 4px; }
+.finding {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  font-size: 12.5px;
+}
+.finding-error { border-left-color: var(--danger); }
+.finding-warn  { border-left-color: var(--warning); }
+.finding-info  { border-left-color: var(--primary); }
+.finding-icon { flex: 0 0 auto; }
+
+/* ===== Coverage ===== */
+.coverage { display: flex; flex-wrap: wrap; gap: 8px; }
+.cov-card {
+  flex: 1 1 260px;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.cov-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.cov-scope { font-weight: 700; }
+.cov-mode { font-size: 11.5px; color: var(--muted); }
+.cov-bars { display: flex; flex-direction: column; gap: 5px; }
+.cov-bar-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.cov-bar-lbl { flex: 0 0 128px; color: var(--muted); }
+.cov-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--inner-bg);
+  overflow: hidden;
+}
+.cov-bar-fill { height: 100%; border-radius: 3px; background: var(--success); }
+.cov-bar-fill.partial { background: var(--warning); }
+.cov-bar-val { flex: 0 0 42px; text-align: right; font-variant-numeric: tabular-nums; }
+.cov-legend { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; }
+.cov-legend code { font-family: Consolas, monospace; color: var(--code-text); }
+
+/* ===== Filter bar ===== */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pill-row { display: flex; gap: 5px; flex-wrap: wrap; }
+.pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  font-size: 12px;
+}
+.pill.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+.pill .pill-n { opacity: 0.7; margin-left: 4px; font-variant-numeric: tabular-nums; }
+.filter-right { margin-left: auto; display: flex; gap: 6px; }
+/* Shrinks and ellipsizes instead of wrapping: the filter bar is worth a whole
+   row of table height, so the hint gives way rather than pushing the controls
+   onto a second line. */
+.filter-bar .data-hint {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Case table ===== */
+.table-wrap {
+  min-height: 120px;
+  overflow: auto;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  position: relative;
+}
+.case-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+/* Direct-child combinators throughout: the fixture panel puts a second table
+   inside a cell of this one, and descendant selectors would style its header
+   as a sticky uppercase column head too. */
+.case-table > thead > tr > th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--secondary-bg);
+  border-bottom: 2px solid var(--border);
+  padding: 7px 9px;
+  text-align: left;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.case-table > tbody > tr > td {
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  line-height: 1.45;
+}
+.case-table > tbody > tr.case-row:hover { background: var(--row-hover); }
+
+.col-id     { width: 74px; }
+.col-tech   { width: 120px; }
+.col-target { width: 130px; }
+.col-prio   { width: 62px; }
+
+.cell-id {
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cell-target { font-family: Consolas, monospace; font-size: 11.5px; word-break: break-word; }
+.cell-data, .cell-exp { word-break: break-word; }
+.cell-note {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+.cell-group {
+  display: block;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.tech-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.tech-EP        { background: rgba(59, 130, 246, 0.14);  color: var(--primary); }
+.tech-BVA       { background: rgba(139, 92, 246, 0.14);  color: var(--secondary); }
+.tech-Decision  { background: rgba(16, 185, 129, 0.14);  color: var(--success); }
+.tech-MCDC      { background: rgba(16, 185, 129, 0.14);  color: var(--success); }
+.tech-Branch    { background: rgba(16, 185, 129, 0.14);  color: var(--success); }
+.tech-NULL      { background: rgba(245, 158, 11, 0.16);  color: var(--warning-text); }
+.tech-Structure { background: rgba(107, 114, 128, 0.16); color: var(--muted); }
+
+.prio {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.prio-High   { background: rgba(239, 68, 68, 0.14);  color: var(--danger); }
+.prio-Medium { background: rgba(245, 158, 11, 0.16); color: var(--warning-text); }
+.prio-Low    { background: rgba(107, 114, 128, 0.16); color: var(--muted); }
+
+/* ===== Inferred schema ===== */
+.sc-table { margin-bottom: 8px; }
+.sc-table:last-child { margin-bottom: 0; }
+.sc-name {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 3px;
+}
+.sc-cols { display: flex; flex-direction: column; gap: 1px; }
+.sc-col {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--inner-bg);
+}
+.sc-col-name { font-family: Consolas, monospace; flex: 0 0 auto; }
+.sc-col-type { color: var(--muted); font-size: 10.5px; }
+.sc-tag {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.sc-tag-pk { background: rgba(139, 92, 246, 0.16); color: var(--secondary); }
+.sc-tag-fk { background: rgba(59, 130, 246, 0.14); color: var(--primary); }
+.sc-tag-nn { background: rgba(107, 114, 128, 0.16); color: var(--muted); }
+
+/* ===== The value book: one place to edit every generated sample value ===== */
+.vb-head { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+.vb-head .helper { margin: 0; flex: 1 1 auto; }
+.vb-head .t-btn { flex: 0 0 auto; }
+
+.vb-section {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 700;
+  margin: 10px 0 2px;
+}
+.vb-section:first-child { margin-top: 0; }
+.vb-group { margin-bottom: 8px; }
+.vb-group:last-child { margin-bottom: 0; }
+.vb-group-name {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  font-size: 12px;
+  margin: 6px 0 3px;
+}
+.vb-group-hint { font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+
+.vb-row {
+  padding: 4px 6px 5px;
+  border-radius: 6px;
+  background: var(--inner-bg);
+  margin-bottom: 3px;
+  border-left: 2px solid transparent;
+}
+.vb-row.vb-set { border-left-color: var(--primary); }
+.vb-row-head { display: flex; align-items: baseline; gap: 6px; }
+.vb-name { font-family: Consolas, monospace; font-size: 11.5px; }
+.vb-type { color: var(--muted); font-size: 10.5px; }
+.vb-uses { margin-left: auto; color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+
+.vb-line { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+.vb-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+}
+.vb-input:focus { outline: none; border-color: var(--primary); }
+.vb-input::placeholder { color: var(--muted); opacity: 0.75; }
+.vb-input.vb-invalid { border-color: var(--warning); }
+.vb-reset { flex: 0 0 auto; line-height: 1; padding: 3px 7px; }
+.vb-warn { font-size: 10.5px; color: var(--warning-text); margin-top: 3px; }
+
+/* ===== Case rows expand into their test data ===== */
+.data-hint { margin: 0 0 -4px; }
+.case-table tbody tr.case-row { cursor: pointer; }
+.case-table tbody tr.case-row.open { background: var(--row-hover); }
+.cell-id::before {
+  content: '\25B8';
+  display: inline-block;
+  width: 10px;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+tr.case-row.open .cell-id::before { transform: rotate(90deg); }
+
+.case-detail > td { background: var(--inner-bg); padding: 10px 12px 12px 32px; }
+.fx-sec { margin-bottom: 10px; }
+.fx-sec:last-child { margin-bottom: 0; }
+.fx-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.fx-tables { display: flex; flex-wrap: wrap; gap: 10px; }
+.fx-table {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.fx-tname {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  font-size: 11.5px;
+  margin-bottom: 4px;
+}
+.fx-count { font-weight: 400; color: var(--muted); margin-left: 6px; font-size: 10.5px; }
+.fx-empty { color: var(--muted); font-style: italic; font-size: 11.5px; }
+.fx-grid { border-collapse: collapse; font-size: 11.5px; }
+.fx-grid th, .fx-grid td {
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  text-align: left;
+  font-family: Consolas, monospace;
+  white-space: nowrap;
+}
+.fx-grid th { background: var(--secondary-bg); color: var(--muted); font-weight: 600; }
+.fx-grid td.focus {
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--warning-text);
+  font-weight: 700;
+}
+.fx-sql {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.fx-exp { margin-top: 4px; font-size: 11.5px; }
+.fx-exp b { color: var(--success); }
+.fx-req { font-size: 11.5px; color: var(--warning-text); }
+.fx-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+/* ===== Empty state ===== */
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.empty-icon { font-size: 30px; opacity: 0.5; }
+.empty-title { font-weight: 600; font-size: 14px; }
+.empty-sub { font-size: 12px; }
+
+/* ===== Modal ===== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--modal-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 20px;
+}
+.modal {
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  max-width: 760px;
+  width: 100%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 2px solid var(--border);
+}
+.modal-head h3 { margin: 0; font-size: 14px; }
+.modal-head button { margin-left: auto; }
+.modal-body { padding: 14px 16px; overflow-y: auto; line-height: 1.6; }
+.modal-body h4 {
+  margin: 16px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+}
+.modal-body h4:first-child { margin-top: 0; }
+.modal-body p { margin: 0 0 6px; }
+.modal-body ul { margin: 4px 0; padding-left: 20px; }
+.modal-body li { margin-bottom: 3px; }
+.modal-body code {
+  font-family: Consolas, monospace;
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+/* ===== Toast ===== */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--text);
+  color: var(--bg);
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  z-index: 60;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* ===== Narrow screens =====
+ *
+ * Last in the file on purpose. Several of these override rules of equal
+ * specificity written further up, so source order is what makes them win —
+ * higher in the file, the sticky header and the table's own overflow would
+ * silently survive here.
+ */
+@media (max-width: 900px) {
+  body { overflow: auto; height: auto; }
+  .layout { grid-template-columns: 1fr; }
+  .pane, .pane-input, .pane-results { overflow: visible; }
+  /* Stacked on a narrow screen the page itself is the scroller, so the table
+     expands instead of becoming a small scrolling island inside a long page. */
+  .pane-results > .table-wrap { flex: 0 0 auto; max-height: none; }
+  .table-wrap { overflow: visible; }
+  .case-table > thead > tr > th { position: static; }
+}

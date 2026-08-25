@@ -16,6 +16,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Screenshot** | Visible, full page, scroll (V/H), segment, element, whole OS window — with crop editor, standalone image editor, image diff, and watermark |
 | **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
 | **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
+| **SQL Test Cases** | Vietnamese/English. Parse a SELECT/INSERT/UPDATE/DELETE statement and derive a test case list — EP + BVA, decision table / MC-DC, NULL & 3-valued logic, JOIN cardinality, grouping and paging — with one panel for editing the sample values every case draws on, exported as CSV or JSON |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
 | **UI** | Dark/light theme, 5 drag-to-reorder tabs, collapsible cards, hotkeys |
 
@@ -63,6 +64,7 @@ The popup has five tabs, reorderable by drag-and-drop. The last active tab is re
 - **Export Code** — generate a standalone JS Bookmarklet or Selenium Python script from any saved scenario
 - Scheduled playback at a set time — one-off, or **Repeat daily**
 - CSV data-driven runs (one scenario execution per CSV row)
+- **SQL Test Case Designer** — opens `sqlcases.html` in its own tab (see below)
 
 ### Capture
 - Screenshot: Visible, Full Page, Scroll V/H, Segment V/H, Element, Window
@@ -226,6 +228,146 @@ finally:
 
 ---
 
+## SQL Test Case Designer
+
+Opened from **Data → Analyze a SQL query**, this is a standalone page (`sqlcases.html`) that parses a SQL
+statement and derives a numbered test case list from it. Nothing is sent anywhere — tokenising, parsing and
+generation all run locally in the page.
+
+**Scope:** `SELECT` (joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`/`OFFSET`, `UNION`, CTEs, `CASE`)
+plus `INSERT`, `UPDATE` and `DELETE`. MySQL backticks, SQL Server brackets and ANSI double quotes are all
+accepted, as are the `?` / `:name` / `@name` / `$1` parameter markers. Both MySQL (`INTERVAL 6 MONTH`) and
+PostgreSQL (`INTERVAL '6 months'`) interval syntax parse.
+
+**Language:** Vietnamese by default, English via the 🌐 button in the top bar; the choice is remembered.
+Generation runs in the active language rather than translating afterwards, so an export always matches what is
+on screen. SQL keywords stay in English in both — they are what the tester has to match against the query.
+Catalogs live in [`sqlcases/i18n/`](sqlcases/i18n/); `technique` and `priority` stay stable English codes
+internally and are localised only for display, so filtering and the JSON export are language-independent.
+
+### Layout
+
+The results column is a fixed shell rather than a scrolling one: **the case table is the only thing on the page
+that scrolls**. Findings, coverage, the inferred schema and the parsed analysis are `<details>` panels that sit
+shut by default, each showing a count in its summary line — `1 warning · 1 note`, `WHERE 100% / 100%`,
+`3 tables · 11 columns` — so nothing important becomes invisible when collapsed. Findings open by themselves
+when the query has an actual error in it.
+
+That replaces an earlier arrangement where the column scrolled *and* the table inside it scrolled, putting two
+vertical scrollbars side by side and squeezing the table as soon as a query produced findings and a coverage
+card. Panel open/closed state is remembered per user. Below 900px the two columns stack and the page itself
+becomes the scroller.
+
+### Techniques
+
+| Technique | What it produces |
+|---|---|
+| **EP + BVA** | One representative value per equivalence class of each predicate, plus the boundary and its two neighbours. Step size follows the inferred type — `1` for an integer, `0.01` for money, a day for a date, a second for a timestamp. String columns get length / empty / whitespace boundaries instead. |
+| **Decision Table + Coverage** | The full 2ⁿ rule table while the condition count stays under the configured limit, then **MC/DC** — one rule pair per condition. Reports conditions that cannot independently affect the outcome, and gives `CASE` expressions branch coverage including the implicit NULL branch of a missing `ELSE`. |
+| **NULL & 3-valued logic** | The specific NULL behind each behaviour: `<>` dropping NULL rows, `NOT IN` returning nothing on a NULL subquery result, `COUNT(col)` vs `COUNT(*)`, NULL join keys never matching, NULL grouping keys collapsing into one group, engine-specific NULL placement in `ORDER BY`, nullability of written columns. |
+| **JOIN / GROUP BY / ORDER-LIMIT** | Every join at 1:1, orphan and 1:n cardinality; a `WHERE` predicate on an outer-joined table silently turning it into an inner join; empty / single / multiple groups; ties in `ORDER BY`; pages at, below and beyond the row count. |
+
+Above the case list, **findings** call out defects the query itself carries — a comma join, `= NULL`, a
+`DELETE` with no `WHERE`, an aggregate sitting above a 1:n join — and **coverage** reports condition and
+decision coverage per clause.
+
+### Test data for manual runs
+
+Clicking a case expands it into the rows that case needs and the query to run once they exist — read-and-type
+fixtures for a manual tester, not `INSERT` statements.
+
+**Inferred schema.** There is no real schema, so one is derived from the query: the columns it mentions, types
+from the analysis, a primary key guessed from naming, and foreign keys read off the join conditions —
+`ON o.user_id = u.id` is a statement about how two tables relate, which is exactly what linking fixture rows
+requires. The left-hand panel shows what was inferred, because every generated value depends on it; a wrong
+guess is visible there before anyone types the data in.
+
+**Rows to prepare.** One block per table, with the value under test highlighted and child rows already pointing
+at the parent row generated beside them. Conditions that are about row *counts* rather than column values are
+honoured as such: `HAVING COUNT(o.id) > 3` seeds four child rows, and a join-orphan case seeds none at all.
+
+**Query to run afterwards.** The original statement with its expected outcome recorded next to it, so a manual
+run is self-checking.
+
+Values come from the analysis, never from parsing a case's prose — that prose is translated, and re-reading it
+would break the moment the page is in Vietnamese. Requirements that cannot be expressed as a row ("the subquery
+must return no rows") are listed as such instead of quietly seeding something that does not reproduce the case.
+
+### Sample values
+
+Every value in the results is either read from the query or invented by the tool, and the invented ones are
+collected into a single editable panel — **Sample values**, on the left, under the inferred schema. Change one
+there and generation re-runs, so the cases and the fixture rows that use it change together instead of being
+corrected case by case.
+
+Two kinds of value are editable, because they enter the results by two different routes:
+
+| | What it is | What changes when you set it |
+|---|---|---|
+| **Bind parameters** | `:amount`, `@id`, `?` — the markers the query has instead of a value | The parameter is treated as a literal from that point on, so `age >= :min` with `:min = 18` produces the real `17 / 18 / 19` boundary trio instead of `:min - 1`. The inferred type follows the value, exactly as it would for a literal written into the query. |
+| **Column samples** | The filler used for a column no predicate constrains | Every fixture cell that would have held `name_1`, and every case that asks for "any non-NULL value" for that column. |
+
+Anonymous `?` markers are numbered in source order (`?1`, `?2`) so two of them can hold different values; a
+named parameter is one entry however often it appears. Primary and foreign keys are deliberately not editable —
+those link the fixture rows to each other, and typing over them would break the join the fixture exists to
+exercise. Each row shows how far the value reaches (`14 cells`, `1 condition`), so a value nothing uses says so
+rather than looking like it had an effect.
+
+Values are keyed by table *name* rather than alias, so rewriting `users u` as `users usr` keeps them, and they
+persist across sessions. A value that does not look like the column's type — `abc` in an integer column — is
+still used exactly as typed, and flagged rather than silently dropped. `↺` restores one generated value,
+**Reset all** clears the book.
+
+Because these values are not in the query text, they are reported above the results: `Values from the
+sample-value book are in use: :min = 18`. Unbound parameters are reported too, since they are the reason a
+boundary case can only describe itself relatively.
+
+### Export
+
+- **CSV** — UTF-8 with BOM, CRLF, every field quoted; opens cleanly in Excel (Vietnamese diacritics included)
+  and imports into TestRail/Jira. Headers and case text follow the active language.
+- **JSON** — the cases plus the parsed analysis (tables, joins, numbered conditions with inferred types,
+  grouping, paging, parameters, findings, coverage) and the sample values in force, so a reader can tell where
+  a value that is not in the SQL came from.
+- **Data CSV** — one file per table, every fixture row tagged with the case it belongs to.
+- **Verify SQL** — the query per case, with its expected result as a comment above it.
+
+### Regression guard
+
+```bash
+node sqlcases/selftest.mjs
+```
+
+No framework or dependencies. Beyond a no-throw sweep it asserts **clause completeness** — that `GROUP BY`,
+`HAVING`, `ORDER BY` and `LIMIT` actually reached the model. A parser that stops mid-statement still returns an
+AST and still reports no error; it just silently drops every clause after the point it lost the thread, which is
+exactly the failure that guard exists to catch.
+
+It covers the **value book** end to end: that typed text becomes the right SQL literal for the column type,
+that binding a parameter makes boundary cases concrete and clearing it puts them back exactly as they were,
+that a column sample reaches both the case prose and the fixture row through the table alias, and that keys are
+never offered as editable values.
+
+It also covers the **translation catalogs**, for the same reason: a missing key degrades to the key itself
+(`st.orphanKept` appearing in a case description) rather than crashing, so the suite generates every query shape
+in both languages and asserts no key was missed, no placeholder differs between catalogs, and no raw key leaks
+into the output.
+
+Fixture generation is covered too: that a foreign key points at the parent row generated beside it, that a
+boundary value actually lands in the row and is flagged, that `HAVING COUNT` drives the child-row count, and
+that each per-table CSV comes out square.
+
+### Limits
+
+- Only the outer statement is analysed. CTEs and subqueries are flagged; paste each one separately for its own cases.
+- There is no schema, so column types are inferred from comparison literals first and column names second.
+  When neither settles it, the boundary value is a placeholder and the case says so.
+- Expected results state what SQL semantics require, not what the current data contains.
+- Generated data covers the columns the query mentions. A `NOT NULL` column the query never names is invisible
+  to the tool, so a real insert may still need values it does not supply.
+
+---
+
 ## Variable System
 
 ```
@@ -309,6 +451,10 @@ All hotkeys are configurable in the **Settings** tab and synced via `chrome.stor
 ```
 
 `content.js` is injected into **all frames**; recorded actions carry the originating `frameId` so playback targets the right frame.
+
+`sqlcases.html` + `sqlcases/*.js` sit outside that pipeline: the SQL Test Case Designer is a self-contained
+page that never messages the service worker or touches a tab. It is opened from the Data tab and uses
+`chrome.storage.local` only to remember the last query, the technique toggles and the shared theme.
 
 ### System States
 
