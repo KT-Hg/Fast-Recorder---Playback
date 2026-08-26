@@ -16,7 +16,7 @@
 
 import { parse } from './parser.js';
 import { analyze } from './analyze.js';
-import { generateCases } from './generate.js';
+import { generateCases, generateComparison } from './generate.js';
 import { diffQueries } from './diff.js';
 import { toCsv, toJson } from './export.js';
 import { inferSchema, buildAllFixtures, fixturesToCsv, valueSlots } from './datagen.js';
@@ -173,7 +173,7 @@ SHAPES.forEach((sql, i) => {
     JSON.parse(toJson(sql, r));
     const csv = toCsv(r.cases);
     const rows = csv.replace(/^﻿/, '').trim().split('\r\n');
-    const badRow = rows.find(row => (row.match(/"(?:[^"]|"")*"/g) || []).length !== 11);
+    const badRow = rows.find(row => (row.match(/"(?:[^"]|"")*"/g) || []).length !== 12);
     check(`${label}: CSV columns intact`, !badRow, badRow && badRow.slice(0, 80));
     const bad = r.cases.find(c =>
       !c.id || !c.title || !c.expected || !c.rationale ||
@@ -549,6 +549,103 @@ SHAPES.forEach((sql, i) => {
     diffQueries(sql, next);
   } catch (err) {
     check(`shape ${i + 1} vs ${(i + 1) % SHAPES.length + 1}: diff does not throw`, false, err.message);
+  }
+});
+
+// ---------------------------------------------------------------------
+// 9. Change-impact comparison (Giai đoạn 3): generateComparison() tags every
+//    "after" case as changed/unrelated and every "before" case whose source
+//    is gone as stale, off the same sourceIds the technique modules attach.
+// ---------------------------------------------------------------------
+
+{
+  const before = `SELECT u.id, u.name, COUNT(o.id) AS order_count
+     FROM users u
+     LEFT JOIN orders o ON o.user_id = u.id
+    WHERE u.age BETWEEN 18 AND 65 AND u.country IN ('VN','SG')
+    GROUP BY u.id, u.name
+   HAVING COUNT(o.id) > 3
+    ORDER BY order_count DESC
+    LIMIT 20`;
+  // Narrows the age range and raises the HAVING threshold; country and the
+  // join are untouched.
+  const after = `SELECT u.id, u.name, COUNT(o.id) AS order_count
+     FROM users u
+     LEFT JOIN orders o ON o.user_id = u.id
+    WHERE u.age BETWEEN 21 AND 65 AND u.country IN ('VN','SG')
+    GROUP BY u.id, u.name
+   HAVING COUNT(o.id) > 5
+    ORDER BY order_count DESC
+    LIMIT 20 OFFSET 10`;
+
+  const cmp = generateComparison(before, after);
+  check('comparison ok on two valid statements', cmp.ok);
+  check('every after-case is tagged changed or unrelated',
+    cmp.after.cases.every(c => c.impact === 'changed' || c.impact === 'unrelated'));
+
+  const ageCases = cmp.after.cases.filter(c => (c.columns || []).some(col => col.raw === 'u.age'));
+  check('cases about the narrowed age range are impacted', ageCases.length > 0 && ageCases.every(c => c.impact === 'changed'),
+    ageCases.map(c => `${c.title}:${c.impact}`).join(' | '));
+
+  const havingCases = cmp.after.cases.filter(c => c.clause === 'HAVING');
+  check('cases about the raised HAVING threshold are impacted', havingCases.length > 0 && havingCases.every(c => c.impact === 'changed'));
+
+  // Decision-table rules legitimately span both conditions (age AND country),
+  // so they are excluded here — a rule touching the changed age condition is
+  // correctly "changed" even though it also touches country.
+  const countryCases = cmp.after.cases.filter(c =>
+    (c.columns || []).some(col => col.raw === 'u.country') && !['Decision Table', 'MC/DC'].includes(c.technique));
+  check('cases about the untouched country filter are unrelated', countryCases.length > 0 && countryCases.every(c => c.impact === 'unrelated'),
+    countryCases.map(c => `${c.title}:${c.impact}`).join(' | '));
+
+  // Removing a condition marks the before-side cases built from it stale.
+  const removedCond = generateComparison(
+    `SELECT * FROM orders WHERE status = 'pending' AND amount > 100`,
+    `SELECT * FROM orders WHERE status = 'pending'`
+  );
+  const stale = removedCond.before.cases.filter(c => c.impact === 'stale');
+  check('cases about a removed condition are marked stale in the before list', stale.length > 0);
+  // Decision-table rules span both `status` and `amount`, so removing
+  // `amount` correctly makes those rules stale too even though they also
+  // reference `status` — excluded here for the same reason as above.
+  const statusOnly = removedCond.before.cases.filter(c =>
+    (c.columns || []).some(col => col.raw === 'status') && !['Decision Table', 'MC/DC'].includes(c.technique));
+  check('cases about the untouched condition are not stale',
+    statusOnly.length > 0 && statusOnly.every(c => c.impact !== 'stale'),
+    statusOnly.map(c => `${c.title}:${c.impact}`).join(' | '));
+
+  // A pure logic reshape (same leaves, OR flipped to AND) must still mark the
+  // affected cases changed, even though no leaf's own text differs.
+  const reshaped = generateComparison(
+    `SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3`,
+    `SELECT * FROM t WHERE a = 1 AND b = 2 AND c = 3`
+  );
+  check('a pure AND/OR reshape marks its conditions changed, not unrelated',
+    reshaped.after.cases.some(c => c.clause === 'WHERE' && c.impact === 'changed'));
+
+  // No SQL change at all → nothing impacted.
+  const identical = generateComparison(before, before);
+  check('an identical before/after has no impacted cases',
+    identical.after.cases.every(c => c.impact === 'unrelated'));
+}
+
+// Nothing in generateComparison() may throw on the odd shapes, paired
+// against themselves and against their neighbour.
+SHAPES.forEach((sql, i) => {
+  try {
+    generateComparison(sql, sql);
+  } catch (err) {
+    check(`shape ${i + 1}: generateComparison self-pair does not throw`, false, err.message);
+  }
+  const next = SHAPES[(i + 1) % SHAPES.length];
+  try {
+    const cmp = generateComparison(sql, next);
+    if (cmp.ok) {
+      const bad = cmp.after.cases.find(c => !Array.isArray(c.sourceIds) || !c.clause || !Array.isArray(c.columns));
+      check(`shape ${i + 1} vs ${(i + 1) % SHAPES.length + 1}: every case carries sourceIds/clause/columns`, !bad, bad?.title);
+    }
+  } catch (err) {
+    check(`shape ${i + 1} vs ${(i + 1) % SHAPES.length + 1}: generateComparison does not throw`, false, err.message);
   }
 });
 

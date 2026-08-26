@@ -16,6 +16,9 @@ import { generateStructure } from './techniques/structure.js';
 import { attachRationale } from './explain.js';
 import { boundParams } from './valuebook.js';
 import { t, tPlural } from './i18n.js';
+import {
+  diffQueries, tableKey, joinKey, groupByKey, aggregateKey, orderByKey, selectKey, caseExprKey, writeKey
+} from './diff.js';
 
 /** The four technique groups, in the order their cases are listed. */
 export const TECHNIQUES = [
@@ -191,6 +194,13 @@ export function generateCases(sql, userOptions = {}) {
   const width = String(deduped.length).length < 3 ? 3 : String(deduped.length).length;
   const cases = attachRationale(deduped).map((c, i) => ({
     id: `${options.idPrefix}-${String(i + 1).padStart(width, '0')}`,
+    // A handful of whole-query checks (DISTINCT, UNION shape, SELECT *,
+    // baseline "empty table") have no single model element to point back
+    // at — these defaults keep every case filterable/matchable rather than
+    // needing every consumer to guard against a missing field.
+    clause: 'OTHER',
+    sourceIds: [],
+    columns: [],
     ...c
   }));
 
@@ -221,4 +231,104 @@ function buildStats(cases, model) {
   stats.joins = model.joins.length;
   stats.tables = model.tables.length;
   return stats;
+}
+
+// ---- change-impact comparison (Giai đoạn 3) -------------------------------
+
+/**
+ * Collect the keys of every model element a diffQueries() section marks as
+ * `added` or `changed` (using its `.new` side) into one set.
+ *
+ * Condition-based sections (WHERE/HAVING/ON) key by the condition's own id —
+ * the same id a case's `sourceIds` carries when caseSourceFromCondition()
+ * tagged it, since both come from analyzing the same "after" SQL. The other
+ * sections have no such id, so they go through the same exported key
+ * functions the technique modules used to tag their cases, closing the loop.
+ */
+function collectKeys(diff, which) {
+  const keys = new Set();
+  const take = (sec, pick) => {
+    if (!sec) return;
+    sec[which].forEach(x => keys.add(pick(which === 'changed' ? x.new : x)));
+  };
+
+  take(diff.where, c => c.id);
+  take(diff.having, c => c.id);
+  take(diff.joinConditions, c => c.id);
+  take(diff.tables, tableKey);
+  take(diff.joins, joinKey);
+  take(diff.groupBy, groupByKey);
+  take(diff.aggregates, aggregateKey);
+  take(diff.orderBy, orderByKey);
+  take(diff.selectList, selectKey);
+  take(diff.caseExprs, caseExprKey);
+  take(diff.writes, writeKey);
+
+  return keys;
+}
+
+/** Every key a case's `sourceIds` might match against — added or changed. */
+function changedElementKeys(diff) {
+  const keys = collectKeys(diff, 'added');
+  collectKeys(diff, 'changed').forEach(k => keys.add(k));
+
+  // A pure AND/OR/NOT reshape can leave every leaf's own text identical —
+  // added/changed would then be empty despite the query now meaning
+  // something different, so every condition common to both sides is folded
+  // in too whenever the shape itself moved.
+  if (diff.where.shapeChanged) diff.where.unchanged.forEach(c => keys.add(c.id));
+  if (diff.having.shapeChanged) diff.having.unchanged.forEach(c => keys.add(c.id));
+  if (diff.joinConditions.shapeChangedCount > 0) diff.joinConditions.unchanged.forEach(c => keys.add(c.id));
+
+  if (diff.paging.limit.changed) keys.add('LIMIT');
+  if (diff.paging.offset.changed) keys.add('OFFSET');
+
+  return keys;
+}
+
+/** Every key a diffQueries() section marks `removed` — gone in the after version. */
+function removedElementKeys(diff) {
+  const keys = collectKeys(diff, 'removed');
+  if (diff.paging.limit.changed && diff.paging.limit.old && !diff.paging.limit.new) keys.add('LIMIT');
+  if (diff.paging.offset.changed && diff.paging.offset.old && !diff.paging.offset.new) keys.add('OFFSET');
+  return keys;
+}
+
+function tagImpact(cases, keys, label) {
+  return cases.map(c => ({
+    ...c,
+    impact: (c.sourceIds || []).some(id => keys.has(id)) ? label : 'unrelated'
+  }));
+}
+
+/**
+ * Generate the full case list for both the "before" and "after" version of a
+ * query, diff the two structurally, and tag every case with how it relates
+ * to what changed — so a reviewer can tell "this case exercises something
+ * the change touched" apart from "this still passes and still matters, just
+ * not because of this change" apart from "this case's condition is gone,
+ * consider retiring it".
+ *
+ * @param {string} sqlBefore
+ * @param {string} sqlAfter
+ * @param {object} userOptions — merged over DEFAULT_OPTIONS, same as generateCases()
+ * @returns {{ok: boolean, diff: object, before: object, after: object}}
+ *   `before`/`after` are full generateCases() results; when both parse,
+ *   `after.cases[].impact` is `'changed'` or `'unrelated'`, and
+ *   `before.cases[].impact` is `'stale'` (its source element was removed)
+ *   or `'unrelated'`.
+ */
+export function generateComparison(sqlBefore, sqlAfter, userOptions = {}) {
+  const diff = diffQueries(sqlBefore, sqlAfter);
+  const before = generateCases(sqlBefore, userOptions);
+  const after = generateCases(sqlAfter, userOptions);
+
+  if (!diff.ok || !after.ok) {
+    return { ok: false, diff, before, after };
+  }
+
+  after.cases = tagImpact(after.cases, changedElementKeys(diff), 'changed');
+  if (before.ok) before.cases = tagImpact(before.cases, removedElementKeys(diff), 'stale');
+
+  return { ok: true, diff, before, after };
 }

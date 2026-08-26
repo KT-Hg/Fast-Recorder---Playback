@@ -172,6 +172,16 @@ HAVING COUNT(o.id) > 3
         <div class="panel-body coverage" id="coverage"></div>
       </details>
 
+      <!-- Compare mode only: cases from the "before" query whose source
+           condition/join/etc. no longer exists in the "after" query. -->
+      <details class="strip" id="stalePanel" hidden>
+        <summary class="panel-head">
+          <span class="panel-title" data-i18n="ui.stale"></span>
+          <span class="panel-sum" id="staleSummary"></span>
+        </summary>
+        <div class="panel-body" id="staleBody"></div>
+      </details>
+
       <div class="filter-bar">
         <div class="pill-row" id="techFilter"></div>
         <span class="helper data-hint" data-i18n="dg.dataHint"></span>
@@ -183,6 +193,22 @@ HAVING COUNT(o.id) > 3
             <option value="Low" data-i18n="ui.lowOnly"></option>
           </select>
           <input type="search" id="searchBox" class="search" data-i18n-ph="ui.search" />
+        </div>
+      </div>
+
+      <div class="filter-bar filter-bar-2">
+        <div class="pill-row" id="impactFilter" hidden></div>
+        <div class="filter-right">
+          <select id="clauseFilter" class="mini-select">
+            <option value="" data-i18n="ui.allClauses"></option>
+          </select>
+          <select id="columnFilter" class="mini-select">
+            <option value="" data-i18n="ui.allColumns"></option>
+          </select>
+          <label class="check-row check-row-inline">
+            <input type="checkbox" id="fixtureFilter" />
+            <span data-i18n="ui.onlyWithFixture"></span>
+          </label>
         </div>
       </div>
 

@@ -13,6 +13,10 @@
 
 import { columnLabel } from '../values.js';
 import { t } from '../i18n.js';
+import {
+  caseSourceFromCondition, caseSourceFromJoin, caseSourceFromGroupBy,
+  caseSourceFromAggregate, caseSourceFromOrderBy, caseSourceFromWrite
+} from '../diff.js';
 
 const CMP = new Set(['comparison', 'between', 'in-list', 'like', 'quantified']);
 
@@ -48,7 +52,8 @@ function nullablePredicateCases(model, kind) {
       expected: t('n3.unknownExp', { outcome }),
       spec: { set: [{ column: cond.column, columnRaw: col, valueSql: 'NULL' }] },
       priority: negativeOp ? 'High' : 'Medium',
-      notes: negativeOp ? t('n3.unknownNote', { op: cond.operator, col }) : ''
+      notes: negativeOp ? t('n3.unknownNote', { op: cond.operator, col }) : '',
+      ...caseSourceFromCondition(cond)
     }));
   });
 
@@ -69,7 +74,8 @@ function notInSubqueryCases(model) {
         data: t('n3.notInNullData'),
         expected: t('n3.notInNullExp'),
         priority: 'High',
-        notes: t('n3.notInNullNote')
+        notes: t('n3.notInNullNote'),
+        ...caseSourceFromCondition(cond)
       }));
       cases.push(baseCase({
         group: `${cond.source} · ${col}`,
@@ -79,7 +85,8 @@ function notInSubqueryCases(model) {
         data: t('n3.notInCleanData'),
         expected: t('n3.notInCleanExp'),
         priority: 'High',
-        notes: t('n3.notInCleanNote')
+        notes: t('n3.notInCleanNote'),
+        ...caseSourceFromCondition(cond)
       }));
     }
     if (cond.kind === 'in-list' && cond.negated) {
@@ -91,7 +98,8 @@ function notInSubqueryCases(model) {
         data: `${columnLabel(cond)} = NULL`,
         expected: t('n3.notInListNullExp'),
         spec: { set: [{ column: cond.column, columnRaw: columnLabel(cond), valueSql: 'NULL' }] },
-        priority: 'High'
+        priority: 'High',
+        ...caseSourceFromCondition(cond)
       }));
     }
   });
@@ -112,7 +120,8 @@ function equalsNullCases(model) {
         data: t('n3.equalsNullData', { col: columnLabel(cond) }),
         expected: t('n3.equalsNullExp'),
         priority: 'High',
-        notes: t('n3.queryDefect')
+        notes: t('n3.queryDefect'),
+        ...caseSourceFromCondition(cond)
       }));
     }
   });
@@ -143,7 +152,8 @@ function joinNullCases(model) {
           ? t('n3.joinKeyNullOuter', { right: join.rightLabel })
           : t('n3.joinKeyNullInner'),
         priority: 'High',
-        notes: t('n3.joinKeyNullNote')
+        notes: t('n3.joinKeyNullNote'),
+        ...caseSourceFromJoin(join)
       }));
     });
     if (!join.keys?.length && join.onSql) {
@@ -154,7 +164,8 @@ function joinNullCases(model) {
         title: t('n3.joinOnNull', { right: join.rightLabel }),
         data: t('n3.joinOnNullData', { right: join.rightLabel }),
         expected: t('n3.joinOnNullExp'),
-        priority: 'Medium'
+        priority: 'Medium',
+        ...caseSourceFromJoin(join)
       }));
     }
   });
@@ -177,7 +188,8 @@ function aggregateNullCases(model) {
         data: t('n3.countSkipsNullData', { col }),
         expected: t('n3.countSkipsNullExp', { agg: agg.sql }),
         priority: 'High',
-        notes: agg.distinct ? t('n3.countDistinctNote') : ''
+        notes: agg.distinct ? t('n3.countDistinctNote') : '',
+        ...caseSourceFromAggregate(agg)
       }));
     }
     if (agg.name === 'COUNT' && agg.star) {
@@ -186,7 +198,8 @@ function aggregateNullCases(model) {
         title: t('n3.countStar'),
         data: t('n3.countStarData'),
         expected: t('n3.countStarExp'),
-        priority: 'Medium'
+        priority: 'Medium',
+        ...caseSourceFromAggregate(agg)
       }));
     }
     if (['SUM', 'AVG', 'MIN', 'MAX'].includes(agg.name)) {
@@ -195,14 +208,16 @@ function aggregateNullCases(model) {
         title: t('n3.aggIgnoresNull', { agg: agg.name, col }),
         data: t('n3.aggIgnoresNullData', { col }),
         expected: agg.name === 'AVG' ? t('n3.avgDenominator') : t('n3.aggOverNonNull', { agg: agg.name }),
-        priority: 'High'
+        priority: 'High',
+        ...caseSourceFromAggregate(agg)
       }));
       cases.push(baseCase({
         group, target: agg.sql, condition: agg.sql,
         title: t('n3.aggAllNull', { agg: agg.name, col }),
         data: t('n3.aggAllNullData', { col }),
         expected: agg.name === 'SUM' ? t('n3.aggAllNullSum') : t('n3.aggAllNullExp'),
-        priority: 'High'
+        priority: 'High',
+        ...caseSourceFromAggregate(agg)
       }));
     }
   });
@@ -216,7 +231,8 @@ function aggregateNullCases(model) {
       title: t('n3.groupKeyNull', { key: gb.sql }),
       data: t('n3.groupKeyNullData', { key: gb.sql }),
       expected: t('n3.groupKeyNullExp'),
-      priority: 'High'
+      priority: 'High',
+      ...caseSourceFromGroupBy(gb)
     }));
   });
 
@@ -250,7 +266,8 @@ function orderingNullCases(model) {
         ? t(o.nulls === 'FIRST' ? 'n3.orderNullFirst' : 'n3.orderNullLast')
         : t('n3.orderNullEngine'),
       priority: o.nulls ? 'Low' : 'Medium',
-      notes: o.nulls ? '' : t('n3.orderNullNote')
+      notes: o.nulls ? '' : t('n3.orderNullNote'),
+      ...caseSourceFromOrderBy(o)
     }));
 }
 
@@ -270,7 +287,8 @@ function writeNullCases(model) {
         title: t(explicitNull ? 'n3.insertExplicitNull' : 'n3.insertNull', { col: c.name }),
         data: `${c.name} = NULL`,
         expected: t(explicitNull ? 'n3.insertExplicitNullExp' : 'n3.insertNullExp'),
-        priority: explicitNull ? 'High' : 'Medium'
+        priority: explicitNull ? 'High' : 'Medium',
+        ...caseSourceFromWrite('insert', c)
       }));
     });
     if (!w.columnsExplicit && !w.fromSelect) {
@@ -297,7 +315,8 @@ function writeNullCases(model) {
           data: t('n3.updateArithNullData', { col: c.name }),
           expected: t('n3.updateArithNullExp', { col: c.name }),
           priority: 'High',
-          notes: t('n3.updateArithNullNote', { col: c.name })
+          notes: t('n3.updateArithNullNote', { col: c.name }),
+          ...caseSourceFromWrite('update', c)
         }));
       }
       cases.push(baseCase({
@@ -310,7 +329,8 @@ function writeNullCases(model) {
           : t('n3.updateSetNullData', { col: c.name }),
         expected: t('n3.updateSetNullExp'),
         priority: c.value.kind === 'param' ? 'High' : 'Medium',
-        notes: c.value.kind === 'param' ? t('n3.updateSetNullParamNote') : ''
+        notes: c.value.kind === 'param' ? t('n3.updateSetNullParamNote') : '',
+        ...caseSourceFromWrite('update', c)
       }));
     });
   }

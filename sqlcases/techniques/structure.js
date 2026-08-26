@@ -11,6 +11,10 @@
 
 import { columnLabel } from '../values.js';
 import { t } from '../i18n.js';
+import {
+  caseSourceFromCondition, caseSourceFromJoin, caseSourceFromOrderBy,
+  groupByKey, aggregateKey, writeKey
+} from '../diff.js';
 
 function baseCase(fields) {
   return { technique: 'Structure', priority: 'Medium', notes: '', ...fields };
@@ -34,7 +38,8 @@ function joinCases(model) {
       : (join.onSql || t('st.noJoinCond'));
 
     const add = (title, data, expected, extra = {}) => cases.push(baseCase({
-      group, target: `${join.joinType} JOIN ${R}`, condition: keyText, title, data, expected, ...extra
+      group, target: `${join.joinType} JOIN ${R}`, condition: keyText, title, data, expected,
+      ...caseSourceFromJoin(join), ...extra
     }));
 
     if (join.joinType === 'CROSS' || join.implicit) {
@@ -137,7 +142,8 @@ function outerJoinFilterCases(model) {
       data: t('st.orphanData', { left: join.leftLabel, right: join.rightLabel }),
       expected: t('st.outerCancelledExp', { cond: cond.sql }),
       priority: 'High',
-      notes: t('st.outerCancelledNote', { left: join.leftLabel })
+      notes: t('st.outerCancelledNote', { left: join.leftLabel }),
+      ...caseSourceFromCondition(cond)
     }));
   });
 
@@ -150,8 +156,16 @@ function groupingCases(model) {
   const g = model.grouping;
   const keys = g.groupBy.map(x => x.sql).join(', ');
 
+  // Every case below is about the grouping shape as a whole rather than one
+  // column, so it is tagged against every GROUP BY key (or every aggregate,
+  // when there is no GROUP BY at all) rather than picking just one.
+  const groupBySource = g.groupBy.length
+    ? { sourceIds: g.groupBy.map(groupByKey), clause: 'GROUP_BY', columns: g.groupBy.map(x => x.column).filter(Boolean) }
+    : { sourceIds: g.aggregates.map(aggregateKey), clause: 'GROUP_BY', columns: g.aggregates.map(a => a.column).filter(Boolean) };
+
   const add = (title, data, expected, extra = {}) => cases.push(baseCase({
-    group: keys ? `GROUP BY · ${keys}` : t('grp.aggregation'), target: keys || t('grp.aggregate'), condition: keys ? `GROUP BY ${keys}` : t('st.aggNoGroupCond'), title, data, expected, ...extra
+    group: keys ? `GROUP BY · ${keys}` : t('grp.aggregation'), target: keys || t('grp.aggregate'), condition: keys ? `GROUP BY ${keys}` : t('st.aggNoGroupCond'), title, data, expected,
+    ...groupBySource, ...extra
   }));
 
   if (g.groupBy.length) {
@@ -185,7 +199,14 @@ function groupingCases(model) {
       t('st.havingEmpty'),
       t('st.havingEmptyData'),
       t('st.havingEmptyExp'),
-      { priority: 'High', notes: `HAVING: ${g.having}` }
+      {
+        priority: 'High', notes: `HAVING: ${g.having}`,
+        // Overrides groupBySource: this case is about HAVING filtering every
+        // group away, not the GROUP BY key itself.
+        sourceIds: model.havingConditions.map(c => c.id),
+        clause: 'HAVING',
+        columns: model.havingConditions.map(c => c.column).filter(Boolean)
+      }
     );
   }
 
@@ -212,8 +233,14 @@ function pagingCases(model) {
   const add = (group, title, data, expected, extra = {}) => cases.push(baseCase({
     group, target: group, condition: '', title, data, expected, ...extra
   }));
+  // LIMIT and OFFSET have no condition/column to key on the way a predicate
+  // does — 'LIMIT'/'OFFSET' are the same synthetic ids diff.js's paging
+  // section is checked against in generate.js's change-impact match.
+  const LIMIT_SOURCE = { sourceIds: ['LIMIT'], clause: 'LIMIT_OFFSET', columns: [] };
+  const OFFSET_SOURCE = { sourceIds: ['OFFSET'], clause: 'LIMIT_OFFSET', columns: [] };
 
   orderBy.forEach(o => {
+    const source = caseSourceFromOrderBy(o);
     add(
       `ORDER BY · ${o.sql}`,
       t('st.ties', { key: o.sql }),
@@ -221,14 +248,14 @@ function pagingCases(model) {
       orderBy.length > 1 || model.paging.orderBy.some(x => x.sql !== o.sql)
         ? t('st.tiesDeterministic')
         : t('st.tiesUnstable'),
-      { priority: orderBy.length > 1 ? 'Low' : 'High' }
+      { priority: orderBy.length > 1 ? 'Low' : 'High', ...source }
     );
     add(
       `ORDER BY · ${o.sql}`,
       t('st.sortDir', { dir: o.dir }),
       t('st.sortDirData', { key: o.sql }),
       t(o.dir === 'DESC' ? 'st.sortedDesc' : 'st.sortedAsc', { key: o.sql }),
-      { priority: 'Medium' }
+      { priority: 'Medium', ...source }
     );
   });
 
@@ -240,22 +267,22 @@ function pagingCases(model) {
     if (!orderBy.length) {
       add(group, t('st.limitNoOrder'), t('st.limitNoOrderData'),
         t('st.limitNoOrderExp'),
-        { priority: 'High', notes: t('st.limitNoOrderNote') });
+        { priority: 'High', notes: t('st.limitNoOrderNote'), ...LIMIT_SOURCE });
     }
 
     add(group, t('st.fewerThanLimit'), t('st.matchingRows', { n: n ? Math.max(1, n - 1) : t('st.limitMinus1') }),
-      t('st.fewerThanLimitExp', { n: n ? n - 1 : t('st.available') }), { priority: 'High' });
+      t('st.fewerThanLimitExp', { n: n ? n - 1 : t('st.available') }), { priority: 'High', ...LIMIT_SOURCE });
     add(group, t('st.exactlyLimit'), t('st.matchingRows', { n: nText }),
-      t('st.exactlyLimitExp', { n: nText }), { priority: 'High' });
+      t('st.exactlyLimitExp', { n: nText }), { priority: 'High', ...LIMIT_SOURCE });
     add(group, t('st.moreThanLimit'), t('st.matchingRows', { n: n ? n + 5 : t('st.limitPlus5') }),
-      t('st.moreThanLimitExp', { n: nText }), { priority: 'High' });
+      t('st.moreThanLimitExp', { n: nText }), { priority: 'High', ...LIMIT_SOURCE });
     add(group, t('st.noRowsAtAll'), t('st.zeroMatchingRows'),
-      t('st.emptyNotError'), { priority: 'Medium' });
+      t('st.emptyNotError'), { priority: 'Medium', ...LIMIT_SOURCE });
 
     if (limit.kind === 'param') {
       add(group, t('st.limitParam', { param: limit.sql }), t('st.limitParamData', { param: limit.sql }),
         t('st.limitParamExp'),
-        { priority: 'High', notes: t('st.limitParamNote') });
+        { priority: 'High', notes: t('st.limitParamNote'), ...LIMIT_SOURCE });
     }
   }
 
@@ -263,14 +290,14 @@ function pagingCases(model) {
     const group = 'LIMIT / OFFSET';
     const o = offset.kind === 'literal' ? offset.value : null;
     add(group, t('st.offsetBeyond'), t('st.fewerThan', { n: o ?? offset.sql }),
-      t('st.emptyNotError'), { priority: 'High' });
+      t('st.emptyNotError'), { priority: 'High', ...OFFSET_SOURCE });
     add(group, t('st.firstPage'), t('st.firstPageData'),
-      t('st.firstPageExp'), { priority: 'Medium' });
+      t('st.firstPageExp'), { priority: 'Medium', ...OFFSET_SOURCE });
     add(group, t('st.pageContinuity'), t('st.pageContinuityData'),
-      t('st.pageContinuityExp'), { priority: 'High' });
+      t('st.pageContinuityExp'), { priority: 'High', ...OFFSET_SOURCE });
     add(group, t('st.pageDrift'), t('st.pageDriftData'),
       t('st.pageDriftExp'),
-      { priority: 'Medium' });
+      { priority: 'Medium', ...OFFSET_SOURCE });
   }
 
   return cases;
@@ -311,6 +338,10 @@ function dmlScopeCases(model) {
   const w = model.writes;
   if (!w || w.kind === 'insert') return [];
   const cases = [];
+  // Whether the DML touches too much or too little data is a question about
+  // the WHERE clause as a whole — so a change to any WHERE condition (added,
+  // removed, or its value/operator changed) makes these cases worth a look.
+  const whereSource = { sourceIds: model.conditions.map(c => c.id), clause: 'WHERE', columns: [] };
 
   if (!w.hasWhere) {
     cases.push(baseCase({
@@ -321,7 +352,8 @@ function dmlScopeCases(model) {
       data: t('st.dmlNoWhereData', { table: w.table }),
       expected: t(w.kind === 'update' ? 'st.dmlAllUpdated' : 'st.dmlAllDeleted'),
       priority: 'High',
-      notes: t('st.dmlNoWhereNote')
+      notes: t('st.dmlNoWhereNote'),
+      ...whereSource
     }));
   } else {
     cases.push(baseCase({
@@ -331,7 +363,8 @@ function dmlScopeCases(model) {
       title: t('st.dmlNoMatch'),
       data: t('st.dmlNoMatchData'),
       expected: t('st.dmlNoMatchExp'),
-      priority: 'High'
+      priority: 'High',
+      ...whereSource
     }));
     cases.push(baseCase({
       group: `${w.kind.toUpperCase()} · ${w.table}`,
@@ -340,7 +373,8 @@ function dmlScopeCases(model) {
       title: t('st.dmlTooMany'),
       data: t('st.dmlTooManyData'),
       expected: t(w.kind === 'update' ? 'st.dmlTooManyUpdated' : 'st.dmlTooManyDeleted'),
-      priority: 'High'
+      priority: 'High',
+      ...whereSource
     }));
   }
 
@@ -354,7 +388,9 @@ function dmlScopeCases(model) {
       expected: w.columns.some(c => c.selfReferential)
         ? t('st.runTwiceNotIdempotent')
         : t('st.runTwiceIdempotent'),
-      priority: w.columns.some(c => c.selfReferential) ? 'High' : 'Medium'
+      priority: w.columns.some(c => c.selfReferential) ? 'High' : 'Medium',
+      sourceIds: w.columns.filter(c => c.selfReferential).map(writeKey),
+      clause: 'SET'
     }));
     if (w.columns.some(c => c.selfReferential)) {
       cases.push(baseCase({
@@ -365,7 +401,9 @@ function dmlScopeCases(model) {
         data: t('st.concurrentUpdateData'),
         expected: t('st.concurrentUpdateExp'),
         priority: 'Medium',
-        notes: t('st.concurrentUpdateNote')
+        notes: t('st.concurrentUpdateNote'),
+        sourceIds: w.columns.filter(c => c.selfReferential).map(writeKey),
+        clause: 'SET'
       }));
     }
   }

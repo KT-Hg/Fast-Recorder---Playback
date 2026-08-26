@@ -11,12 +11,11 @@
  * appear as text, not become markup.
  */
 
-import { generateCases, TECHNIQUES, DEFAULT_OPTIONS } from './generate.js';
+import { generateCases, generateComparison, TECHNIQUES, DEFAULT_OPTIONS } from './generate.js';
 import { toCsv, toJson, suggestFilename, downloadText } from './export.js';
 import { t, tPlural, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
 import { buildAllFixtures, fixturesToCsv, valueSlots, verifyFor } from './datagen.js';
 import { parse } from './parser.js';
-import { diffQueries } from './diff.js';
 import * as valuebook from './valuebook.js';
 
 const THEME_KEY = 'popupTheme';
@@ -101,6 +100,13 @@ const el = {
   diffPanel: $('diffPanel'),
   diffBody: $('diffBody'),
   diffSummary: $('diffSummary'),
+  stalePanel: $('stalePanel'),
+  staleBody: $('staleBody'),
+  staleSummary: $('staleSummary'),
+  impactFilter: $('impactFilter'),
+  clauseFilter: $('clauseFilter'),
+  columnFilter: $('columnFilter'),
+  fixtureFilter: $('fixtureFilter'),
   analyze: $('btnAnalyze'),
   clear: $('btnClear'),
   sample: $('sampleSelect'),
@@ -162,12 +168,18 @@ function activeSql() {
 /** Last generation result, and the filter state applied on top of it. */
 let current = null;
 let activeTechnique = '';
+let activeClause = '';
+let activeColumn = '';
+let activeImpact = '';
+let onlyWithFixture = false;
 /** Inferred schema and per-case fixtures for the current result. */
 let data = null;
 /** Case ids whose data panel is expanded, kept across re-renders. */
 const expanded = new Set();
 /** 'single' analyses #sqlInput alone; 'compare' diffs it against #sqlInputAfter. */
 let mode = 'single';
+/** Cases from the "before" query whose source no longer exists (compare mode). */
+let staleCases = [];
 
 // ---- collapsible panels ----------------------------------------------
 
@@ -721,6 +733,150 @@ function renderDiff(diff) {
 
 // ---- rendering: filters & table --------------------------------------
 
+/** Order the clause dropdown lists its options in — matches the enum the
+ *  technique modules tag cases with via diff.js's caseSourceFrom*() helpers. */
+const CLAUSE_ORDER = ['WHERE', 'HAVING', 'JOIN', 'GROUP_BY', 'ORDER_BY', 'LIMIT_OFFSET', 'SET', 'INSERT', 'CASE_EXPR', 'DML_SCOPE', 'OTHER'];
+const CLAUSE_LABELS = {
+  WHERE: 'ui.clauseWhere', HAVING: 'ui.clauseHaving', JOIN: 'ui.clauseJoin',
+  GROUP_BY: 'ui.clauseGroupBy', ORDER_BY: 'ui.clauseOrderBy', LIMIT_OFFSET: 'ui.clauseLimitOffset',
+  SET: 'ui.clauseSet', INSERT: 'ui.clauseInsert', CASE_EXPR: 'ui.clauseCaseExpr',
+  DML_SCOPE: 'ui.clauseDmlScope', OTHER: 'ui.clauseOther'
+};
+const IMPACT_ICON = { changed: '🎯', unrelated: '➖', stale: '🗑' };
+const IMPACT_TIP_KEY = { changed: 'ui.impactChangedTip', unrelated: 'ui.impactUnrelatedTip', stale: 'ui.impactStaleTip' };
+
+/** The small coloured marker shown before a case's title in compare mode. */
+function impactBadge(impact) {
+  const b = node('span', `impact-badge impact-${impact}`, IMPACT_ICON[impact] || '');
+  b.title = t(IMPACT_TIP_KEY[impact] || '');
+  return b;
+}
+
+/** Whether any of a case's `columns` matches the Table/Column filter value —
+ *  a bare table label matches every column on that table, a full `table.col`
+ *  value matches only that one column. */
+function columnMatches(caseColumns, filterValue) {
+  if (!filterValue) return true;
+  const wanted = filterValue.toLowerCase();
+  return (caseColumns || []).some(col => {
+    const raw = (col.raw || (col.table ? `${col.table}.${col.name}` : col.name) || '').toLowerCase();
+    if (raw === wanted) return true;
+    return (col.table || '').toLowerCase() === wanted;
+  });
+}
+
+/** Impact pills — only shown once a compare-mode run has tagged the cases. */
+function renderImpactFilter() {
+  el.impactFilter.replaceChildren();
+  const withImpact = !!current && current.cases.some(c => c.impact === 'changed' || c.impact === 'unrelated');
+  if (!withImpact) {
+    el.impactFilter.hidden = true;
+    activeImpact = '';
+    return;
+  }
+
+  const counts = { changed: 0, unrelated: 0 };
+  current.cases.forEach(c => { if (counts[c.impact] !== undefined) counts[c.impact]++; });
+
+  const labelKey = { changed: 'ui.impactChanged', unrelated: 'ui.impactUnrelated' };
+  const mk = (value, count) => {
+    const b = node('button', `pill${activeImpact === value ? ' active' : ''}`, t(labelKey[value]));
+    b.append(node('span', 'pill-n', count));
+    b.addEventListener('click', () => {
+      activeImpact = activeImpact === value ? '' : value;
+      renderImpactFilter();
+      renderTable();
+    });
+    return b;
+  };
+
+  el.impactFilter.append(mk('changed', counts.changed));
+  el.impactFilter.append(mk('unrelated', counts.unrelated));
+  el.impactFilter.hidden = false;
+}
+
+/** Clause dropdown — only lists clauses that actually occur in the current case list. */
+function renderClauseFilter() {
+  const sel = el.clauseFilter;
+  const prevValue = activeClause;
+  sel.replaceChildren();
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = t('ui.allClauses');
+  sel.append(allOpt);
+
+  const present = current ? new Set(current.cases.map(c => c.clause).filter(Boolean)) : new Set();
+  CLAUSE_ORDER.filter(k => present.has(k)).forEach(k => {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = t(CLAUSE_LABELS[k]);
+    sel.append(opt);
+  });
+
+  sel.disabled = present.size === 0;
+  activeClause = present.has(prevValue) ? prevValue : '';
+  sel.value = activeClause;
+}
+
+/** Table/column dropdown — populated from the current query's own schema. */
+function renderColumnFilter() {
+  const sel = el.columnFilter;
+  const prevValue = activeColumn;
+  sel.replaceChildren();
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = t('ui.allColumns');
+  sel.append(allOpt);
+
+  if (current?.model) {
+    const seen = new Set();
+    current.model.tables.forEach(tbl => {
+      if (!tbl.label || seen.has(tbl.label)) return;
+      seen.add(tbl.label);
+      const opt = document.createElement('option');
+      opt.value = tbl.label;
+      opt.textContent = `🗂 ${tbl.label}`;
+      sel.append(opt);
+    });
+    current.model.columns.forEach(col => {
+      if (!col.raw || seen.has(col.raw)) return;
+      seen.add(col.raw);
+      const opt = document.createElement('option');
+      opt.value = col.raw;
+      opt.textContent = `  ${col.raw}`;
+      sel.append(opt);
+    });
+  }
+
+  const available = new Set([...sel.options].map(o => o.value));
+  sel.disabled = available.size <= 1;
+  activeColumn = available.has(prevValue) ? prevValue : '';
+  sel.value = activeColumn;
+}
+
+/**
+ * Compare mode: the "before" query's cases whose source condition/join/etc.
+ * is gone in the "after" query — shown as a compact list rather than in the
+ * main table, since they describe behaviour that no longer exists to test.
+ */
+function renderStale(list) {
+  staleCases = list || [];
+  el.staleBody.replaceChildren();
+  el.staleSummary.textContent = '';
+
+  if (!staleCases.length) { el.stalePanel.hidden = true; return; }
+
+  staleCases.forEach(c => {
+    const row = node('div', 'stale-row');
+    row.append(impactBadge('stale'));
+    row.append(node('span', 'stale-title', `${c.title} — ${c.data}`));
+    row.append(node('span', 'stale-group', `${t('tech.code.' + c.technique)} · ${c.group}`));
+    el.staleBody.append(row);
+  });
+  el.staleSummary.textContent = t('ui.sumStale', { n: staleCases.length });
+  el.stalePanel.hidden = false;
+}
+
 function renderTechniqueFilter(stats) {
   el.techFilter.replaceChildren();
   const codes = Object.keys(stats.byTechnique);
@@ -747,6 +903,10 @@ function visibleCases() {
   return current.cases.filter(c => {
     if (activeTechnique && c.technique !== activeTechnique) return false;
     if (prio && c.priority !== prio) return false;
+    if (activeClause && c.clause !== activeClause) return false;
+    if (activeImpact && c.impact !== activeImpact) return false;
+    if (activeColumn && !columnMatches(c.columns, activeColumn)) return false;
+    if (onlyWithFixture && !data?.fixtures.get(c.id)) return false;
     if (!q) return true;
     return [c.id, c.technique, c.group, c.target, c.title, c.data, c.expected, c.notes]
       .join(' ').toLowerCase().includes(q);
@@ -782,6 +942,7 @@ function renderTable() {
     tr.append(node('td', 'cell-target', c.target));
 
     const tdTitle = node('td');
+    if (c.impact === 'changed' || c.impact === 'unrelated') tdTitle.append(impactBadge(c.impact));
     tdTitle.append(node('span', null, c.title));
     tdTitle.append(node('span', 'cell-group', c.group));
     tr.append(tdTitle);
@@ -941,41 +1102,17 @@ function renderParseProblems(sql, result, target = el.parseErrors) {
  * separately renders the "before" side's own parse errors and the diff
  * between the two.
  */
-function runFor(sql, errorsEl) {
-  if (!sql.trim()) {
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
-    errorsEl.hidden = true;
-    el.parseStatus.textContent = t('ui.parseHint');
-    renderAnalysis(null);
-    renderFindings([]);
-    renderCoverage([]);
-    el.techFilter.replaceChildren();
-    setStats(null);
-    renderTable();
-    return;
-  }
-
-  let result;
-  try {
-    result = generateCases(sql, readOptions());
-  } catch (err) {
-    console.error('[SQLCASES] generation failed:', err);
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
-    errorsEl.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
-    errorsEl.hidden = false;
-    setStats(null);
-    renderTable();
-    return;
-  }
-
+/**
+ * Render everything the results pane shows for one already-computed
+ * generateCases() result: schema, value book, analysis, findings, coverage,
+ * technique filter, stats, and the case table itself.
+ *
+ * Shared by single mode (called from a plain generateCases() run) and by
+ * compare mode's "after" side (called with the already-tagged result out of
+ * generateComparison()) — the rendering does not care where the result came
+ * from, only that its shape matches.
+ */
+function renderResult(sql, result, errorsEl) {
   renderParseProblems(sql, result, errorsEl);
 
   if (!result.ok) {
@@ -989,6 +1126,9 @@ function runFor(sql, errorsEl) {
     renderFindings([]);
     renderCoverage([]);
     el.techFilter.replaceChildren();
+    renderClauseFilter();
+    renderColumnFilter();
+    renderImpactFilter();
     setStats(null);
     renderTable();
     return;
@@ -1012,24 +1152,112 @@ function runFor(sql, errorsEl) {
   updateTechniqueCounts(result.stats);
   if (activeTechnique && !result.stats.byTechnique[activeTechnique]) activeTechnique = '';
   renderTechniqueFilter(result.stats);
+  renderClauseFilter();
+  renderColumnFilter();
+  renderImpactFilter();
   setStats(result.stats);
   renderTable();
+}
+
+/** Single mode: parse, generate and render one query. */
+function runFor(sql, errorsEl) {
+  if (!sql.trim()) {
+    current = null;
+    data = null;
+    expanded.clear();
+    renderSchema();
+    renderValues();
+    errorsEl.hidden = true;
+    el.parseStatus.textContent = t('ui.parseHint');
+    renderAnalysis(null);
+    renderFindings([]);
+    renderCoverage([]);
+    el.techFilter.replaceChildren();
+    renderClauseFilter();
+    renderColumnFilter();
+    renderImpactFilter();
+    setStats(null);
+    renderTable();
+    return;
+  }
+
+  let result;
+  try {
+    result = generateCases(sql, readOptions());
+  } catch (err) {
+    console.error('[SQLCASES] generation failed:', err);
+    current = null;
+    data = null;
+    expanded.clear();
+    renderSchema();
+    renderValues();
+    errorsEl.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
+    errorsEl.hidden = false;
+    setStats(null);
+    renderTable();
+    return;
+  }
+
+  renderResult(sql, result, errorsEl);
+}
+
+/**
+ * Compare mode: one generateComparison() call drives the whole page — the
+ * case table, findings etc. still come off the "after" query (now with
+ * `.impact` tagged on each case), and the diff panel comes off the same
+ * call's `.diff` rather than a second, separate diffQueries() run.
+ */
+function runCompare() {
+  const beforeSql = el.sql.value;
+  const afterSql = el.sqlAfter.value;
+
+  if (!afterSql.trim()) {
+    // Nothing to generate cases from yet — still show whatever is wrong
+    // with the "before" side, so a mistake there does not read as silence.
+    const beforeParsed = parse(beforeSql);
+    renderParseProblems(beforeSql, beforeParsed, el.parseErrors);
+    renderDiff(null);
+    renderStale([]);
+    runFor('', el.parseErrorsAfter);
+    return;
+  }
+
+  let comparison;
+  try {
+    comparison = generateComparison(beforeSql, afterSql, readOptions());
+  } catch (err) {
+    console.error('[SQLCASES] comparison failed:', err);
+    current = null;
+    data = null;
+    expanded.clear();
+    renderSchema();
+    renderValues();
+    el.parseErrorsAfter.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
+    el.parseErrorsAfter.hidden = false;
+    setStats(null);
+    renderTable();
+    renderDiff(null);
+    renderStale([]);
+    return;
+  }
+
+  // The before side never drives the results pane, only its own errors —
+  // its cases are only consulted below, for which of them the after-side
+  // change left with no source element to test any more.
+  renderParseProblems(beforeSql, comparison.before, el.parseErrors);
+  renderResult(afterSql, comparison.after, el.parseErrorsAfter);
+  renderDiff(comparison.diff);
+  renderStale(comparison.before.ok ? comparison.before.cases.filter(c => c.impact === 'stale') : []);
 }
 
 function run() {
   if (mode !== 'compare') {
     renderDiff(null);
+    renderStale([]);
     runFor(el.sql.value, el.parseErrors);
     return;
   }
-
-  // The "before" side only needs its own parse errors shown — it does not
-  // drive the case table, so a full generateCases() run on it would be
-  // wasted work.
-  const beforeParsed = parse(el.sql.value);
-  renderParseProblems(el.sql.value, beforeParsed, el.parseErrors);
-  runFor(el.sqlAfter.value, el.parseErrorsAfter);
-  renderDiff(diffQueries(el.sql.value, el.sqlAfter.value));
+  runCompare();
 }
 
 function setStats(stats) {
@@ -1296,6 +1524,9 @@ function init() {
   el.joinConds.addEventListener('change', () => { saveState(); run(); });
   el.prioFilter.addEventListener('change', renderTable);
   el.search.addEventListener('input', renderTable);
+  el.clauseFilter.addEventListener('change', () => { activeClause = el.clauseFilter.value; renderTable(); });
+  el.columnFilter.addEventListener('change', () => { activeColumn = el.columnFilter.value; renderTable(); });
+  el.fixtureFilter.addEventListener('change', () => { onlyWithFixture = el.fixtureFilter.checked; renderTable(); });
 
   el.theme.addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';

@@ -16,6 +16,7 @@
 
 import { satisfy, violate, resolve } from '../hints.js';
 import { t } from '../i18n.js';
+import { caseSourceFromConditions, caseSourceFromCondition, caseSourceFromCaseExpr } from '../diff.js';
 
 /** Evaluate a condition tree under a truth assignment (two-valued). */
 export function evalTree(tree, values) {
@@ -130,7 +131,11 @@ function tableFor(conds, tree, label, kind, options) {
     technique: useFull ? 'Decision Table' : 'MC/DC',
     group: `${label} · ${t('dt.group')}`,
     target: label,
-    condition: legend
+    condition: legend,
+    // A rule spans every condition in the table, not one — so unlike EP/BVA
+    // it needs the whole set of ids for the change-impact match in
+    // generate.js to treat it as touched when any one of them changed.
+    ...caseSourceFromConditions(conds, label)
   };
 
   let rules;
@@ -184,7 +189,10 @@ function tableFor(conds, tree, label, kind, options) {
     data: `${c.id} = ${c.sql}`,
     expected: t('dt.maskedExp'),
     priority: 'High',
-    notes: t('dt.maskedNote')
+    notes: t('dt.maskedNote'),
+    // This finding is about the one condition that turned out redundant,
+    // not the whole rule set base{} otherwise carries.
+    ...caseSourceFromCondition(c)
   }));
 
   // Condition coverage: each condition observed both TRUE and FALSE.
@@ -222,7 +230,10 @@ function caseExpressionCases(model) {
   model.caseExprs.forEach((ce, i) => {
     const label = model.caseExprs.length > 1 ? `CASE #${i + 1}` : 'CASE';
     const group = `${ce.context} · ${label}`;
-    const base = { technique: 'Branch Coverage', group, target: label, condition: ce.sql, notes: '' };
+    const base = {
+      technique: 'Branch Coverage', group, target: label, condition: ce.sql, notes: '',
+      ...caseSourceFromCaseExpr(ce)
+    };
 
     ce.whens.forEach((w, wi) => {
       cases.push({

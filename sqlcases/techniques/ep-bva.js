@@ -16,6 +16,7 @@
 import { isOrdered, shift, midpoint, notEqualTo, outsideList, likeExamples, stepLabel, columnLabel } from '../values.js';
 import { nonNullValue } from '../hints.js';
 import { t } from '../i18n.js';
+import { caseSourceFromCondition } from '../diff.js';
 
 /** Whether a row satisfying the partition is expected in or out of the result. */
 const IN = 'out.rowIn';
@@ -34,6 +35,11 @@ function makeCase(technique, cond, fields) {
     condition: cond.sql,
     priority: 'Medium',
     notes: '',
+    // Which model element this case checks, in terms diff.js's change-impact
+    // matching (Giai đoạn 3) understands — so a change-impact pass and the
+    // case filter can both ask "does this case touch what changed?" without
+    // re-deriving it from rendered text.
+    ...caseSourceFromCondition(cond),
     ...fields
   };
 }

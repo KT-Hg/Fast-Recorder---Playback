@@ -22,7 +22,10 @@ export const CSV_COLUMNS = [
   ['csv.expected', c => c.expected],
   ['csv.priority', c => t('prio.' + c.priority)],
   ['csv.notes', c => c.notes],
-  ['csv.rationale', c => c.rationale]
+  ['csv.rationale', c => c.rationale],
+  // Blank outside compare mode — c.impact is only set once generateComparison()
+  // has tagged the case list.
+  ['csv.impact', c => (c.impact ? t('ui.impact' + c.impact[0].toUpperCase() + c.impact.slice(1)) : '')]
 ];
 
 function csvField(value) {
