@@ -21,7 +21,8 @@ export const CSV_COLUMNS = [
   ['csv.data', c => c.data],
   ['csv.expected', c => c.expected],
   ['csv.priority', c => t('prio.' + c.priority)],
-  ['csv.notes', c => c.notes]
+  ['csv.notes', c => c.notes],
+  ['csv.rationale', c => c.rationale]
 ];
 
 function csvField(value) {

@@ -13,6 +13,7 @@ import { generateEpBva } from './techniques/ep-bva.js';
 import { generateDecisionTable } from './techniques/decision-table.js';
 import { generateNull3vl } from './techniques/null-3vl.js';
 import { generateStructure } from './techniques/structure.js';
+import { attachRationale } from './explain.js';
 import { boundParams } from './valuebook.js';
 import { t, tPlural } from './i18n.js';
 
@@ -188,7 +189,7 @@ export function generateCases(sql, userOptions = {}) {
   });
 
   const width = String(deduped.length).length < 3 ? 3 : String(deduped.length).length;
-  const cases = deduped.map((c, i) => ({
+  const cases = attachRationale(deduped).map((c, i) => ({
     id: `${options.idPrefix}-${String(i + 1).padStart(width, '0')}`,
     ...c
   }));

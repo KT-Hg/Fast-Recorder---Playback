@@ -137,6 +137,7 @@ export const EN = {
   'csv.expected': 'Expected result',
   'csv.priority': 'Priority',
   'csv.notes': 'Notes',
+  'csv.rationale': 'Why it matters',
 
   // ---------- shared outcome phrasing ----------
   'out.rowIn': 'Row IS returned by the query',
@@ -499,6 +500,48 @@ export const EN = {
   'st.concurrentUpdateExp': 'Both increments apply — a read-modify-write in application code would lose one',
   'st.concurrentUpdateNote': 'Read-modify-write arithmetic needs row locking or an optimistic version check',
 
+  // ---------- case rationale ----------
+  //
+  // Why the case exists and what silently breaks if it's skipped — shown in
+  // the case's expanded detail row and exported alongside it. Selected by
+  // explain.js from technique/group/condition, never from translated text,
+  // so this catalog only has to carry the sentence, not the classification.
+  'rationale.ep.equality': 'Equivalence Partitioning on the equality check ({cond}): there are exactly two classes for {col} — matching and non-matching. A failure here usually points to a type mismatch, a wrong column, or collation/whitespace interfering with the comparison.',
+  'rationale.ep.notEqual': 'Equivalence Partitioning on the not-equal check ({cond}): confirms both directions — a differing value passes, the excluded value is filtered out. Negative operators combine badly with NULL under three-valued logic, which is why this class of case is usually high priority.',
+  'rationale.ep.threshold': "Equivalence Partitioning on the ordered comparison ({cond}): one representative from the passing side and one from the failing side of {col}. This case does not catch an off-by-one error by itself — that's what the paired BVA case is for — it only confirms which half of the range is kept.",
+  'rationale.ep.range': 'Equivalence Partitioning on BETWEEN ({cond}): splits {col} into three classes — inside, below, and above the range. Common defects here: assuming BETWEEN excludes its endpoints (it does not — both bounds are inclusive), or the low/high bounds swapped.',
+  'rationale.ep.list': "Equivalence Partitioning on IN/NOT IN ({cond}): samples members of the list and one value outside it for {col}. Long lists are sampled at the first and last member to avoid a case explosion, so if the logic depends on a specific member in the middle of the list, add that case by hand.",
+  'rationale.ep.pattern': "Equivalence Partitioning on LIKE ({cond}): a matching string and a non-matching one for {col}. LIKE is usually case-sensitive (unless ILIKE) and treats `%`/`_` as wildcards even when they appear literally in the data — those are the most common sources of defects here.",
+  'rationale.ep.subquery': "Equivalence Partitioning on EXISTS/IN (subquery) ({cond}): the two classes are 'the subquery returns at least one row' and 'the subquery is empty'. If this is negated, a NULL in the subquery's result is the classic trap — covered separately by the NULL/3VL cases.",
+  'rationale.ep.nullCheck': 'Equivalence Partitioning on IS [NOT] NULL ({cond}): confirms the right side of the NULL/non-NULL split is kept. This is the one operator that always evaluates TRUE or FALSE (never UNKNOWN), which is why it is commonly used as an anti-join idiom — get the direction backwards and the result silently comes back empty or over-broad.',
+  'rationale.ep.generic': 'Equivalence Partitioning on {cond}: one representative from each value class this condition splits {col} into, to confirm both sides behave correctly, not only the common case.',
+  'rationale.bva.equality': 'Boundary Value Analysis around the target value of {cond}: checks the exact-match comparison for precision — being off by as little as one unit (rounding, a type mismatch, a timezone slip on a datetime) is enough to fail this case.',
+  'rationale.bva.notEqual': 'Boundary Value Analysis around the excluded value of {cond}: confirms exactly that one value is filtered out while its immediate neighbours on either side are still kept.',
+  'rationale.bva.threshold': 'Boundary Value Analysis around the threshold of {cond}: the just-below / on / just-above triple is exactly where an off-by-one defect (`>` used where `>=` was meant, or the reverse) actually shows up — EP only checks which side wins, BVA pins down precisely where the line is drawn.',
+  'rationale.bva.range': 'Boundary Value Analysis around both endpoints of the BETWEEN in {cond}: each bound gets its own below/on/above triple, because an off-by-one defect can sit at only one end while the other stays correct.',
+  'rationale.bva.generic': 'Boundary Value Analysis around {cond}: values immediately adjacent to the boundary are where boundary-related defects (off-by-one, the wrong operator, a type mismatch) tend to cluster.',
+  'rationale.dt.rule': "One row of the decision table for {group}: exercises one specific TRUE/FALSE combination of the conditions, matching the AND/OR logic actually written in the SQL. Testing each condition alone (EP/BVA) cannot catch a defect that only appears when conditions combine — a swapped AND/OR, or a missing set of parentheses.",
+  'rationale.dt.masked': 'No combination exists where flipping this condition between TRUE and FALSE changes the final outcome — a sign of a masked condition, usually because another condition already subsumes it or the logic is redundant. Worth a second look at the SQL: is this condition actually doing anything?',
+  'rationale.dt.branch': "Branch coverage for the CASE expression {cond}: WHEN branches are evaluated top to bottom and the first match wins, even when a row satisfies more than one WHEN. The branch most often missed is the one nobody wrote — no ELSE means a row that matches no WHEN silently returns NULL instead of raising an error.",
+  'rationale.n3.joinKey': "NULL on a join key ({group}): per the SQL standard, `NULL = NULL` is never TRUE, so a row with a NULL join key never matches — even against a 'matching' NULL row on the other side. With an INNER JOIN that row disappears entirely from the result; with LEFT/FULL JOIN it still appears, but every column from the other side comes back NULL.",
+  'rationale.n3.groupOrder': 'NULL in {cond}: SQL treats every NULL as equal for grouping purposes (so all NULL rows land in one group), but where NULL sorts (first or last) is engine-dependent unless NULLS FIRST/LAST is stated explicitly — the two behaviours are easy to confuse.',
+  'rationale.n3.aggregate': 'NULL passing through the aggregate {cond}: COUNT(col)/SUM/AVG/MIN/MAX all silently skip NULL, unlike COUNT(*) — so AVG is not always SUM divided by COUNT(*), and a group that is entirely NULL yields SUM = NULL, not 0.',
+  'rationale.n3.write': 'NULL written by {cond}: confirms the NULL is written on purpose (the column allows it) rather than being a missing value or an omitted column in the statement — the two are easy to confuse when debugging.',
+  'rationale.n3.equalsLiteral': "`{cond}` writes `= NULL` or `<> NULL` — this is almost certainly a defect in the SQL itself, not the application: under three-valued logic, any `=`/`<>` comparison against NULL evaluates UNKNOWN, never TRUE. As written the condition can never match any row — IS NULL / IS NOT NULL is what was meant.",
+  'rationale.n3.notInSubquery': 'NOT IN against a subquery ({cond}): if the subquery returns even a single NULL row, the whole NOT IN evaluates UNKNOWN for every outer row → the result comes back completely empty, silently, with no error. This is one of the hardest-to-spot NULL traps in SQL; NOT EXISTS does not have this problem.',
+  'rationale.n3.generic': 'NULL in {cond}: confirms the behaviour when the column in question is NULL — because NULL does not follow ordinary two-valued Boolean logic, a condition that reads correctly can still silently drop rows that carry a NULL.',
+  'rationale.st.join': 'Cardinality of {group}: a single-row test cannot expose a row-duplication defect — this case sets up the exact match count (0, 1, or many) on each side to surface it: a 1:n JOIN inflating SUM/COUNT without DISTINCT, a WHERE predicate on the right side of a LEFT JOIN silently turning it into an INNER JOIN, or an unmatched row kept or dropped incorrectly for the join type in use.',
+  'rationale.st.grouping': "Result shape of {group}: confirms the number of groups/rows produced matches what GROUP BY/HAVING specify — the defects here (a selected column that is neither grouped nor aggregated, HAVING filtering the wrong groups, an empty table yielding zero groups rather than an error) don't show up when looking at a single sample row.",
+  'rationale.st.ordering': 'Result order of {group}: confirms the sort direction is correct and stable — when the sort key has ties with no secondary key to break them, the order among tied rows is unspecified and can change between runs, producing pagination bugs that are hard to reproduce.',
+  'rationale.st.paging': 'LIMIT/OFFSET of {group}: checks the page boundary (fewer than / exactly / more than the limit) and the empty region past the data — without a deterministic ORDER BY, two calls with the same LIMIT/OFFSET can return a different set of rows, so a row is duplicated or skipped across pages.',
+  'rationale.st.setop': "{group}: confirms de-duplication happens correctly (or doesn't, with ALL), and that the two branches' columns line up by position — two SELECT branches disagreeing on the data type at the same column position is a common silent defect in set operations.",
+  'rationale.st.dml': 'Blast radius of {group}: this is the highest-risk group of DML cases — a missing WHERE affects the entire table, and an over-broad WHERE affects more rows than intended. Worth double-checking before this statement ever runs against production.',
+  'rationale.st.selectStar': "`SELECT *`: the result depends on the table's physical column order, so a migration that adds, drops, or reorders columns on the source table silently breaks client code that reads the result by column position rather than by name.",
+  'rationale.st.cte': 'CTE {cond}: an empty CTE must leave everything that depends on it (a JOIN, a subquery) handling the no-rows case correctly, rather than erroring out or returning the wrong result.',
+  'rationale.st.distinct': "SELECT DISTINCT: confirms fully duplicate rows really do get collapsed — easy to mistake for 'clean' data when DISTINCT is actually masking a row-duplicating JOIN underneath.",
+  'rationale.st.generic': "Checks the shape/scale of the result for {group} — this class of defect only shows up when looking at a set of rows, not by checking a single row's values.",
+  'rationale.generic': 'This case exercises the behaviour of {cond} under the {technique} technique — see the Test data / Expected result columns for the concrete setup.',
+
   // ---------- generated test data ----------
   'dg.schema': 'Inferred schema',
   'dg.schemaHint': 'Derived from the query alone — there is no real schema to read. Types come from comparison literals first and column names second; foreign keys are read off the join conditions.',
@@ -508,6 +551,7 @@ export const EN = {
   'dg.synthetic': 'added',
   'dg.data': 'Test data',
   'dg.dataHint': 'Click a case to see the rows it needs',
+  'dg.rationale': 'Why this case matters',
   'dg.fixture': 'Rows to prepare',
   'dg.verify': 'Query to run afterwards',
   'dg.expected': 'Expected',

@@ -172,10 +172,11 @@ SHAPES.forEach((sql, i) => {
     JSON.parse(toJson(sql, r));
     const csv = toCsv(r.cases);
     const rows = csv.replace(/^﻿/, '').trim().split('\r\n');
-    const badRow = rows.find(row => (row.match(/"(?:[^"]|"")*"/g) || []).length !== 10);
+    const badRow = rows.find(row => (row.match(/"(?:[^"]|"")*"/g) || []).length !== 11);
     check(`${label}: CSV columns intact`, !badRow, badRow && badRow.slice(0, 80));
     const bad = r.cases.find(c =>
-      !c.id || !c.title || !c.expected || /undefined|NaN|\[object/.test(`${c.title}|${c.data}|${c.expected}|${c.notes}`));
+      !c.id || !c.title || !c.expected || !c.rationale ||
+      /undefined|NaN|\[object/.test(`${c.title}|${c.data}|${c.expected}|${c.notes}|${c.rationale}`));
     check(`${label}: cases well-formed`, !bad, bad && bad.title);
   } catch (err) {
     check(`${label}: no throw`, false, err.message);
@@ -220,8 +221,8 @@ LANGUAGES.forEach(({ code }) => {
   // Untranslated keys leak as the key itself; catch that shape in the output.
   setLang(code);
   const leaked = generateCases(COMPLETENESS[0].sql).cases.filter(c =>
-    /(^|\s)(out|val|hint|ep|bva|dt|bc|n3|st|find|grp|tech|prio|csv)\.[a-zA-Z]/.test(
-      `${c.title} ${c.data} ${c.expected} ${c.notes}`));
+    /(^|\s)(out|val|hint|ep|bva|dt|bc|n3|st|find|grp|tech|prio|csv|rationale)\.[a-zA-Z]/.test(
+      `${c.title} ${c.data} ${c.expected} ${c.notes} ${c.rationale}`));
   check(`no raw keys leak into ${code} output`, leaked.length === 0, leaked[0]?.title);
 });
 

@@ -137,6 +137,7 @@ export const VI = {
   'csv.expected': 'Kết quả mong đợi',
   'csv.priority': 'Ưu tiên',
   'csv.notes': 'Ghi chú',
+  'csv.rationale': 'Vì sao quan trọng',
 
   // ---------- shared outcome phrasing ----------
   'out.rowIn': 'Dòng ĐƯỢC trả về',
@@ -499,6 +500,48 @@ export const VI = {
   'st.concurrentUpdateExp': 'Cả hai lần cộng dồn đều có hiệu lực — nếu làm đọc-sửa-ghi ở tầng ứng dụng thì sẽ mất một lần',
   'st.concurrentUpdateNote': 'Phép tính đọc-sửa-ghi cần khoá dòng hoặc kiểm tra phiên bản theo cơ chế lạc quan',
 
+  // ---------- case rationale ----------
+  //
+  // Vì sao case này tồn tại và điều gì sẽ âm thầm hỏng nếu bỏ qua nó — hiện ở
+  // dòng chi tiết mở rộng của case và được xuất kèm theo. explain.js chọn key
+  // dựa trên technique/group/condition (không phải text đã dịch), nên catalog
+  // này chỉ cần mang câu văn, không cần lo việc phân loại.
+  'rationale.ep.equality': 'Equivalence Partitioning trên toán tử so sánh bằng ({cond}): chỉ có đúng 2 lớp cho {col} — khớp và không khớp. Nếu case này fail, khả năng cao là sai kiểu dữ liệu, sai cột, hoặc collation/khoảng trắng đang can thiệp vào phép so sánh.',
+  'rationale.ep.notEqual': 'Equivalence Partitioning trên toán tử khác ({cond}): kiểm tra cả 2 chiều — giá trị khác đi qua, giá trị bị loại trừ bị chặn lại. Toán tử phủ định kết hợp với NULL rất dễ sinh lỗi theo logic 3 trị, nên nhóm case này thường có độ ưu tiên cao.',
+  'rationale.ep.threshold': 'Equivalence Partitioning trên toán tử so sánh có thứ tự ({cond}): một đại diện ở phía đạt và một ở phía không đạt của {col}. Case này không tự bắt được lỗi off-by-one — đó là việc của case BVA đi kèm — nó chỉ xác nhận đúng nửa nào của trục giá trị được giữ lại.',
+  'rationale.ep.range': 'Equivalence Partitioning trên BETWEEN ({cond}): chia {col} thành 3 lớp — trong khoảng, dưới khoảng, trên khoảng. Lỗi thường gặp: nhầm BETWEEN loại trừ 2 đầu mút (thực ra BETWEEN bao gồm cả 2 đầu), hoặc đảo ngược low/high.',
+  'rationale.ep.list': 'Equivalence Partitioning trên IN/NOT IN ({cond}): lấy đại diện các phần tử trong danh sách và một giá trị ngoài danh sách cho {col}. Danh sách dài chỉ lấy mẫu đầu/cuối để tránh nổ số case, nên nếu logic phụ thuộc vào một phần tử cụ thể ở giữa danh sách, hãy bổ sung thủ công.',
+  'rationale.ep.pattern': 'Equivalence Partitioning trên LIKE ({cond}): một chuỗi khớp mẫu và một chuỗi không khớp cho {col}. LIKE thường phân biệt hoa/thường (trừ ILIKE) và coi `%`/`_` là ký tự đại diện kể cả khi chúng xuất hiện thật trong dữ liệu — đây là 2 nguồn lỗi phổ biến nhất.',
+  'rationale.ep.subquery': "Equivalence Partitioning trên EXISTS/IN (subquery) ({cond}): 2 lớp là 'subquery có ít nhất 1 dòng' và 'subquery rỗng'. Nếu có NOT ở ngoài, một NULL trong kết quả subquery là bẫy kinh điển — được test riêng ở nhóm NULL/3VL.",
+  'rationale.ep.nullCheck': 'Equivalence Partitioning trên IS [NOT] NULL ({cond}): xác nhận đúng chiều NULL/không-NULL được giữ lại. Đây là toán tử duy nhất luôn trả TRUE/FALSE (không bao giờ UNKNOWN), nên thường được dùng làm idiom anti-join — nếu chiều bị ngược, kết quả sẽ rỗng hoặc quá rộng một cách âm thầm.',
+  'rationale.ep.generic': 'Equivalence Partitioning trên {cond}: một đại diện của mỗi lớp giá trị mà điều kiện này chia {col} ra, để xác nhận cả 2 phía đều đúng chứ không chỉ trường hợp thường gặp.',
+  'rationale.bva.equality': 'Boundary Value Analysis quanh giá trị đích của {cond}: kiểm tra độ chính xác tuyệt đối của phép so sánh bằng — sai lệch dù chỉ 1 đơn vị (do làm tròn, sai kiểu dữ liệu, lệch múi giờ với datetime) cũng đủ khiến case fail.',
+  'rationale.bva.notEqual': 'Boundary Value Analysis quanh giá trị bị loại trừ của {cond}: xác nhận đúng một giá trị duy nhất bị loại còn các giá trị lân cận sát ngay bên cạnh vẫn được giữ lại.',
+  'rationale.bva.threshold': 'Boundary Value Analysis quanh ngưỡng của {cond}: bộ ba giá trị ngay dưới / đúng tại / ngay trên biên là nơi lỗi off-by-one (dùng `>` thay vì `>=`, hoặc ngược lại) thực sự lộ ra — EP chỉ kiểm tra phía nào thắng, BVA xác định chính xác ranh giới nằm ở đâu.',
+  'rationale.bva.range': 'Boundary Value Analysis quanh 2 đầu mút của BETWEEN trong {cond}: mỗi biên có bộ ba dưới/đúng/trên riêng, vì lỗi off-by-one có thể chỉ xảy ra ở một đầu trong khi đầu kia vẫn đúng.',
+  'rationale.bva.generic': 'Boundary Value Analysis quanh {cond}: giá trị ngay sát biên là nơi các lỗi liên quan đến ranh giới (off-by-one, sai toán tử, sai kiểu dữ liệu) thường tập trung.',
+  'rationale.dt.rule': 'Một hàng của bảng quyết định cho {group}: kiểm tra một tổ hợp giá trị TRUE/FALSE cụ thể của các điều kiện, đúng theo logic AND/OR đã viết trong SQL. Test riêng từng điều kiện (EP/BVA) không đủ để phát hiện lỗi chỉ xuất hiện khi các điều kiện kết hợp với nhau — nhầm AND thành OR, hoặc thiếu dấu ngoặc.',
+  'rationale.dt.masked': 'Không có tổ hợp nào mà việc đổi điều kiện này giữa TRUE và FALSE làm thay đổi kết quả cuối cùng — dấu hiệu của một điều kiện bị che khuất, thường do một điều kiện khác đã bao trùm nó hoặc logic bị dư thừa. Đáng xem lại: điều kiện này có thực sự cần thiết không?',
+  'rationale.dt.branch': 'Coverage cho biểu thức CASE {cond}: các nhánh WHEN được đánh giá tuần tự và nhánh đầu tiên khớp sẽ thắng, kể cả khi một dòng thoả nhiều WHEN. Nhánh dễ bị bỏ sót nhất là nhánh không ai viết ra — thiếu ELSE khiến dòng không khớp WHEN nào âm thầm trả về NULL thay vì báo lỗi.',
+  'rationale.n3.joinKey': "NULL trên khoá join ({group}): theo chuẩn SQL, `NULL = NULL` không bao giờ TRUE, nên một dòng có khoá join NULL sẽ không bao giờ khớp — kể cả với một dòng NULL 'tương ứng' ở bảng kia. Với INNER JOIN dòng đó biến mất khỏi kết quả; với LEFT/FULL JOIN nó vẫn xuất hiện nhưng mọi cột phía kia đều NULL.",
+  'rationale.n3.groupOrder': 'NULL trong {cond}: SQL coi mọi NULL là bằng nhau khi gộp nhóm (nên toàn bộ dòng NULL rơi vào cùng 1 nhóm), nhưng thứ tự sắp xếp của NULL (đầu hay cuối) lại tuỳ hệ quản trị nếu không có NULLS FIRST/LAST tường minh — 2 hành vi này rất dễ nhầm với nhau.',
+  'rationale.n3.aggregate': 'NULL đi qua hàm gộp {cond}: COUNT(col)/SUM/AVG/MIN/MAX đều tự động bỏ qua NULL, khác hẳn COUNT(*) — nên AVG không phải lúc nào cũng bằng SUM chia COUNT(*), và một nhóm toàn NULL sẽ cho SUM = NULL chứ không phải 0.',
+  'rationale.n3.write': 'NULL được ghi bởi {cond}: xác nhận việc ghi NULL là chủ đích (cột cho phép NULL) chứ không phải do thiếu giá trị hay thiếu cột trong câu lệnh — 2 nguyên nhân này rất dễ nhầm lẫn khi debug.',
+  'rationale.n3.equalsLiteral': '`{cond}` viết `= NULL` hoặc `<> NULL` — đây gần như chắc chắn là lỗi trong chính câu SQL, không phải lỗi ứng dụng: theo logic 3 trị, mọi so sánh với NULL bằng `=`/`<>` đều trả UNKNOWN, không bao giờ TRUE. Điều kiện viết như vậy sẽ không bao giờ khớp bất kỳ dòng nào — ý định đúng phải là IS NULL / IS NOT NULL.',
+  'rationale.n3.notInSubquery': 'NOT IN với subquery ({cond}): nếu subquery trả về dù chỉ 1 dòng NULL, toàn bộ NOT IN sẽ trả UNKNOWN cho mọi dòng ngoài → kết quả rỗng hoàn toàn, âm thầm, không báo lỗi gì. Đây là một trong những bẫy NULL khó phát hiện nhất trong SQL; NOT EXISTS không gặp vấn đề này.',
+  'rationale.n3.generic': 'NULL trong {cond}: xác nhận hành vi khi cột liên quan mang giá trị NULL — vì NULL không tuân theo logic Boolean 2 trị thông thường, một điều kiện đọc có vẻ đúng vẫn có thể âm thầm loại bỏ dòng có NULL.',
+  'rationale.st.join': 'Cardinality của {group}: một test 1-dòng không thể phát hiện lỗi nhân bản dòng — case này thiết lập đúng số dòng khớp (0, 1, hoặc nhiều) ở mỗi bên để lộ ra: JOIN 1:n làm SUM/COUNT bị thổi phồng nếu thiếu DISTINCT, điều kiện lọc ở bảng phải của LEFT JOIN âm thầm biến nó thành INNER JOIN, hoặc dòng không khớp bị giữ/loại sai theo loại JOIN.',
+  'rationale.st.grouping': 'Hình dạng kết quả của {group}: kiểm tra số nhóm/dòng sinh ra đúng như GROUP BY/HAVING quy định — các lỗi ở đây (chọn cột không nằm trong GROUP BY và không được gộp, HAVING lọc sai nhóm, bảng rỗng cho ra 0 nhóm thay vì lỗi) không hiện ra khi chỉ nhìn 1 dòng dữ liệu mẫu.',
+  'rationale.st.ordering': 'Thứ tự kết quả của {group}: xác nhận chiều sắp xếp đúng và ổn định — khi khoá sắp xếp có giá trị trùng (ties) mà không có khoá phụ để phá vỡ, thứ tự giữa các dòng trùng là không xác định và có thể đổi giữa các lần chạy, gây lỗi phân trang khó tái hiện.',
+  'rationale.st.paging': 'LIMIT/OFFSET của {group}: kiểm tra ranh giới trang (ít hơn / đúng bằng / nhiều hơn giới hạn) và vùng trống ngoài dữ liệu — nếu không có ORDER BY xác định, 2 lần gọi cùng LIMIT/OFFSET có thể trả về tập dòng khác nhau, khiến 1 dòng bị lặp hoặc mất khi chuyển trang.',
+  'rationale.st.setop': '{group}: xác nhận việc loại trùng diễn ra đúng (hoặc không, với ALL), và cột của 2 nhánh khớp đúng vị trí — 2 nhánh SELECT khác kiểu dữ liệu ở cùng vị trí cột là lỗi âm thầm phổ biến ở set operation.',
+  'rationale.st.dml': 'Phạm vi tác động của {group}: đây là nhóm case rủi ro cao nhất trong DML — thiếu WHERE khiến toàn bộ bảng bị ảnh hưởng, WHERE quá lỏng ảnh hưởng nhiều dòng hơn dự kiến. Nên kiểm tra kỹ trước khi chạy trên production.',
+  'rationale.st.selectStar': '`SELECT *`: kết quả phụ thuộc vào thứ tự cột vật lý của bảng, nên một migration thêm/xoá/đổi thứ tự cột ở bảng nguồn sẽ âm thầm làm hỏng code phía client đang đọc kết quả theo vị trí cột thay vì theo tên.',
+  'rationale.st.cte': 'CTE {cond}: một CTE rỗng phải khiến mọi thứ phụ thuộc vào nó (JOIN, subquery) xử lý đúng trường hợp không có dòng nào, thay vì lỗi hoặc trả kết quả sai.',
+  'rationale.st.distinct': "SELECT DISTINCT: xác nhận các dòng trùng lặp hoàn toàn thực sự bị gộp lại — dễ nhầm là dữ liệu 'sạch' trong khi thực chất DISTINCT đang âm thầm che giấu một JOIN nhân bản dòng phía sau.",
+  'rationale.st.generic': 'Kiểm tra hình dạng/quy mô của kết quả cho {group} — loại lỗi này chỉ lộ ra khi nhìn vào một tập nhiều dòng, không thể phát hiện bằng cách kiểm tra giá trị của 1 dòng đơn lẻ.',
+  'rationale.generic': 'Case này kiểm tra hành vi của {cond} theo kỹ thuật {technique} — xem cột Dữ liệu/Kết quả mong đợi để biết chi tiết cách thiết lập.',
+
   // ---------- generated test data ----------
   'dg.schema': 'Lược đồ suy ra',
   'dg.schemaHint': 'Suy từ chính câu truy vấn — không có lược đồ thật để đọc. Kiểu dữ liệu lấy từ giá trị so sánh trước, tên cột sau; khoá ngoại đọc từ điều kiện join.',
@@ -508,6 +551,7 @@ export const VI = {
   'dg.synthetic': 'tự thêm',
   'dg.data': 'Dữ liệu test',
   'dg.dataHint': 'Bấm vào một case để xem các dòng cần chuẩn bị',
+  'dg.rationale': 'Vì sao case này quan trọng',
   'dg.fixture': 'Các dòng cần chuẩn bị',
   'dg.verify': 'Câu truy vấn chạy sau đó',
   'dg.expected': 'Mong đợi',

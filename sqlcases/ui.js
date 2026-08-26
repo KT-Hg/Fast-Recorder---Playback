@@ -676,6 +676,14 @@ function buildDetailRow(testCase, colSpan) {
   const tr = node('tr', 'case-detail');
   const td = node('td');
   td.colSpan = colSpan;
+
+  if (testCase.rationale) {
+    const secWhy = node('div', 'fx-sec');
+    secWhy.append(node('div', 'fx-label', t('dg.rationale')));
+    secWhy.append(node('div', 'fx-rationale', testCase.rationale));
+    td.append(secWhy);
+  }
+
   const fixture = data?.fixtures.get(testCase.id);
 
   if (!fixture) {

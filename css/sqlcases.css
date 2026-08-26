@@ -689,6 +689,16 @@ tr.case-row.open .cell-id::before { transform: rotate(90deg); }
 .fx-exp b { color: var(--success); }
 .fx-req { font-size: 11.5px; color: var(--warning-text); }
 .fx-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.fx-rationale {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
 
 /* ===== Empty state ===== */
 .empty-state {
