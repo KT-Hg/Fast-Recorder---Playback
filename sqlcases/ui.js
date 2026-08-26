@@ -13,7 +13,7 @@
 
 import { generateCases, generateComparison, TECHNIQUES, DEFAULT_OPTIONS } from './generate.js';
 import { toCsv, toJson, suggestFilename, downloadText } from './export.js';
-import { t, tPlural, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
+import { t, tAlt, tPlural, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
 import { buildAllFixtures, fixturesToCsv, valueSlots, verifyFor } from './datagen.js';
 import { parse } from './parser.js';
 import * as valuebook from './valuebook.js';
@@ -223,6 +223,53 @@ function node(tag, className, text) {
   return n;
 }
 
+/**
+ * The controls the page's geometry hangs off.
+ *
+ * A Vietnamese label runs up to half again as long as its English one, so a
+ * control sized to the text currently on screen changes width at every
+ * language switch and drags everything beside it along — a right-anchored row
+ * of export buttons slid 48px, the mode pills 49px the other way. Each of
+ * these reserves the width of its longest translation instead (the ghost on
+ * `[data-i18n-alt]` in sqlcases.css does the measuring), so a switch re-letters
+ * the chrome without moving it.
+ *
+ * Deliberately not every label on the page: prose that wraps — the subtitle,
+ * the hints, the help modal — has no fixed width to hold, and reserving one
+ * for it would only waste the row it sits in.
+ */
+const WIDTH_STABLE = [
+  '.topbar-title [data-i18n]',   // the subtitle starts where this one ends
+  '.topbar-actions button',
+  '.card-head h3',               // the Examples select takes what it leaves
+  '.card-head-actions button',   // mode pills and Clear, packed to the right
+  '.input-foot button',
+  '.vb-head button',
+  '.stat-lbl',                   // every stat after it shifts by the difference
+  '.export-row button',
+  '.check-row-inline span'
+].join(', ');
+
+/**
+ * Write a translated label, and on the controls listed in `WIDTH_STABLE` also
+ * reserve the width of the same label in the other language.
+ */
+function setLabel(target, key, params) {
+  target.textContent = t(key, params);
+  if (target.matches(WIDTH_STABLE)) target.dataset.i18nAlt = tAlt(key, params);
+}
+
+/**
+ * A filter pill's label, in a box of its own so the reservation covers the
+ * label and nothing else — the count beside it is the same width in every
+ * language and must not be measured with it.
+ */
+function pillLabel(key) {
+  const span = node('span', null, t(key));
+  span.dataset.i18nAlt = tAlt(key);
+  return span;
+}
+
 let toastTimer = null;
 function toast(message) {
   el.toast.textContent = message;
@@ -266,7 +313,9 @@ function buildTechniqueList() {
     input.checked = true;
     input.dataset.tech = tech.key;
     input.addEventListener('change', () => { saveState(); run(); });
-    label.append(input, node('span', 'tech-name', t(tech.labelKey)), node('span', 'tech-count', ''));
+    const name = node('span', 'tech-name');
+    setLabel(name, tech.labelKey);
+    label.append(input, name, node('span', 'tech-count', ''));
     li.append(label);
     el.techList.append(li);
   });
@@ -780,8 +829,8 @@ function renderImpactFilter() {
 
   const labelKey = { changed: 'ui.impactChanged', unrelated: 'ui.impactUnrelated' };
   const mk = (value, count) => {
-    const b = node('button', `pill${activeImpact === value ? ' active' : ''}`, t(labelKey[value]));
-    b.append(node('span', 'pill-n', count));
+    const b = node('button', `pill${activeImpact === value ? ' active' : ''}`);
+    b.append(pillLabel(labelKey[value]), node('span', 'pill-n', count));
     b.addEventListener('click', () => {
       activeImpact = activeImpact === value ? '' : value;
       renderImpactFilter();
@@ -881,8 +930,9 @@ function renderTechniqueFilter(stats) {
   el.techFilter.replaceChildren();
   const codes = Object.keys(stats.byTechnique);
 
-  const mk = (label, value, count) => {
-    const b = node('button', `pill${activeTechnique === value ? ' active' : ''}`, label);
+  const mk = (key, value, count) => {
+    const b = node('button', `pill${activeTechnique === value ? ' active' : ''}`);
+    b.append(pillLabel(key));
     if (count !== undefined) b.append(node('span', 'pill-n', count));
     b.addEventListener('click', () => {
       activeTechnique = activeTechnique === value ? '' : value;
@@ -892,8 +942,8 @@ function renderTechniqueFilter(stats) {
     return b;
   };
 
-  el.techFilter.append(mk(t('ui.filterAll'), '', stats.total));
-  codes.forEach(code => el.techFilter.append(mk(t('tech.code.' + code), code, stats.byTechnique[code])));
+  el.techFilter.append(mk('ui.filterAll', '', stats.total));
+  codes.forEach(code => el.techFilter.append(mk('tech.code.' + code, code, stats.byTechnique[code])));
 }
 
 function visibleCases() {
@@ -1334,7 +1384,7 @@ function applyTheme(theme) {
  * "translate what is already on screen" pass that could fall out of step.
  */
 function applyStaticText() {
-  document.querySelectorAll('[data-i18n]').forEach(n => { n.textContent = t(n.dataset.i18n); });
+  document.querySelectorAll('[data-i18n]').forEach(n => { setLabel(n, n.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach(n => { n.placeholder = t(n.dataset.i18nPh); });
   document.querySelectorAll('[data-i18n-title]').forEach(n => { n.title = t(n.dataset.i18nTitle); });
 
@@ -1352,19 +1402,28 @@ function applyStaticText() {
   TECHNIQUES.forEach(tech => {
     const name = el.techList.querySelector(`input[data-tech="${tech.key}"]`)?.parentElement
       ?.querySelector('.tech-name');
-    if (name) name.textContent = t(tech.labelKey);
+    if (name) setLabel(name, tech.labelKey);
   });
 
   document.querySelectorAll('.help-lang').forEach(n => {
     n.hidden = n.dataset.helpLang !== getLang();
   });
   document.documentElement.lang = getLang();
-  el.langLabel.textContent = (LANGUAGES.find(l => l.code === getLang()) || LANGUAGES[0]).short;
+
+  // The toggle is the one button certain to be under the cursor when the
+  // language changes, so it holds the widest code rather than its own: EN is
+  // 5px wider than VI, and the two buttons after it would jump by that much
+  // under the pointer that had just been clicked.
+  const active = LANGUAGES.find(l => l.code === getLang()) || LANGUAGES[0];
+  el.langLabel.textContent = active.short;
+  el.langLabel.dataset.i18nAlt = LANGUAGES
+    .filter(l => l.code !== active.code)
+    .reduce((widest, l) => (l.short.length > widest.length ? l.short : widest), '');
 
   // #sqlLabel carries a fixed data-i18n key for single mode; compare mode
   // overrides it below, so redo that override after the generic pass above
   // would otherwise put the single-mode label back.
-  el.sqlLabel.textContent = t(mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
+  setLabel(el.sqlLabel, mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
 }
 
 /** Switch language, retranslate the chrome, then regenerate so cases follow. */
@@ -1387,7 +1446,7 @@ function setMode(next) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   });
   el.sqlAfterCard.hidden = mode !== 'compare';
-  el.sqlLabel.textContent = t(mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
+  setLabel(el.sqlLabel, mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
 }
 
 // ---- wiring ----------------------------------------------------------

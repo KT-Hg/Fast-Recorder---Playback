@@ -121,6 +121,45 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .search { min-width: 180px; }
 
+/* ===== Language-stable widths =====
+ *
+ * A Vietnamese label runs up to half again as long as its English one, so a
+ * control sized to the text on screen changes width the moment the language
+ * changes — and every control packed beside it slides along with it. ui.js
+ * writes the label's other translation into data-i18n-alt on the controls the
+ * layout hangs off (see WIDTH_STABLE there); the ghost below is laid out, so
+ * the browser sizes the control against whichever of the two strings is wider,
+ * but it is zero-height, clipped and invisible.
+ *
+ * Nothing here is a pixel measurement on purpose: the reservation is the
+ * catalog's own text, so editing a translation resizes the control that holds
+ * it, with no table of widths to keep in step.
+ */
+[data-i18n-alt]::after {
+  content: attr(data-i18n-alt);
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  /* A measuring stick must not wrap, or it measures the wrong thing. */
+  white-space: pre;
+}
+/* The ghost is a block, and a block inside an inline box would split the line
+   around it. Flex items are blockified already; these spans are the ones that
+   are not. */
+span[data-i18n-alt] { display: inline-block; }
+
+/*
+ * A <select> cannot carry a ghost — an <option> has no pseudo-element — so the
+ * ones whose text changes with the language get a width instead. Their content
+ * is variable in any single language anyway: the clause and column lists are
+ * rebuilt from whatever query is on screen, and sized themselves an option at
+ * a time before this.
+ */
+.filter-right .mini-select { width: 144px; }
+.opt-row .mini-select { flex: 0 0 auto; width: 156px; }
+
 /* ===== Layout ===== */
 .layout {
   flex: 1 1 auto;
@@ -153,7 +192,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   border-radius: 10px;
   padding: 12px;
 }
-.card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
 .card-head h3 {
   margin: 0;
   font-size: 11px;
@@ -165,16 +204,29 @@ button:disabled { opacity: 0.45; cursor: default; }
    heading keep one line and give the controls beside it room to shrink,
    rather than letting a two-line heading push them out of the card. */
 .card-head h3 { white-space: nowrap; }
+/* Wraps as a group, and the mode toggle never splits: with every label now
+   reserving its widest translation, the sidebar's heading, both pills, the
+   examples list and Clear no longer fit on one line at the narrowest pane, and
+   dropping the examples select onto a second line reads better than the pills
+   stacking on top of each other. The widths are language-independent, so the
+   line it breaks at is too. */
 .card-head-actions {
   margin-left: auto;
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
   align-items: center;
   min-width: 0;
 }
+#modeToggle { flex-wrap: nowrap; }
+/* A basis of its own rather than `auto`: the select fills what the (now
+   width-stable) heading, pills and Clear button leave, instead of asking for
+   the width of its longest example name — another string that changes with
+   the language. */
 .card-head-actions .mini-select {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 110px;
   text-overflow: ellipsis;
 }
 
@@ -510,8 +562,20 @@ details.card[open] > .panel-body { margin-top: 8px; }
   border-radius: 10px;
   position: relative;
 }
+/*
+ * Fixed layout: the column grid comes from the widths below rather than from
+ * the text in the cells, which is the one part of this page that is fully
+ * translated — under auto layout every column resized, and every column after
+ * it moved, on each language switch. It also stops the columns jumping as one
+ * query's cases replace another's.
+ */
 .case-table {
   width: 100%;
+  /* Fixed columns cannot squeeze forever: past this the three prose columns
+     collapse into ribbons a word wide, so the table keeps its shape and
+     .table-wrap scrolls instead. */
+  min-width: 720px;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12.5px;
 }
@@ -540,10 +604,15 @@ details.card[open] > .panel-body { margin-top: 8px; }
 }
 .case-table > tbody > tr.case-row:hover { background: var(--row-hover); }
 
+/* The four narrow columns hold fixed-shape content, so they are absolute, and
+   under the fixed layout above the three prose columns — case, data, expected
+   result — split what is left of the table evenly. Prio is sized for the widest
+   badge in either language ("Trung bình"), which the auto layout had been
+   growing the column to on its own. */
 .col-id     { width: 74px; }
 .col-tech   { width: 120px; }
 .col-target { width: 130px; }
-.col-prio   { width: 62px; }
+.col-prio   { width: 92px; }
 
 .cell-id {
   font-family: Consolas, monospace;

@@ -66,9 +66,38 @@ export function t(key, params) {
     missing.add(key);
     return key;
   }
+  return format(template, params);
+}
+
+function format(template, params) {
   if (!params) return template;
   return template.replace(/\{(\w+)\}/g, (whole, name) =>
     (params[name] === undefined || params[name] === null) ? whole : String(params[name]));
+}
+
+/**
+ * The same message in the languages that are *not* on screen — the longest of
+ * them when there is more than one.
+ *
+ * Layout, not display: a control that carries a label reserves the width of
+ * this string as well as of the one it shows (see `data-i18n-alt` in
+ * sqlcases.css), so switching language re-letters the chrome without moving
+ * it. With two catalogs the pair is exact, since the browser measures both
+ * strings itself; past two, character count picks the candidate.
+ *
+ * A key missing from the other catalogs yields '', which reserves nothing —
+ * unlike `t`, a width measurement has no business reporting a missing key.
+ */
+export function tAlt(key, params) {
+  let widest = '';
+  for (const [code, catalog] of Object.entries(CATALOGS)) {
+    if (code === lang) continue;
+    const template = catalog[key];
+    if (template === undefined) continue;
+    const text = format(template, params);
+    if (text.length > widest.length) widest = text;
+  }
+  return widest;
 }
 
 /**
