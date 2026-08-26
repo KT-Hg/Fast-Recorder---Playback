@@ -17,6 +17,7 @@
 import { parse } from './parser.js';
 import { analyze } from './analyze.js';
 import { generateCases } from './generate.js';
+import { diffQueries } from './diff.js';
 import { toCsv, toJson } from './export.js';
 import { inferSchema, buildAllFixtures, fixturesToCsv, valueSlots } from './datagen.js';
 import * as valuebook from './valuebook.js';
@@ -438,6 +439,116 @@ SHAPES.forEach((sql, i) => {
     valueSlots(r.model, schema, fixtures);
   } catch (err) {
     check(`shape ${i + 1}: value slots build without throwing`, false, err.message);
+  }
+});
+
+// ---------------------------------------------------------------------
+// 8. Structural diff between two versions of a query.
+//
+//    The property worth guarding is that the diff reads the AST, not the
+//    text: reshaping AND/OR while keeping the same leaves must be told apart
+//    from those leaves simply being unchanged, and a value/operator/type
+//    change must be recognised as "changed", not one removal plus one
+//    unrelated addition.
+// ---------------------------------------------------------------------
+
+{
+  const same = diffQueries(
+    `SELECT id FROM t WHERE a = 1 AND b = 2`,
+    `SELECT id FROM t WHERE a = 1 AND b = 2`
+  );
+  check('identical statements: no changes', same.ok && !same.summary.hasChanges, JSON.stringify(same.summary));
+
+  const valueChange = diffQueries(
+    `SELECT * FROM orders WHERE status = 'pending' AND (amount > 100 OR vip = TRUE)`,
+    `SELECT * FROM orders WHERE status = 'pending' AND amount > 200 AND vip = TRUE`
+  );
+  check('threshold literal recognised as changed, not added+removed',
+    valueChange.where.changed.length === 1 && valueChange.where.added.length === 0 && valueChange.where.removed.length === 0,
+    JSON.stringify({ added: valueChange.where.added.length, removed: valueChange.where.removed.length, changed: valueChange.where.changed.length }));
+  check('OR flipped to AND over the same leaves is a shape change',
+    valueChange.where.shapeChanged === true);
+
+  const reorderOnly = diffQueries(
+    `SELECT * FROM t WHERE a = 1 AND b = 2`,
+    `SELECT * FROM t WHERE b = 2 AND a = 1`
+  );
+  check('sibling reorder inside AND is NOT a shape change (AND is commutative)',
+    reorderOnly.where.shapeChanged === false, JSON.stringify(reorderOnly.where));
+
+  const addedJoin = diffQueries(
+    `SELECT u.id FROM users u WHERE u.age > 18`,
+    `SELECT u.id FROM users u LEFT JOIN orders o ON o.user_id = u.id WHERE u.age > 18 ORDER BY u.id DESC`
+  );
+  check('added join and added ORDER BY both surface',
+    addedJoin.joins.added.length === 1 && addedJoin.orderBy.added.length === 1,
+    JSON.stringify({ joins: addedJoin.joins.added.length, orderBy: addedJoin.orderBy.added.length }));
+
+  const joinTypeChange = diffQueries(
+    `SELECT * FROM a LEFT JOIN b ON b.a_id = a.id`,
+    `SELECT * FROM a INNER JOIN b ON b.a_id = a.id`
+  );
+  check('join type flip reported as changed, not added+removed',
+    joinTypeChange.joins.changed.length === 1 && !joinTypeChange.joins.added.length && !joinTypeChange.joins.removed.length,
+    JSON.stringify(joinTypeChange.joins));
+
+  const onConditionAdded = diffQueries(
+    `SELECT * FROM a LEFT JOIN b ON b.a_id = a.id`,
+    `SELECT * FROM a LEFT JOIN b ON b.a_id = a.id AND b.active = TRUE`
+  );
+  check('a predicate added to an existing ON clause surfaces under join conditions',
+    onConditionAdded.joinConditions.added.length === 1, JSON.stringify(onConditionAdded.joinConditions));
+
+  const groupingChange = diffQueries(
+    `SELECT dept, COUNT(*) c FROM emp GROUP BY dept HAVING COUNT(*) > 3 ORDER BY c`,
+    `SELECT dept, SUM(salary) s FROM emp GROUP BY dept HAVING SUM(salary) > 100000 ORDER BY s DESC`
+  );
+  check('aggregate swap (COUNT→SUM) shows as removed+added, not changed',
+    groupingChange.aggregates.removed.length === 1 && groupingChange.aggregates.added.length === 1,
+    JSON.stringify(groupingChange.aggregates));
+  // Both conditions compare a bare aggregate expression (no column to key
+  // on), so pass-1 matching pairs them by operator alone and reports this as
+  // the HAVING threshold changing — a defensible reading, just not the only
+  // one; either way the difference must not go unreported.
+  check('HAVING difference on the new aggregate is reported',
+    groupingChange.having.added.length + groupingChange.having.changed.length >= 1,
+    JSON.stringify(groupingChange.having));
+  check('ORDER BY direction change detected on the same key... or reported as added when the key itself changed',
+    groupingChange.orderBy.added.length + groupingChange.orderBy.changed.length >= 1);
+  check('SELECT list swap (alias c→s) surfaces',
+    groupingChange.selectList.removed.length >= 1 && groupingChange.selectList.added.length >= 1,
+    JSON.stringify(groupingChange.selectList));
+
+  const writeChange = diffQueries(
+    `UPDATE accounts SET balance = balance - 10 WHERE id = 1`,
+    `UPDATE accounts SET balance = balance - 20, updated_at = NOW() WHERE id = 1`
+  );
+  check('changed SET value reported as changed', writeChange.writes.changed.length === 1, JSON.stringify(writeChange.writes));
+  check('new SET column reported as added', writeChange.writes.added.length === 1, JSON.stringify(writeChange.writes));
+
+  const bad = diffQueries(`SELECT * FROM t WHERE`, `SELECT * FROM t`);
+  check('a parse failure on either side reports ok:false', bad.ok === false);
+
+  const limitChange = diffQueries(`SELECT * FROM t ORDER BY id LIMIT 10`, `SELECT * FROM t ORDER BY id LIMIT 20 OFFSET 5`);
+  check('LIMIT value change detected', limitChange.paging.limit.changed === true);
+  check('newly added OFFSET detected', limitChange.paging.offset.changed === true && !limitChange.paging.offset.old);
+}
+
+// Nothing in diff.js may throw on the odd shapes, self-diffed and paired up
+// against each other — a stand-in for real before/after pairs without having
+// to hand-write dozens more.
+SHAPES.forEach((sql, i) => {
+  try {
+    const self = diffQueries(sql, sql);
+    if (self.ok) check(`shape ${i + 1}: self-diff has no changes`, !self.summary.hasChanges);
+  } catch (err) {
+    check(`shape ${i + 1}: self-diff does not throw`, false, err.message);
+  }
+  const next = SHAPES[(i + 1) % SHAPES.length];
+  try {
+    diffQueries(sql, next);
+  } catch (err) {
+    check(`shape ${i + 1} vs ${(i + 1) % SHAPES.length + 1}: diff does not throw`, false, err.message);
   }
 });
 

@@ -21,6 +21,11 @@ export const EN = {
   'ui.langTip': 'Switch language',
 
   'ui.sqlQuery': 'SQL query',
+  'ui.sqlQueryBefore': 'SQL before the change',
+  'ui.sqlQueryAfter': 'SQL after the change',
+  'ui.sqlAfterPlaceholder': 'Paste the new version of the query…',
+  'ui.modeSingle': 'Single query',
+  'ui.modeCompare': 'Compare before/after',
   'ui.examples': 'Examples…',
   'ui.clear': 'Clear',
   'ui.analyze': '⚙ Analyze & generate',
@@ -91,6 +96,32 @@ export const EN = {
 
   'ui.findings': 'Findings',
   'ui.coverage': 'Coverage',
+  'ui.diff': 'Changes detected',
+
+  // ---------- compare mode: change diff ----------
+  //
+  // Section labels and prose for the "changes detected" panel, built by
+  // diff.js from the two parsed statements — never from the SQL text, so a
+  // condition rewritten with different spacing but the same meaning does not
+  // show up as a change.
+  'diff.tables': 'Tables',
+  'diff.joins': 'Joins',
+  'diff.joinConditions': 'Join conditions (ON)',
+  'diff.where': 'WHERE',
+  'diff.having': 'HAVING',
+  'diff.groupBy': 'GROUP BY',
+  'diff.aggregates': 'Aggregates',
+  'diff.orderBy': 'ORDER BY',
+  'diff.paging': 'LIMIT / OFFSET',
+  'diff.selectList': 'SELECT list',
+  'diff.caseExprs': 'CASE expressions',
+  'diff.writes': 'Written columns',
+  'diff.shapeChanged': 'AND/OR/NOT logic reshaped — same conditions, different combination',
+  'diff.statementChanged': 'Statement type changed: {old} → {new}',
+  'diff.noChanges': 'No structural difference detected between the two statements.',
+  'diff.parseFailed': 'One or both statements could not be parsed — fix the syntax errors above to see the diff.',
+  'diff.summaryOne': '{n} change',
+  'diff.summaryMany': '{n} changes',
   'ui.sumErrors': '{n} error(s)',
   'ui.sumWarns': '{n} warning(s)',
   'ui.sumInfos': '{n} note(s)',

@@ -31,8 +31,12 @@
 
       <div class="card">
         <div class="card-head">
-          <h3 data-i18n="ui.sqlQuery"></h3>
+          <h3 id="sqlLabel" data-i18n="ui.sqlQuery"></h3>
           <div class="card-head-actions">
+            <div class="pill-row" id="modeToggle">
+              <button type="button" class="pill active" data-mode="single" data-i18n="ui.modeSingle"></button>
+              <button type="button" class="pill" data-mode="compare" data-i18n="ui.modeCompare"></button>
+            </div>
             <select id="sampleSelect" class="mini-select"></select>
             <button id="btnClear" class="t-btn t-btn-sm" data-i18n="ui.clear"></button>
           </div>
@@ -51,6 +55,16 @@ HAVING COUNT(o.id) > 3
           <button id="btnAnalyze" class="primary-gradient" data-i18n="ui.analyze"></button>
         </div>
         <div id="parseErrors" class="parse-errors" hidden></div>
+      </div>
+
+      <!-- Compare mode only: the "after" side of the query, diffed against
+           #sqlInput above (which becomes the "before" side while this is shown). -->
+      <div class="card" id="sqlAfterCard" hidden>
+        <div class="card-head">
+          <h3 data-i18n="ui.sqlQueryAfter"></h3>
+        </div>
+        <textarea id="sqlInputAfter" spellcheck="false" data-i18n-ph="ui.sqlAfterPlaceholder"></textarea>
+        <div id="parseErrorsAfter" class="parse-errors" hidden></div>
       </div>
 
       <details class="card panel" id="techPanel" open>
@@ -133,6 +147,14 @@ HAVING COUNT(o.id) > 3
           <button id="btnVerifySql" class="t-btn" data-i18n="dg.exportVerify" disabled></button>
         </div>
       </div>
+
+      <details class="strip" id="diffPanel" hidden open>
+        <summary class="panel-head">
+          <span class="panel-title" data-i18n="ui.diff"></span>
+          <span class="panel-sum" id="diffSummary"></span>
+        </summary>
+        <div class="panel-body" id="diffBody"></div>
+      </details>
 
       <details class="strip" id="findingsPanel" hidden>
         <summary class="panel-head">

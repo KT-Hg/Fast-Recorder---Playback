@@ -13,8 +13,10 @@
 
 import { generateCases, TECHNIQUES, DEFAULT_OPTIONS } from './generate.js';
 import { toCsv, toJson, suggestFilename, downloadText } from './export.js';
-import { t, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
+import { t, tPlural, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
 import { buildAllFixtures, fixturesToCsv, valueSlots, verifyFor } from './datagen.js';
+import { parse } from './parser.js';
+import { diffQueries } from './diff.js';
 import * as valuebook from './valuebook.js';
 
 const THEME_KEY = 'popupTheme';
@@ -91,6 +93,14 @@ VALUES (:user_id, 'login', NULL, NOW())`
 const $ = id => document.getElementById(id);
 const el = {
   sql: $('sqlInput'),
+  sqlLabel: $('sqlLabel'),
+  modeToggle: $('modeToggle'),
+  sqlAfterCard: $('sqlAfterCard'),
+  sqlAfter: $('sqlInputAfter'),
+  parseErrorsAfter: $('parseErrorsAfter'),
+  diffPanel: $('diffPanel'),
+  diffBody: $('diffBody'),
+  diffSummary: $('diffSummary'),
   analyze: $('btnAnalyze'),
   clear: $('btnClear'),
   sample: $('sampleSelect'),
@@ -140,6 +150,15 @@ const el = {
   }
 };
 
+/**
+ * The SQL text that produced `current` — #sqlInput in single mode, but
+ * #sqlInputAfter in compare mode, since that is the query the case table,
+ * fixtures and exports are actually generated from.
+ */
+function activeSql() {
+  return mode === 'compare' ? el.sqlAfter.value : el.sql.value;
+}
+
 /** Last generation result, and the filter state applied on top of it. */
 let current = null;
 let activeTechnique = '';
@@ -147,6 +166,8 @@ let activeTechnique = '';
 let data = null;
 /** Case ids whose data panel is expanded, kept across re-renders. */
 const expanded = new Set();
+/** 'single' analyses #sqlInput alone; 'compare' diffs it against #sqlInputAfter. */
+let mode = 'single';
 
 // ---- collapsible panels ----------------------------------------------
 
@@ -578,6 +599,126 @@ function renderCoverage(summaries) {
   });
 }
 
+// ---- rendering: compare-mode diff --------------------------------------
+
+/** One coloured chip for a diff panel row: added / removed / changed. */
+function diffChip(kind, text) {
+  const mark = { added: '+', removed: '−', changed: '~' }[kind] || '';
+  const chip = node('span', `chip chip-${kind}`);
+  if (mark) chip.append(node('span', 'chip-mark', mark));
+  chip.append(node('span', null, text));
+  return chip;
+}
+
+// How to render one item from each section — most are just their rendered
+// SQL; a few (joins, ORDER BY, writes) need more than one field to read as a
+// change rather than a mystery.
+const DIFF_TABLE = t2 => `${t2.label}${t2.joinType ? ` (${t2.joinType})` : ''}`;
+const DIFF_JOIN = j => `${j.leftLabel} ⋈ ${j.rightLabel} (${j.joinType}${j.implicit ? ', implicit' : ''}${j.natural ? ', natural' : ''})`;
+const DIFF_JOIN_CHANGED = (o, n) => `${o.leftLabel} ⋈ ${o.rightLabel}: ${o.joinType} → ${n.joinType}`;
+const DIFF_COND = c => c.sql;
+const DIFF_COND_CHANGED = (o, n) => `${o.sql}  →  ${n.sql}`;
+const DIFF_GROUPBY = g => g.sql;
+const DIFF_AGG = a => a.sql;
+const DIFF_ORDERBY = o => `${o.sql} ${o.dir}`;
+const DIFF_ORDERBY_CHANGED = (o, n) =>
+  `${o.sql}: ${o.dir}${o.nulls ? ' NULLS ' + o.nulls : ''} → ${n.dir}${n.nulls ? ' NULLS ' + n.nulls : ''}`;
+const DIFF_SELECT = c => (c.alias ? `${c.sql} AS ${c.alias}` : c.sql);
+const DIFF_SELECT_CHANGED = (o, n) => `${DIFF_SELECT(o)}  →  ${DIFF_SELECT(n)}`;
+const DIFF_CASE = c => c.sql;
+const DIFF_WRITE = w => `${w.name} = ${w.sql}`;
+const DIFF_WRITE_CHANGED = (o, n) => `${o.name}: ${o.sql}  →  ${n.sql}`;
+
+/** One labelled group of chips for a diff section, or null when it has nothing to show. */
+function diffSection(labelKey, sec, textOf, changedTextOf) {
+  if (!sec) return null;
+  const total = sec.added.length + sec.removed.length + sec.changed.length + (sec.shapeChanged ? 1 : 0);
+  if (!total) return null;
+
+  const g = node('div', 'an-group');
+  g.append(node('div', 'an-label', t(labelKey)));
+  const row = node('div', 'chip-row');
+  sec.removed.forEach(x => row.append(diffChip('removed', textOf(x))));
+  sec.added.forEach(x => row.append(diffChip('added', textOf(x))));
+  sec.changed.forEach(x => row.append(
+    diffChip('changed', changedTextOf ? changedTextOf(x.old, x.new) : `${textOf(x.old)} → ${textOf(x.new)}`)));
+  if (sec.shapeChanged) row.append(diffChip('changed', t('diff.shapeChanged')));
+  g.append(row);
+  return g;
+}
+
+/**
+ * Render the "changes detected" panel for compare mode.
+ *
+ * @param {object|null} diff — from diffQueries(), or null to hide the panel
+ *   (single mode, or an empty query on either side).
+ */
+function renderDiff(diff) {
+  el.diffBody.replaceChildren();
+  el.diffSummary.textContent = '';
+
+  if (!diff) { el.diffPanel.hidden = true; return; }
+  el.diffPanel.hidden = false;
+
+  if (!diff.ok) {
+    el.diffBody.append(node('div', 'helper', t('diff.parseFailed')));
+    return;
+  }
+
+  if (diff.statementChanged) {
+    el.diffBody.append(node('div', 'diff-banner', t('diff.statementChanged', {
+      old: diff.statement.old.toUpperCase(), new: diff.statement.new.toUpperCase()
+    })));
+  }
+
+  const groups = [
+    diffSection('diff.tables', diff.tables, DIFF_TABLE),
+    diffSection('diff.joins', diff.joins, DIFF_JOIN, DIFF_JOIN_CHANGED),
+    // The aggregate ON-clause shapeChangedCount across joins does not fit the
+    // single boolean the other sections use, so it is folded in here as one.
+    diffSection('diff.joinConditions',
+      { ...diff.joinConditions, shapeChanged: diff.joinConditions.shapeChangedCount > 0 },
+      DIFF_COND, DIFF_COND_CHANGED),
+    diffSection('diff.where', diff.where, DIFF_COND, DIFF_COND_CHANGED),
+    diffSection('diff.having', diff.having, DIFF_COND, DIFF_COND_CHANGED),
+    diffSection('diff.groupBy', diff.groupBy, DIFF_GROUPBY),
+    diffSection('diff.aggregates', diff.aggregates, DIFF_AGG),
+    diffSection('diff.orderBy', diff.orderBy, DIFF_ORDERBY, DIFF_ORDERBY_CHANGED),
+    diffSection('diff.selectList', diff.selectList, DIFF_SELECT, DIFF_SELECT_CHANGED),
+    diffSection('diff.caseExprs', diff.caseExprs, DIFF_CASE),
+    diffSection('diff.writes', diff.writes, DIFF_WRITE, DIFF_WRITE_CHANGED)
+  ].filter(Boolean);
+
+  // LIMIT/OFFSET are a single optional value each, not a list — handled apart
+  // from diffSection rather than forcing them into its {added,removed,changed} shape.
+  const { limit, offset } = diff.paging;
+  const pagingChips = [];
+  if (limit.changed) {
+    pagingChips.push(diffChip(!limit.old ? 'added' : !limit.new ? 'removed' : 'changed',
+      `LIMIT ${limit.old ? limit.old.sql : '—'} → ${limit.new ? limit.new.sql : '—'}`));
+  }
+  if (offset.changed) {
+    pagingChips.push(diffChip(!offset.old ? 'added' : !offset.new ? 'removed' : 'changed',
+      `OFFSET ${offset.old ? offset.old.sql : '—'} → ${offset.new ? offset.new.sql : '—'}`));
+  }
+  if (pagingChips.length) {
+    const g = node('div', 'an-group');
+    g.append(node('div', 'an-label', t('diff.paging')));
+    const row = node('div', 'chip-row');
+    pagingChips.forEach(c => row.append(c));
+    g.append(row);
+    groups.push(g);
+  }
+
+  if (!groups.length && !diff.statementChanged) {
+    el.diffBody.append(node('div', 'helper', t('diff.noChanges')));
+  } else {
+    groups.forEach(g => el.diffBody.append(g));
+  }
+
+  el.diffSummary.textContent = tPlural(diff.summary.totalChanges, 'diff.summaryOne', 'diff.summaryMany');
+}
+
 // ---- rendering: filters & table --------------------------------------
 
 function renderTechniqueFilter(stats) {
@@ -744,7 +885,7 @@ function buildDetailRow(testCase, colSpan) {
   }
 
   // --- the query to run afterwards ---
-  const v = verifyFor(el.sql.value, testCase);
+  const v = verifyFor(activeSql(), testCase);
   const secSql = node('div', 'fx-sec');
   secSql.append(node('div', 'fx-label', t('dg.verify')));
   secSql.append(node('pre', 'fx-sql', v.sql));
@@ -760,13 +901,13 @@ function buildDetailRow(testCase, colSpan) {
 
 // ---- run -------------------------------------------------------------
 
-function renderParseProblems(sql, result) {
-  el.parseErrors.replaceChildren();
+function renderParseProblems(sql, result, target = el.parseErrors) {
+  target.replaceChildren();
   const errors = result.errors || [];
   const warnings = result.warnings || [];
 
   if (!errors.length && !warnings.length) {
-    el.parseErrors.hidden = true;
+    target.hidden = true;
     return;
   }
 
@@ -775,31 +916,39 @@ function renderParseProblems(sql, result) {
     const { line, col } = positionOf(sql, e.pos);
     p.append(node('b', null, t('ui.parseError', { line, col })));
     p.append(node('span', null, e.message));
-    el.parseErrors.append(p);
+    target.append(p);
     const lineText = sql.split('\n')[line - 1];
-    if (lineText) el.parseErrors.append(node('code', null, `${lineText}\n${' '.repeat(Math.max(0, col - 1))}^`));
+    if (lineText) target.append(node('code', null, `${lineText}\n${' '.repeat(Math.max(0, col - 1))}^`));
   });
 
   warnings.forEach(w => {
     // A warning that names a position is usually one about text that went
     // unanalysed — pointing at it is the difference between a shrug and a fix.
     const where = w.pos > 0 ? positionOf(sql, w.pos) : null;
-    el.parseErrors.append(node('div', null, where
+    target.append(node('div', null, where
       ? t('ui.warnAt', { line: where.line, col: where.col, message: w.message })
       : t('ui.warn', { message: w.message })));
   });
-  el.parseErrors.hidden = false;
+  target.hidden = false;
 }
 
-function run() {
-  const sql = el.sql.value;
+/**
+ * Run the full parse → generate → render pipeline for one SQL string.
+ *
+ * In single mode this is the whole page's model. In compare mode it still
+ * drives the case table, findings, coverage and schema panels — off the
+ * "after" query, since that is the version being tested — while `run()`
+ * separately renders the "before" side's own parse errors and the diff
+ * between the two.
+ */
+function runFor(sql, errorsEl) {
   if (!sql.trim()) {
     current = null;
     data = null;
     expanded.clear();
     renderSchema();
     renderValues();
-    el.parseErrors.hidden = true;
+    errorsEl.hidden = true;
     el.parseStatus.textContent = t('ui.parseHint');
     renderAnalysis(null);
     renderFindings([]);
@@ -820,14 +969,14 @@ function run() {
     expanded.clear();
     renderSchema();
     renderValues();
-    el.parseErrors.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
-    el.parseErrors.hidden = false;
+    errorsEl.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
+    errorsEl.hidden = false;
     setStats(null);
     renderTable();
     return;
   }
 
-  renderParseProblems(sql, result);
+  renderParseProblems(sql, result, errorsEl);
 
   if (!result.ok) {
     current = null;
@@ -867,6 +1016,22 @@ function run() {
   renderTable();
 }
 
+function run() {
+  if (mode !== 'compare') {
+    renderDiff(null);
+    runFor(el.sql.value, el.parseErrors);
+    return;
+  }
+
+  // The "before" side only needs its own parse errors shown — it does not
+  // drive the case table, so a full generateCases() run on it would be
+  // wasted work.
+  const beforeParsed = parse(el.sql.value);
+  renderParseProblems(el.sql.value, beforeParsed, el.parseErrors);
+  runFor(el.sqlAfter.value, el.parseErrorsAfter);
+  renderDiff(diffQueries(el.sql.value, el.sqlAfter.value));
+}
+
 function setStats(stats) {
   const enabled = !!stats && stats.total > 0;
   el.stats.total.textContent = stats?.total ?? 0;
@@ -889,6 +1054,8 @@ function saveState() {
   storage?.set({
     [STATE_KEY]: {
       sql: el.sql.value,
+      sqlAfter: el.sqlAfter.value,
+      mode,
       techniques,
       maxFullTable: el.maxFull.value,
       includeJoinConditions: el.joinConds.checked
@@ -909,8 +1076,10 @@ function restoreState(done) {
     // decoration applied to the result afterwards.
     valuebook.load(res?.[VALUES_KEY]);
     const s = res?.[STATE_KEY];
+    setMode(s?.mode);
     if (s) {
       if (typeof s.sql === 'string') el.sql.value = s.sql;
+      if (typeof s.sqlAfter === 'string') el.sqlAfter.value = s.sqlAfter;
       if (s.maxFullTable) el.maxFull.value = s.maxFullTable;
       if (typeof s.includeJoinConditions === 'boolean') el.joinConds.checked = s.includeJoinConditions;
       if (s.techniques) {
@@ -963,6 +1132,11 @@ function applyStaticText() {
   });
   document.documentElement.lang = getLang();
   el.langLabel.textContent = (LANGUAGES.find(l => l.code === getLang()) || LANGUAGES[0]).short;
+
+  // #sqlLabel carries a fixed data-i18n key for single mode; compare mode
+  // overrides it below, so redo that override after the generic pass above
+  // would otherwise put the single-mode label back.
+  el.sqlLabel.textContent = t(mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
 }
 
 /** Switch language, retranslate the chrome, then regenerate so cases follow. */
@@ -970,6 +1144,22 @@ function applyLanguage(code) {
   setLang(code);
   applyStaticText();
   run();
+}
+
+/**
+ * Switch between analysing one query and diffing two.
+ *
+ * The "before" side reuses #sqlInput rather than adding a third textarea —
+ * one query is one query whichever mode is active, only its role and label
+ * change, and the AFTER card is added/removed around it.
+ */
+function setMode(next) {
+  mode = next === 'compare' ? 'compare' : 'single';
+  el.modeToggle.querySelectorAll('button[data-mode]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  el.sqlAfterCard.hidden = mode !== 'compare';
+  el.sqlLabel.textContent = t(mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
 }
 
 // ---- wiring ----------------------------------------------------------
@@ -1002,7 +1192,7 @@ function initExports() {
 
   el.json.addEventListener('click', () => {
     if (!current) return;
-    downloadText(toJson(el.sql.value, current), suggestFilename(current, 'json'), 'application/json');
+    downloadText(toJson(activeSql(), current), suggestFilename(current, 'json'), 'application/json');
     toast(t('ui.toastJson'));
   });
 
@@ -1019,7 +1209,7 @@ function initExports() {
     if (!current) return;
     const lines = [`-- ${t('dg.verifyHeader')}`, `-- ${t('dg.verifyIntro')}`, ''];
     current.cases.forEach(c => {
-      const v = verifyFor(el.sql.value, c);
+      const v = verifyFor(activeSql(), c);
       lines.push(`-- ${'='.repeat(70)}`);
       lines.push(`-- ${v.header}`);
       lines.push(`-- ${t('dg.expected')}: ${v.expectation}`);
@@ -1032,7 +1222,7 @@ function initExports() {
   el.copyJson.addEventListener('click', async () => {
     if (!current) return;
     try {
-      await navigator.clipboard.writeText(toJson(el.sql.value, current));
+      await navigator.clipboard.writeText(toJson(activeSql(), current));
       toast(t('ui.toastCopied'));
     } catch (err) {
       console.error('[SQLCASES] clipboard write failed:', err);
@@ -1065,8 +1255,31 @@ function init() {
     debounce = setTimeout(() => { saveState(); run(); }, 500);
   });
 
+  el.sqlAfter.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      saveState();
+      run();
+    }
+  });
+  let debounceAfter = null;
+  el.sqlAfter.addEventListener('input', () => {
+    clearTimeout(debounceAfter);
+    debounceAfter = setTimeout(() => { saveState(); run(); }, 500);
+  });
+
+  el.modeToggle.querySelectorAll('button[data-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.mode === mode) return;
+      setMode(btn.dataset.mode);
+      saveState();
+      run();
+    });
+  });
+
   el.clear.addEventListener('click', () => {
     el.sql.value = '';
+    el.sqlAfter.value = '';
     saveState();
     run();
     el.sql.focus();

@@ -459,6 +459,11 @@ export function analyze(ast) {
       isSubquery: ref.kind === 'subquery'
     });
     const leftLabel = model.tables[0]?.label || '?';
+    // Keep the ON clause's own boolean tree, not just its flattened leaves in
+    // model.joinConditions — a diff between two versions of the query needs
+    // the AND/OR/NOT shape to tell "same conditions, reshuffled logic" apart
+    // from "same conditions, unchanged", the same way it does for WHERE/HAVING.
+    const onTree = j.on ? collectConditions(j.on, `ON ${label}`, model.joinConditions, 'J') : null;
     model.joins.push({
       index: idx,
       joinType: j.joinType,
@@ -467,11 +472,11 @@ export function analyze(ast) {
       leftLabel,
       rightLabel: label,
       on: j.on,
+      onTree,
       onSql: j.on ? exprToSql(j.on) : (j.using.length ? `USING (${j.using.join(', ')})` : null),
       using: j.using,
       keys: j.on ? joinKeys(j.on) : j.using.map(c => ({ left: `${leftLabel}.${c}`, right: `${label}.${c}` }))
     });
-    if (j.on) collectConditions(j.on, `ON ${label}`, model.joinConditions, 'J');
   });
 
   // The value book keys column samples by table name, so it needs this query's

@@ -21,6 +21,11 @@ export const VI = {
   'ui.langTip': 'Đổi ngôn ngữ',
 
   'ui.sqlQuery': 'Câu truy vấn SQL',
+  'ui.sqlQueryBefore': 'SQL trước thay đổi',
+  'ui.sqlQueryAfter': 'SQL sau thay đổi',
+  'ui.sqlAfterPlaceholder': 'Dán phiên bản mới của câu truy vấn…',
+  'ui.modeSingle': '1 câu SQL',
+  'ui.modeCompare': 'So sánh trước–sau',
   'ui.examples': 'Ví dụ mẫu…',
   'ui.clear': 'Xoá',
   'ui.analyze': '⚙ Phân tích & sinh case',
@@ -91,6 +96,32 @@ export const VI = {
 
   'ui.findings': 'Cảnh báo',
   'ui.coverage': 'Độ phủ',
+  'ui.diff': 'Thay đổi phát hiện được',
+
+  // ---------- chế độ so sánh: diff thay đổi ----------
+  //
+  // Nhãn từng mục và câu chữ cho panel "Thay đổi phát hiện được", do diff.js
+  // dựng từ 2 câu SQL đã parse — không phải từ text SQL thô, nên một điều
+  // kiện viết lại khác khoảng trắng nhưng cùng ý nghĩa sẽ không bị báo là
+  // đã đổi.
+  'diff.tables': 'Bảng',
+  'diff.joins': 'Join',
+  'diff.joinConditions': 'Điều kiện JOIN (ON)',
+  'diff.where': 'WHERE',
+  'diff.having': 'HAVING',
+  'diff.groupBy': 'GROUP BY',
+  'diff.aggregates': 'Hàm gộp',
+  'diff.orderBy': 'ORDER BY',
+  'diff.paging': 'LIMIT / OFFSET',
+  'diff.selectList': 'Danh sách SELECT',
+  'diff.caseExprs': 'Biểu thức CASE',
+  'diff.writes': 'Cột được ghi',
+  'diff.shapeChanged': 'Logic AND/OR/NOT đã đổi cấu trúc — cùng các điều kiện, khác cách kết hợp',
+  'diff.statementChanged': 'Loại câu lệnh đã đổi: {old} → {new}',
+  'diff.noChanges': 'Không phát hiện khác biệt cấu trúc nào giữa 2 câu SQL.',
+  'diff.parseFailed': 'Một hoặc cả 2 câu chưa parse được — sửa lỗi cú pháp ở trên để xem diff.',
+  'diff.summaryOne': '{n} thay đổi',
+  'diff.summaryMany': '{n} thay đổi',
   'ui.sumErrors': '{n} lỗi',
   'ui.sumWarns': '{n} cảnh báo',
   'ui.sumInfos': '{n} ghi chú',
