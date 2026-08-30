@@ -1462,6 +1462,28 @@ chrome.storage.local.get(["lastPickedSelector", "lastPickedSelectors", "pendingE
 
 /* === TAB ACTIVATION === */
 
+// Scheduled Playback and CSV Data-Driven Run both need a live activated tab
+// (see #dataGatedZone above). While the tab is locked, force these two cards
+// collapsed regardless of what's saved in COLLAPSIBLE_STATE_KEY — the lock
+// overlay's row layout assumes both start collapsed (see .lock-overlay-zone
+// .lock-overlay-card in css/popup.css) and an expanded card left underneath
+// it just looks broken since clicks on it are blocked anyway. The moment the
+// tab activates, restore whichever state the user actually had saved.
+const GATED_COLLAPSIBLE_IDS = ["scheduledPlaybackCard", "csvRunCard"];
+
+function syncGatedCardCollapse(isActive) {
+  chrome.storage.local.get([COLLAPSIBLE_STATE_KEY], (res) => {
+    const states = res?.[COLLAPSIBLE_STATE_KEY] || {};
+    GATED_COLLAPSIBLE_IDS.forEach((id) => {
+      const card = document.getElementById(id);
+      if (!card) return;
+      const shouldBeOpen = isActive && states[id] === "open";
+      card.classList.toggle("collapsed", !shouldBeOpen);
+      card.querySelector("h3")?.setAttribute("aria-expanded", String(shouldBeOpen));
+    });
+  });
+}
+
 let currentTabId = null;
 let activatedTabs = new Set();
 
@@ -1472,20 +1494,18 @@ chrome.storage.local.get(["activatedTabs"], (res) => {
   checkTabActivation();
 });
 
-// The Record/Data lock overlays only render (opacity/pointer-events) while their
-// own popup tab is the active one — see body[data-active-tab="..."] in the CSS.
-// The scroll lock they trigger needs the same scoping, or it strands *other*
-// tabs (e.g. Settings) unscrollable any time the page tab isn't activated,
-// regardless of which popup tab is actually showing. Track what each overlay
-// wants independently of which tab is on screen, then only engage the lock
-// when the active tab is the one whose overlay wants it.
+// Only the Record overlay locks scrolling now. The Data one covers just the two
+// cards inside #dataGatedZone, so the rest of that tab has to stay scrollable —
+// otherwise the SQL Test Case Designer sits below a fold nobody can reach.
+//
+// The lock still has to be scoped to the tab on screen: the overlay only renders
+// while its own popup tab is active (see body[data-active-tab="..."] in the CSS),
+// and without the same scoping here a locked Record tab strands *other* tabs
+// (e.g. Settings) unscrollable any time the page tab isn't activated.
 let _recordOverlayWanted = false;
-let _dataOverlayWanted = false;
 
 function _syncOverlayScrollLock() {
-  const activeTab = document.body.dataset.activeTab;
-  const shouldLock = (activeTab === 'tabRecord' && _recordOverlayWanted) ||
-                      (activeTab === 'tabData'   && _dataOverlayWanted);
+  const shouldLock = document.body.dataset.activeTab === 'tabRecord' && _recordOverlayWanted;
   if (shouldLock) lockScroll(); else unlockScroll();
 }
 
@@ -1513,7 +1533,7 @@ function showLockOverlay(which, type) {
     if (btn) btn.hidden = false;
   }
   overlay.classList.add('is-visible');
-  if (which === 'record') _recordOverlayWanted = true; else _dataOverlayWanted = true;
+  if (which === 'record') _recordOverlayWanted = true;
   _syncOverlayScrollLock();
 }
 
@@ -1523,7 +1543,6 @@ function hideLockOverlay() {
   if (r) r.classList.remove('is-visible');
   if (d) d.classList.remove('is-visible');
   _recordOverlayWanted = false;
-  _dataOverlayWanted = false;
   _syncOverlayScrollLock();
 }
 
@@ -1546,6 +1565,7 @@ function checkTabActivation() {
       showLockOverlay('record', 'not-eligible');
       showLockOverlay('data', 'not-eligible');
       document.body.dataset.activation = 'not-eligible';
+      syncGatedCardCollapse(false);
       return;
     }
 
@@ -1559,6 +1579,7 @@ function checkTabActivation() {
       deactivateTab.style.display = "block";
       hideLockOverlay();
       document.body.dataset.activation = 'active';
+      syncGatedCardCollapse(true);
       connectionRetryCount = 0;
       startConnectionCheck();
     } else {
@@ -1570,6 +1591,7 @@ function checkTabActivation() {
       showLockOverlay('record', 'inactive');
       showLockOverlay('data', 'inactive');
       document.body.dataset.activation = 'inactive';
+      syncGatedCardCollapse(false);
       if (connectionCheckInterval) {
         clearInterval(connectionCheckInterval);
         connectionCheckInterval = null;
@@ -1617,7 +1639,9 @@ if (activateTab) {
   if (btn) btn.addEventListener('click', () => activateTab && activateTab.click());
 });
 
-['lockOverlayRecord', 'lockOverlayData'].forEach(id => {
+// Record only. Swallowing the wheel over the Data overlay would trap the popup
+// scroll whenever the pointer happened to be over the two gated cards.
+['lockOverlayRecord'].forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('wheel', e => e.preventDefault(), { passive: false });

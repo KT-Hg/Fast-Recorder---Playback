@@ -3570,8 +3570,83 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 
 .lock-overlay-activate-btn:hover { opacity: 0.82; }
 
+/* display:inline-block above outranks the UA rule for [hidden], so the
+ * not-eligible branch's `btn.hidden = true` never actually hid this button —
+ * "Not Available" came with an Activate button that could not activate. */
+.lock-overlay-activate-btn[hidden] { display: none; }
+
 [data-theme="dark"] .lock-overlay {
   background: rgba(0, 0, 0, 0.48);
+}
+
+/* --- Scoped variant: the Data tab locks two cards, not the whole tab ---
+ * Scheduled Playback and the CSV run need a live tab. Variables, Export Code
+ * and the SQL Test Case Designer do not — they read chrome.storage.local and
+ * nothing else — so a fixed, full-panel overlay used to put them out of reach
+ * on any tab that was never activated, including this extension's own pages.
+ * Same overlay, same card, same wording; only the positioning changes.
+ */
+.gated-zone {
+  position: relative;
+}
+
+.lock-overlay-zone {
+  position: absolute;   /* inset: 0 still comes from .lock-overlay */
+  z-index: 2;           /* below the sticky header (100) and every modal */
+  border-radius: 12px;
+  touch-action: auto;   /* the panel behind it still has to scroll */
+  overscroll-behavior: auto;
+}
+
+/* Both gated cards start collapsed, so the zone is about two headers tall and
+ * the column layout of .lock-overlay-card would overflow it. Same elements,
+ * laid out as a row. */
+.lock-overlay-zone .lock-overlay-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  max-width: none;
+  width: auto;
+  margin: 0 10px;
+  padding: 12px 14px;
+}
+
+.lock-overlay-zone .lock-overlay-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.lock-overlay-zone .lock-overlay-icon {
+  font-size: 1.35rem;
+  margin-bottom: 0;
+}
+
+.lock-overlay-zone .lock-overlay-title {
+  margin: 0 0 2px;
+  font-size: 0.86rem;
+}
+
+.lock-overlay-zone .lock-overlay-sub {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+/* width: auto overrides the blanket `button { width: 100% }` near the top of
+ * this file — without it the button eats the row and the copy wraps to one
+ * word per line. */
+.lock-overlay-zone .lock-overlay-activate-btn {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 6px 16px;
+  font-size: 0.8rem;
+}
+
+/* Only while the overlay shows: keep the zone tall enough for the card, since
+ * the "not supported on this page" copy runs to three lines. The zone is last
+ * in the tab, so the extra height reads as bottom padding. */
+.gated-zone:has(> .lock-overlay-zone.is-visible) {
+  min-height: 122px;
 }
 
 /* === Export Code Card (Data tab) === */
@@ -3590,6 +3665,11 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
   border-radius: 10px;
   border: 1.5px solid transparent;
   background: transparent;
+  /* `button { color: white }` up at the top of this file plus a transparent
+   * background left every label here white-on-white. The two coloured variants
+   * hid it by setting their own colour !important; the SQL Test Case Designer
+   * button has no variant, so its label was simply invisible. */
+  color: var(--text);
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
   width: 100%;

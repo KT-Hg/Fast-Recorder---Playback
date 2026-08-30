@@ -602,6 +602,13 @@
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Opens in a full tab — test case tables need the width.</p>
     </div>
 
+    <!-- The two cards below are the only ones on this tab that need a live,
+         activated tab to do anything. Variables, Export Code and the SQL Test
+         Case Designer read storage alone, so the lock overlay is scoped to this
+         wrapper rather than to the whole panel — see #lockOverlayData at the
+         end of it. -->
+    <div class="gated-zone" id="dataGatedZone">
+
     <!-- SCHEDULED PLAYBACK -->
     <div class="card collapsible collapsed" id="scheduledPlaybackCard">
       <h3 role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;">Scheduled Playback <span class="caret">▸</span><button class="card-help-btn" data-card="schedule" title="Schedule guide" style="margin-left:auto;">?</button></h3>
@@ -679,6 +686,22 @@
       </div>
 
       <button id="csvDownloadResult" class="secondary" style="display:none; margin-top:6px; width:100%; font-size:12px;">⬇ Download result</button>
+    </div>
+
+      <!-- Same frosted card as the Record tab's overlay, same wording; it lays
+           out as a row instead of a column because both cards above are
+           collapsed by default and a full-height card would not fit over two
+           headers. -->
+      <div class="lock-overlay lock-overlay-zone" id="lockOverlayData">
+        <div class="lock-overlay-card">
+          <div class="lock-overlay-icon">🔒</div>
+          <div class="lock-overlay-text">
+            <h3 class="lock-overlay-title" id="lockOverlayDataTitle">Activate on Tab</h3>
+            <p class="lock-overlay-sub" id="lockOverlayDataSub">Click Activate to enable recording and playback on the current tab.</p>
+          </div>
+          <button class="lock-overlay-activate-btn" id="lockOverlayDataBtn">Activate</button>
+        </div>
+      </div>
     </div>
 
     </div>
@@ -1528,21 +1551,14 @@
     </div>
   </div>
 
-  <!-- Lock overlays (always in DOM for smooth transitions) -->
+  <!-- Record's lock overlay (always in DOM for smooth transitions). The Data
+       tab's lives inside #dataGatedZone, since it covers two cards, not a tab. -->
   <div class="lock-overlay" id="lockOverlayRecord">
     <div class="lock-overlay-card">
       <div class="lock-overlay-icon">🔒</div>
       <h3 class="lock-overlay-title" id="lockOverlayRecordTitle">Activate on Tab</h3>
       <p class="lock-overlay-sub" id="lockOverlayRecordSub">Click Activate to enable recording and playback on the current tab.</p>
       <button class="lock-overlay-activate-btn" id="lockOverlayRecordBtn">Activate</button>
-    </div>
-  </div>
-  <div class="lock-overlay" id="lockOverlayData">
-    <div class="lock-overlay-card">
-      <div class="lock-overlay-icon">🔒</div>
-      <h3 class="lock-overlay-title" id="lockOverlayDataTitle">Activate on Tab</h3>
-      <p class="lock-overlay-sub" id="lockOverlayDataSub">Click Activate to enable recording and playback on the current tab.</p>
-      <button class="lock-overlay-activate-btn" id="lockOverlayDataBtn">Activate</button>
     </div>
   </div>
 
