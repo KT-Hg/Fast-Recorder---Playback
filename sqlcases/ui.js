@@ -3,8 +3,15 @@
  *
  * Everything below the surface lives in generate.js and the technique modules;
  * this file only renders what they return and keeps the query, the technique
- * toggles and the theme in chrome.storage.local so reopening the tab lands
- * where the user left off.
+ * toggles, the layout and the theme in chrome.storage.local so reopening the
+ * tab lands where the user left off.
+ *
+ * The page is three columns: a rail of inputs, a list of cases, and an
+ * inspector holding one case. All three are written out in sqlcases.html and
+ * only toggled here — the query textarea has a caret and an undo stack, and
+ * rebuilding it on a tab switch would throw both away. What this file builds
+ * from scratch is what changes with every run: the case cards, the inspector,
+ * the chips and bars in the insight block.
  *
  * Rendering builds nodes rather than assigning innerHTML: case text is derived
  * from the user's own SQL, and a table name containing angle brackets should
@@ -13,15 +20,16 @@
 
 import { generateCases, generateComparison, TECHNIQUES, DEFAULT_OPTIONS } from './generate.js';
 import { toCsv, toJson, suggestFilename, downloadText } from './export.js';
-import { t, tAlt, tPlural, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
+import { t, tAlt, setLang, getLang, LANGUAGES, DEFAULT_LANG } from './i18n.js';
 import { buildAllFixtures, fixturesToCsv, valueSlots, verifyFor } from './datagen.js';
 import { parse } from './parser.js';
 import * as valuebook from './valuebook.js';
+import { mountDiagram, keyTag } from './diagram.js';
 
 const THEME_KEY = 'popupTheme';
 const STATE_KEY = 'sqlCasesState';
 const LANG_KEY = 'sqlCasesLang';
-const PANELS_KEY = 'sqlCasesPanels';
+const UI_KEY = 'sqlCasesUi';
 const VALUES_KEY = 'sqlCasesValues';
 
 /**
@@ -91,58 +99,106 @@ VALUES (:user_id, 'login', NULL, NOW())`
 
 const $ = id => document.getElementById(id);
 const el = {
+  app: $('app'),
+  // rail
+  rail: $('rail'),
+  railTabs: $('railTabs'),
+  railClose: $('btnRailClose'),
+  railToggle: $('btnRail'),
+  railTabSqlLabel: $('railTabSqlLabel'),
+  railTechCount: $('railTechCount'),
+  railValuesCount: $('railValuesCount'),
+  railSchemaCount: $('railSchemaCount'),
+  // rail: query pane
   sql: $('sqlInput'),
   sqlLabel: $('sqlLabel'),
   modeToggle: $('modeToggle'),
   sqlAfterCard: $('sqlAfterCard'),
   sqlAfter: $('sqlInputAfter'),
-  parseErrorsAfter: $('parseErrorsAfter'),
-  diffPanel: $('diffPanel'),
-  diffBody: $('diffBody'),
-  diffSummary: $('diffSummary'),
-  stalePanel: $('stalePanel'),
-  staleBody: $('staleBody'),
-  staleSummary: $('staleSummary'),
-  impactFilter: $('impactFilter'),
-  clauseFilter: $('clauseFilter'),
-  columnFilter: $('columnFilter'),
-  fixtureFilter: $('fixtureFilter'),
-  analyze: $('btnAnalyze'),
-  clear: $('btnClear'),
-  sample: $('sampleSelect'),
-  parseStatus: $('parseStatus'),
   parseErrors: $('parseErrors'),
+  parseErrorsAfter: $('parseErrorsAfter'),
+  sample: $('sampleSelect'),
+  clear: $('btnClear'),
+  parseStatus: $('parseStatus'),
+  analyze: $('btnAnalyze'),
+  // rail: technique pane
   techList: $('techList'),
+  techSummary: $('techSummary'),
   maxFull: $('optMaxFull'),
   joinConds: $('optJoinConds'),
-  analysisCard: $('analysisCard'),
-  analysisBody: $('analysisBody'),
-  findings: $('findings'),
-  findingsPanel: $('findingsPanel'),
-  findingsSummary: $('findingsSummary'),
-  coverage: $('coverage'),
-  coveragePanel: $('coveragePanel'),
-  coverageSummary: $('coverageSummary'),
-  techPanel: $('techPanel'),
-  techSummary: $('techSummary'),
-  schemaSummary: $('schemaSummary'),
-  analysisSummary: $('analysisSummary'),
-  techFilter: $('techFilter'),
-  prioFilter: $('prioFilter'),
-  search: $('searchBox'),
-  body: $('caseBody'),
-  empty: $('emptyState'),
-  csv: $('btnCsv'),
-  dataCsv: $('btnDataCsv'),
-  verifySql: $('btnVerifySql'),
-  schemaCard: $('schemaCard'),
-  schemaBody: $('schemaBody'),
-  valuesCard: $('valuesCard'),
+  // rail: values pane
   valuesBody: $('valuesBody'),
   valuesSummary: $('valuesSummary'),
   resetValues: $('btnResetValues'),
+  // rail: schema pane
+  schemaBody: $('schemaBody'),
+  schemaSummary: $('schemaSummary'),
+  diagramBtn: $('btnDiagram'),
+  // the diagram modal
+  diagramModal: $('diagramModal'),
+  dgStage: $('dgStage'),
+  dgWorld: $('dgWorld'),
+  dgLinks: $('dgLinks'),
+  dgZoom: $('dgZoom'),
+  dgCount: $('dgCount'),
+  dgHint: $('dgHint'),
+  dgClose: $('btnDgClose'),
+  dgFit: $('btnDgFit'),
+  dgZoomIn: $('btnDgZoomIn'),
+  dgZoomOut: $('btnDgZoomOut'),
+  // centre: head
+  exportBtn: $('btnExport'),
+  exportMenu: $('exportMenu'),
+  inspToggle: $('btnInsp'),
+  csv: $('btnCsv'),
   json: $('btnJson'),
   copyJson: $('btnCopyJson'),
+  dataCsv: $('btnDataCsv'),
+  verifySql: $('btnVerifySql'),
+  // centre: triage
+  triage: $('triage'),
+  triChangedN: $('triChangedN'),
+  triUnrelatedN: $('triUnrelatedN'),
+  triStaleN: $('triStaleN'),
+  // centre: insight
+  insight: $('insight'),
+  insightTabs: $('insightTabs'),
+  insightToggle: $('btnInsight'),
+  diffBody: $('diffBody'),
+  findings: $('findings'),
+  findingsDot: $('findingsDot'),
+  coverage: $('coverage'),
+  staleBody: $('staleBody'),
+  analysisBody: $('analysisBody'),
+  itabDiffN: $('itabDiffN'),
+  itabFindingsN: $('itabFindingsN'),
+  itabCoverageN: $('itabCoverageN'),
+  itabStaleN: $('itabStaleN'),
+  // centre: command bar
+  cmdbarDock: $('cmdbarDock'),
+  cmdbar: $('cmdbar'),
+  search: $('searchBox'),
+  filtersBtn: $('btnFilters'),
+  filterPop: $('filterPop'),
+  filterCount: $('filterCount'),
+  clearFilters: $('btnClearFilters'),
+  closeFilters: $('btnCloseFilters'),
+  density: $('density'),
+  techFilter: $('techFilter'),
+  prioFilter: $('prioFilter'),
+  clauseFilter: $('clauseFilter'),
+  columnFilter: $('columnFilter'),
+  fixtureFilter: $('fixtureFilter'),
+  // centre: list
+  listwrap: $('listwrap'),
+  caseList: $('caseList'),
+  empty: $('emptyState'),
+  emptySteps: $('emptySteps'),
+  emptyClear: $('btnEmptyClear'),
+  // right: inspector
+  insp: $('insp'),
+  inspInner: $('inspInner'),
+  // chrome
   theme: $('toggleTheme'),
   lang: $('toggleLang'),
   langLabel: $('langLabel'),
@@ -154,6 +210,14 @@ const el = {
     total: $('statTotal'), high: $('statHigh'),
     conds: $('statConds'), joins: $('statJoins'), tables: $('statTables')
   }
+};
+
+/** The rail panes, keyed by the tab that shows them. */
+const RAIL_PANES = { sql: $('paneSql'), tech: $('paneTech'), values: $('paneValues'), schema: $('paneSchema') };
+/** The insight panes, keyed by the tab that shows them. */
+const INSIGHT_PANES = {
+  diff: $('paneDiff'), findings: $('paneFindings'), coverage: $('paneCoverage'),
+  stale: $('paneStale'), analysis: $('paneAnalysis')
 };
 
 /**
@@ -174,44 +238,91 @@ let activeImpact = '';
 let onlyWithFixture = false;
 /** Inferred schema and per-case fixtures for the current result. */
 let data = null;
-/** Case ids whose data panel is expanded, kept across re-renders. */
-const expanded = new Set();
+/** The one case the inspector is showing, or null. */
+let selectedId = null;
 /** 'single' analyses #sqlInput alone; 'compare' diffs it against #sqlInputAfter. */
 let mode = 'single';
 /** Cases from the "before" query whose source no longer exists (compare mode). */
 let staleCases = [];
 
-// ---- collapsible panels ----------------------------------------------
+// ---- layout state ----------------------------------------------------
 
 /**
- * The four secondary panels, and whether each starts open.
+ * Which of the two collapsible columns are open, which tab each tabbed block
+ * is on, and how tall a case card is.
  *
- * They default shut so the case table gets the height. Findings are the
- * exception when the query has a real defect in it: an error the user never
- * expands is an error they never see.
+ * Persisted, because all six are decisions about how the user wants to work
+ * rather than about one query: someone who runs on a laptop with the rail shut
+ * and the list dense wants that back tomorrow, not a fresh three-column page.
  */
-const PANELS = ['techPanel', 'findingsPanel', 'coveragePanel', 'schemaCard', 'valuesCard', 'analysisCard'];
+let railTab = 'sql';
+let railOpen = true;
+let inspOpen = true;
+let insightTab = '';
+let insightOpen = false;
+let density = 'full';
 
-function initPanels() {
-  PANELS.forEach(id => {
-    const d = $(id);
-    if (!d) return;
-    d.addEventListener('toggle', savePanels);
-  });
+/**
+ * Group headings the reader has shut, by name.
+ *
+ * Kept in memory rather than in storage: a collapsed group is a statement
+ * about the list on screen right now ("I have read the eight cancelled_at
+ * cases, get them out of my way"), and carrying it into tomorrow's query —
+ * whose groups are named after different columns — would only ever surprise.
+ */
+const collapsedGroups = new Set();
+
+/**
+ * What was shut before the search box was typed into, or null when it is empty.
+ *
+ * A search is a request to see what matched, so it opens everything: leaving a
+ * group shut would hide the very rows the box was typed to find and read as
+ * "no results". Shutting a group while a search is running still works, and
+ * clearing the box puts the list back in the shape it had before.
+ */
+let collapsedBeforeSearch = null;
+
+/**
+ * Which insight tabs have anything behind them, and what their badges say.
+ *
+ * The render functions below own these: each sets its own slot and then asks
+ * renderInsight() to redraw. Keeping availability here rather than as a
+ * `hidden` flag on the pane itself is what lets one pane be "has content" and
+ * "not the tab you are looking at" at the same time — a distinction the old
+ * accordions never had to make.
+ */
+/**
+ * True while a run is in flight.
+ *
+ * The panes report in one at a time — analysis, then findings, then coverage,
+ * then the diff — and each asks for a redraw as it lands. Without this, the
+ * first one to report is briefly the *only* thing available, and the tab
+ * fallback below would treat the reader's chosen tab as gone and move them off
+ * it. run() raises this for the whole pipeline and resolves the tab once, at
+ * the end, when every pane has actually said whether it has anything.
+ */
+let insightSettling = false;
+
+const insight = {
+  diff: { available: false, count: 0 },
+  findings: { available: false, count: 0, level: '' },
+  coverage: { available: false, count: 0 },
+  stale: { available: false, count: 0 },
+  analysis: { available: false }
+};
+
+function saveUi() {
+  storage?.set({ [UI_KEY]: { railTab, railOpen, inspOpen, insightTab, insightOpen, density } });
 }
 
-function savePanels() {
-  const state = {};
-  PANELS.forEach(id => { const d = $(id); if (d) state[id] = d.open; });
-  storage?.set({ [PANELS_KEY]: state });
-}
-
-function applyPanelState(state) {
+function applyUiState(state) {
   if (!state) return;
-  PANELS.forEach(id => {
-    const d = $(id);
-    if (d && typeof state[id] === 'boolean') d.open = state[id];
-  });
+  if (RAIL_PANES[state.railTab]) railTab = state.railTab;
+  if (typeof state.railOpen === 'boolean') railOpen = state.railOpen;
+  if (typeof state.inspOpen === 'boolean') inspOpen = state.inspOpen;
+  if (INSIGHT_PANES[state.insightTab]) insightTab = state.insightTab;
+  if (typeof state.insightOpen === 'boolean') insightOpen = state.insightOpen;
+  if (state.density === 'dense' || state.density === 'full') density = state.density;
 }
 
 // ---- small helpers ---------------------------------------------------
@@ -234,19 +345,28 @@ function node(tag, className, text) {
  * `[data-i18n-alt]` in sqlcases.css does the measuring), so a switch re-letters
  * the chrome without moving it.
  *
+ * Most entries name a `> [data-i18n]` child rather than the control: a ghost is
+ * an ::after box, and on a flex container it would become a flex item and take
+ * real space. The labels that are already their own span are measured directly.
+ *
  * Deliberately not every label on the page: prose that wraps — the subtitle,
- * the hints, the help modal — has no fixed width to hold, and reserving one
- * for it would only waste the row it sits in.
+ * the hints, the help modal, the triage descriptions — has no fixed width to
+ * hold, and reserving one for it would only waste the row it sits in.
  */
 const WIDTH_STABLE = [
-  '.topbar-title [data-i18n]',   // the subtitle starts where this one ends
-  '.topbar-actions button',
-  '.card-head h3',               // the Examples select takes what it leaves
-  '.card-head-actions button',   // mode pills and Clear, packed to the right
-  '.input-foot button',
-  '.vb-head button',
-  '.stat-lbl',                   // every stat after it shifts by the difference
-  '.export-row button',
+  '.topbar-title [data-i18n]',        // the subtitle starts where this one ends
+  '.topbar-actions button > [data-i18n]',
+  '.rtab > [data-i18n]',              // the rail tabs sit in one non-wrapping row
+  '.itab > [data-i18n]',
+  '.pane-head .pill > [data-i18n]',   // mode pills; the examples select takes what they leave
+  '.pane-head button > [data-i18n]',
+  '.vb-head button > [data-i18n]',
+  '.rail-foot button',
+  '.metric-l',                        // every metric after it shifts by the difference
+  '.main-head-actions button > [data-i18n]',
+  '.cmd-actions button > [data-i18n]',
+  '.seg button',
+  '.cmd-lbl',
   '.check-row-inline span'
 ].join(', ');
 
@@ -278,9 +398,16 @@ function toast(message) {
   toastTimer = setTimeout(() => { el.toast.hidden = true; }, 2200);
 }
 
-/** CSS-safe suffix for a technique badge class. */
+/**
+ * CSS-safe suffix for a technique badge class.
+ *
+ * Letters and digits, so "NULL / 3VL" keeps its 3 and stays distinguishable
+ * from a future "NULLVL"; the codes are a short fixed enum, so there is no
+ * length to guard against. The selectors are in sqlcases.css under
+ * `.tech-badge`, and a code with no rule there degrades to the neutral badge.
+ */
 function techClass(technique) {
-  return 'tech-' + technique.replace(/[^A-Za-z]/g, '').slice(0, 9);
+  return 'tech-' + technique.replace(/[^A-Za-z0-9]/g, '');
 }
 
 /** Line and column of a character offset, for parse-error messages. */
@@ -289,6 +416,38 @@ function positionOf(sql, pos) {
   const line = upto.split('\n').length;
   const col = pos - upto.lastIndexOf('\n');
   return { line, col };
+}
+
+/**
+ * Colour one block of SQL for display.
+ *
+ * Comments and strings come first so a keyword inside either stays plain, and
+ * the result is a fragment of spans rather than a string of markup: the text
+ * is the user's own query, and the whole point of building nodes elsewhere in
+ * this file would be lost if the one place that shows the query verbatim
+ * handed it to innerHTML.
+ */
+const SQL_TOKEN = new RegExp([
+  /(--[^\n]*)/,                                        // 1 comment
+  /('(?:[^']|'')*')/,                                  // 2 string
+  /(:[A-Za-z_]\w*|\?)/,                                // 3 bind parameter
+  /\b(SELECT|FROM|WHERE|GROUP|ORDER|BY|HAVING|LEFT|RIGHT|FULL|INNER|CROSS|OUTER|JOIN|ON|AND|OR|NOT|IN|IS|NULL|BETWEEN|LIKE|AS|LIMIT|OFFSET|DESC|ASC|DISTINCT|COUNT|SUM|AVG|MIN|MAX|COALESCE|CASE|WHEN|THEN|ELSE|END|UPDATE|SET|INSERT|INTO|VALUES|DELETE|EXISTS|UNION|ALL|WITH|NULLS|FIRST|LAST|TRUE|FALSE|UNKNOWN)\b/,
+  /\b(\d+(?:\.\d+)?)\b/                                // 5 number
+].map(r => r.source).join('|'), 'gi');
+
+function sqlHighlight(text) {
+  const frag = document.createDocumentFragment();
+  const re = new RegExp(SQL_TOKEN.source, 'gi');
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) frag.append(document.createTextNode(text.slice(last, m.index)));
+    const cls = m[1] ? 'c' : m[2] ? 's' : m[3] ? 'p' : m[4] ? 'k' : 'n';
+    frag.append(node('span', cls, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) frag.append(document.createTextNode(text.slice(last)));
+  return frag;
 }
 
 // ---- options ---------------------------------------------------------
@@ -341,7 +500,7 @@ function updateTechniqueCounts(stats) {
 
 function renderAnalysis(model) {
   el.analysisBody.replaceChildren();
-  if (!model) { el.analysisCard.hidden = true; return; }
+  if (!model) { insight.analysis.available = false; renderInsight(); return; }
 
   const section = (label, chips) => {
     if (!chips.length) return;
@@ -391,12 +550,8 @@ function renderAnalysis(model) {
     section(t('ui.writes'), model.writes.columns.map(c => plainChip(`${c.name} : ${c.dataType.type}`)));
   }
 
-  el.analysisSummary.textContent = t('ui.sumAnalysis', {
-    statement: model.statement.toUpperCase(),
-    tables: model.tables.length,
-    conds: model.conditions.length + model.havingConditions.length
-  });
-  el.analysisCard.hidden = false;
+  insight.analysis.available = true;
+  renderInsight();
 }
 
 /**
@@ -408,9 +563,20 @@ function renderAnalysis(model) {
  */
 function renderSchema() {
   el.schemaBody.replaceChildren();
-  if (!data || !data.schema.tables.length) { el.schemaCard.hidden = true; return; }
+  const tables = data?.schema.tables || [];
+  // A diagram left open across a run would be a picture of the query before
+  // it: redraw it from the new schema, or shut it if there is no longer one.
+  if (diagram) {
+    if (tables.length) openDiagram();
+    else closeDiagram();
+  }
+  if (!tables.length) {
+    el.schemaSummary.textContent = '';
+    renderRail();
+    return;
+  }
 
-  data.schema.tables.forEach(tbl => {
+  tables.forEach(tbl => {
     const box = node('div', 'sc-table');
     const head = node('div', 'sc-name', tbl.name);
     if (tbl.alias) head.append(node('span', 'chip-type', ` ${tbl.alias}`));
@@ -421,10 +587,14 @@ function renderSchema() {
       const row = node('div', 'sc-col');
       row.append(node('span', 'sc-col-name', c.name));
       row.append(node('span', 'sc-col-type', c.type));
-      if (c.isPk) row.append(node('span', 'sc-tag sc-tag-pk', t('dg.pk')));
-      else if (c.fk) row.append(node('span', 'sc-tag sc-tag-fk', t('dg.fk', { target: `${c.fk.table}.${c.fk.column}` })));
-      else if (!c.nullable) row.append(node('span', 'sc-tag sc-tag-nn', t('dg.notNull')));
-      if (c.synthetic) row.append(node('span', 'chip-type', t('dg.synthetic')));
+      // Every badge goes in the same right-hand lane, so PK, FK and NOT NULL
+      // line up down the panel instead of each landing wherever its own text
+      // happened to run out.
+      const tags = node('div', 'sc-col-tags');
+      const tag = keyTag(c, { showTarget: true, showNotNull: true });
+      if (tag) tags.append(tag);
+      if (c.synthetic) tags.append(node('span', 'chip-type', t('dg.synthetic')));
+      if (tags.childElementCount) row.append(tags);
       cols.append(row);
     });
     box.append(cols);
@@ -436,16 +606,55 @@ function renderSchema() {
   });
 
   el.schemaSummary.textContent = t('ui.sumSchema', {
-    tables: data.schema.tables.length,
-    columns: data.schema.tables.reduce((sum, x) => sum + x.columns.length, 0)
+    tables: tables.length,
+    columns: tables.reduce((sum, x) => sum + x.columns.length, 0)
   });
-  el.schemaCard.hidden = false;
+  renderRail();
+}
+
+/**
+ * The open diagram, or null. It owns listeners on the stage and boxes of its
+ * own making, so it is torn down rather than left to be garbage — and it is
+ * rebuilt on every open, because the schema behind it changes with every run.
+ */
+let diagram = null;
+
+function openDiagram() {
+  const tables = data?.schema.tables || [];
+  if (!tables.length) return;
+
+  el.diagramModal.hidden = false;
+  // Mounted only once the modal is on screen: the boxes are measured as they
+  // are built, and a box inside `hidden` measures nothing at all.
+  diagram?.destroy();
+  diagram = mountDiagram({
+    stage: el.dgStage,
+    world: el.dgWorld,
+    svg: el.dgLinks,
+    tables,
+    onZoom: (scale) => { el.dgZoom.textContent = `${Math.round(scale * 100)}%`; }
+  });
+
+  el.dgCount.textContent = t('dg.diagramCount', { tables: diagram.tables, links: diagram.links });
+  // A query over one table has nothing to link, which is worth saying outright
+  // rather than leaving the reader to wonder where the lines went.
+  el.dgHint.textContent = t(diagram.links ? 'dg.diagramHint' : 'dg.diagramNoLinks');
+  diagram.fit();
+}
+
+function closeDiagram() {
+  el.diagramModal.hidden = true;
+  diagram?.destroy();
+  diagram = null;
 }
 
 // ---- rendering: the value book ---------------------------------------
 
 /** Set by a reset, so focus lands back on the field the button belonged to. */
 let pendingValueFocus = null;
+
+/** How many editable values the current run produced — the rail tab's badge. */
+let valueCount = 0;
 
 /**
  * The one place sample values are managed.
@@ -470,11 +679,12 @@ function renderValues() {
 
   el.valuesBody.replaceChildren();
   el.valuesSummary.textContent = '';
+  valueCount = 0;
 
-  if (!current?.model) { el.valuesCard.hidden = true; return; }
+  if (!current?.model) { renderRail(); return; }
 
   const book = valueSlots(current.model, data?.schema, data?.fixtures);
-  if (!book.total) { el.valuesCard.hidden = true; return; }
+  if (!book.total) { renderRail(); return; }
 
   if (book.params.length) {
     el.valuesBody.append(node('div', 'vb-section', t('vb.params')));
@@ -490,9 +700,10 @@ function renderValues() {
     });
   }
 
+  valueCount = book.total;
   el.valuesSummary.textContent = t('vb.sum', { overridden: book.overridden, total: book.total });
   el.resetValues.disabled = book.overridden === 0;
-  el.valuesCard.hidden = false;
+  renderRail();
 
   if (focusKey) {
     const back = el.valuesBody.querySelector(`.vb-input[data-key="${CSS.escape(focusKey)}"]`);
@@ -581,9 +792,12 @@ const FINDING_ICON = { error: '⛔', warn: '⚠', info: 'ℹ' };
 
 function renderFindings(findings) {
   el.findings.replaceChildren();
-  el.findingsSummary.replaceChildren();
 
-  if (!findings.length) { el.findingsPanel.hidden = true; return; }
+  if (!findings.length) {
+    insight.findings = { available: false, count: 0, level: '' };
+    renderInsight();
+    return;
+  }
 
   findings.forEach(f => {
     const row = node('div', `finding finding-${f.level}`);
@@ -592,33 +806,29 @@ function renderFindings(findings) {
     el.findings.append(row);
   });
 
-  // Collapsed, the summary has to carry the weight — how many, and how bad.
   const counts = { error: 0, warn: 0, info: 0 };
   findings.forEach(f => { if (counts[f.level] !== undefined) counts[f.level]++; });
 
-  const parts = [];
-  if (counts.error) parts.push(node('span', 'sum-error', t('ui.sumErrors', { n: counts.error })));
-  if (counts.warn) parts.push(node('span', 'sum-warn', t('ui.sumWarns', { n: counts.warn })));
-  if (counts.info) parts.push(node('span', null, t('ui.sumInfos', { n: counts.info })));
-  parts.forEach((n, i) => {
-    if (i) el.findingsSummary.append(node('span', null, ' · '));
-    el.findingsSummary.append(n);
-  });
-
-  el.findingsPanel.hidden = false;
-  // An error is worth opening unasked; warnings and notes are not.
-  if (counts.error) el.findingsPanel.open = true;
+  insight.findings = {
+    available: true,
+    count: findings.length,
+    level: counts.error ? 'err' : counts.warn ? 'warn' : ''
+  };
+  // An error is worth opening unasked; warnings and notes are not. Only when
+  // the block is shut, though: generation re-runs on every keystroke, and
+  // while the query holds an error that would drag the reader off whichever
+  // tab they had deliberately opened, once per character typed.
+  if (counts.error && !insightOpen) { insightTab = 'findings'; insightOpen = true; }
+  renderInsight();
 }
 
 function renderCoverage(summaries) {
   el.coverage.replaceChildren();
-  el.coverageSummary.textContent = '';
-  if (!summaries.length) { el.coveragePanel.hidden = true; return; }
-
-  el.coverageSummary.textContent = summaries
-    .map(x => t('ui.sumCoverage', { scope: x.scope, cond: x.conditionCoverage, dec: x.decisionCoverage }))
-    .join(' · ');
-  el.coveragePanel.hidden = false;
+  if (!summaries.length) {
+    insight.coverage = { available: false, count: 0 };
+    renderInsight();
+    return;
+  }
 
   summaries.forEach(s => {
     const card = node('div', 'cov-card');
@@ -658,6 +868,9 @@ function renderCoverage(summaries) {
     }
     el.coverage.append(card);
   });
+
+  insight.coverage = { available: true, count: summaries.length };
+  renderInsight();
 }
 
 // ---- rendering: compare-mode diff --------------------------------------
@@ -716,13 +929,17 @@ function diffSection(labelKey, sec, textOf, changedTextOf) {
  */
 function renderDiff(diff) {
   el.diffBody.replaceChildren();
-  el.diffSummary.textContent = '';
 
-  if (!diff) { el.diffPanel.hidden = true; return; }
-  el.diffPanel.hidden = false;
+  if (!diff) {
+    insight.diff = { available: false, count: 0 };
+    renderInsight();
+    return;
+  }
 
   if (!diff.ok) {
     el.diffBody.append(node('div', 'helper', t('diff.parseFailed')));
+    insight.diff = { available: true, count: 0 };
+    renderInsight();
     return;
   }
 
@@ -777,10 +994,11 @@ function renderDiff(diff) {
     groups.forEach(g => el.diffBody.append(g));
   }
 
-  el.diffSummary.textContent = tPlural(diff.summary.totalChanges, 'diff.summaryOne', 'diff.summaryMany');
+  insight.diff = { available: true, count: diff.summary.totalChanges };
+  renderInsight();
 }
 
-// ---- rendering: filters & table --------------------------------------
+// ---- rendering: filters ----------------------------------------------
 
 /** Order the clause dropdown lists its options in — matches the enum the
  *  technique modules tag cases with via diff.js's caseSourceFrom*() helpers. */
@@ -794,7 +1012,7 @@ const CLAUSE_LABELS = {
 const IMPACT_ICON = { changed: '🎯', unrelated: '➖', stale: '🗑' };
 const IMPACT_TIP_KEY = { changed: 'ui.impactChangedTip', unrelated: 'ui.impactUnrelatedTip', stale: 'ui.impactStaleTip' };
 
-/** The small coloured marker shown before a case's title in compare mode. */
+/** The small coloured marker shown beside a stale case. */
 function impactBadge(impact) {
   const b = node('span', `impact-badge impact-${impact}`, IMPACT_ICON[impact] || '');
   b.title = t(IMPACT_TIP_KEY[impact] || '');
@@ -814,34 +1032,33 @@ function columnMatches(caseColumns, filterValue) {
   });
 }
 
-/** Impact pills — only shown once a compare-mode run has tagged the cases. */
-function renderImpactFilter() {
-  el.impactFilter.replaceChildren();
-  const withImpact = !!current && current.cases.some(c => c.impact === 'changed' || c.impact === 'unrelated');
-  if (!withImpact) {
-    el.impactFilter.hidden = true;
+/**
+ * Compare mode's three buckets, over the same run the list shows.
+ *
+ * Two of them are filters over the case list. The third is not — a stale case
+ * is not in the list to be filtered down to, so that box opens the panel that
+ * does hold them, which is the only place they exist.
+ */
+function renderTriage() {
+  const counts = { changed: 0, unrelated: 0 };
+  (current?.cases || []).forEach(c => { if (counts[c.impact] !== undefined) counts[c.impact]++; });
+  const tagged = counts.changed + counts.unrelated > 0;
+
+  if (!tagged && !staleCases.length) {
+    el.triage.hidden = true;
     activeImpact = '';
     return;
   }
 
-  const counts = { changed: 0, unrelated: 0 };
-  current.cases.forEach(c => { if (counts[c.impact] !== undefined) counts[c.impact]++; });
+  el.triChangedN.textContent = counts.changed;
+  el.triUnrelatedN.textContent = counts.unrelated;
+  el.triStaleN.textContent = staleCases.length;
 
-  const labelKey = { changed: 'ui.impactChanged', unrelated: 'ui.impactUnrelated' };
-  const mk = (value, count) => {
-    const b = node('button', `pill${activeImpact === value ? ' active' : ''}`);
-    b.append(pillLabel(labelKey[value]), node('span', 'pill-n', count));
-    b.addEventListener('click', () => {
-      activeImpact = activeImpact === value ? '' : value;
-      renderImpactFilter();
-      renderTable();
-    });
-    return b;
-  };
-
-  el.impactFilter.append(mk('changed', counts.changed));
-  el.impactFilter.append(mk('unrelated', counts.unrelated));
-  el.impactFilter.hidden = false;
+  el.triage.querySelector('[data-tri="changed"]').classList.toggle('active', activeImpact === 'changed');
+  el.triage.querySelector('[data-tri="unrelated"]').classList.toggle('active', activeImpact === 'unrelated');
+  el.triage.querySelector('[data-tri="stale"]')
+    .classList.toggle('active', insightTab === 'stale' && insightOpen);
+  el.triage.hidden = false;
 }
 
 /** Clause dropdown — only lists clauses that actually occur in the current case list. */
@@ -892,7 +1109,7 @@ function renderColumnFilter() {
       seen.add(col.raw);
       const opt = document.createElement('option');
       opt.value = col.raw;
-      opt.textContent = `  ${col.raw}`;
+      opt.textContent = `  ${col.raw}`;
       sel.append(opt);
     });
   }
@@ -906,14 +1123,17 @@ function renderColumnFilter() {
 /**
  * Compare mode: the "before" query's cases whose source condition/join/etc.
  * is gone in the "after" query — shown as a compact list rather than in the
- * main table, since they describe behaviour that no longer exists to test.
+ * main list, since they describe behaviour that no longer exists to test.
  */
 function renderStale(list) {
   staleCases = list || [];
   el.staleBody.replaceChildren();
-  el.staleSummary.textContent = '';
 
-  if (!staleCases.length) { el.stalePanel.hidden = true; return; }
+  if (!staleCases.length) {
+    insight.stale = { available: false, count: 0 };
+    renderInsight();
+    return;
+  }
 
   staleCases.forEach(c => {
     const row = node('div', 'stale-row');
@@ -922,13 +1142,14 @@ function renderStale(list) {
     row.append(node('span', 'stale-group', `${t('tech.code.' + c.technique)} · ${c.group}`));
     el.staleBody.append(row);
   });
-  el.staleSummary.textContent = t('ui.sumStale', { n: staleCases.length });
-  el.stalePanel.hidden = false;
+
+  insight.stale = { available: true, count: staleCases.length };
+  renderInsight();
 }
 
 function renderTechniqueFilter(stats) {
   el.techFilter.replaceChildren();
-  const codes = Object.keys(stats.byTechnique);
+  const codes = Object.keys(stats?.byTechnique || {});
 
   const mk = (key, value, count) => {
     const b = node('button', `pill${activeTechnique === value ? ' active' : ''}`);
@@ -937,13 +1158,54 @@ function renderTechniqueFilter(stats) {
     b.addEventListener('click', () => {
       activeTechnique = activeTechnique === value ? '' : value;
       renderTechniqueFilter(stats);
-      renderTable();
+      renderList();
     });
     return b;
   };
 
-  el.techFilter.append(mk('ui.filterAll', '', stats.total));
+  el.techFilter.append(mk('ui.filterAll', '', stats?.total ?? 0));
   codes.forEach(code => el.techFilter.append(mk('tech.code.' + code, code, stats.byTechnique[code])));
+  scheduleCmdHeight();
+}
+
+/** How many of the popover's filters are narrowing the list right now. */
+function activeFilterCount() {
+  return [el.prioFilter.value, activeClause, activeColumn].filter(Boolean).length + (onlyWithFixture ? 1 : 0);
+}
+
+function renderFilterCount() {
+  const n = activeFilterCount();
+  el.filterCount.hidden = !n;
+  el.filterCount.textContent = n;
+  el.filtersBtn.classList.toggle('active', !!n);
+}
+
+function clearAllFilters() {
+  activeTechnique = '';
+  activeClause = '';
+  activeColumn = '';
+  activeImpact = '';
+  onlyWithFixture = false;
+  el.search.value = '';
+  el.prioFilter.value = '';
+  el.clauseFilter.value = '';
+  el.columnFilter.value = '';
+  el.fixtureFilter.checked = false;
+  renderTechniqueFilter(current?.stats);
+  renderFilterCount();
+  renderTriage();
+  renderList();
+}
+
+/**
+ * The heading a case belongs under.
+ *
+ * Every technique tags its cases with a group, but the heading is the only
+ * thing separating one block from the next — an untagged case would open a
+ * section with no name at all rather than joining a catch-all.
+ */
+function groupKeyOf(testCase) {
+  return testCase.group || t('ui.groupOther');
 }
 
 function visibleCases() {
@@ -963,85 +1225,294 @@ function visibleCases() {
   });
 }
 
-function renderTable() {
-  const rows = visibleCases();
-  el.body.replaceChildren();
+// ---- rendering: the case list ----------------------------------------
 
-  el.empty.hidden = rows.length > 0;
-  if (!rows.length) {
-    const filtered = !!current && current.cases.length > 0;
-    const noResult = !!current;
-    el.empty.querySelector('.empty-title').textContent =
-      t(filtered ? 'ui.noMatchTitle' : (noResult ? 'ui.nothingTitle' : 'ui.emptyTitle'));
-    el.empty.querySelector('.empty-sub').textContent =
-      t(filtered ? 'ui.noMatchSub' : (noResult ? 'ui.nothingSub' : 'ui.emptySub'));
+/**
+ * One case card.
+ *
+ * A button rather than a row: selecting a case is the only thing it does, and
+ * a button gets keyboard focus, Enter and Space without any of it being
+ * reimplemented here.
+ */
+function caseCard(testCase) {
+  const card = node('button', 'case');
+  card.type = 'button';
+  card.dataset.id = testCase.id;
+  if (testCase.notes) card.classList.add('has-note');
+  if (testCase.id === selectedId) card.classList.add('selected');
+  if (testCase.impact === 'changed' || testCase.impact === 'unrelated') {
+    card.classList.add(`impact-${testCase.impact}`);
   }
 
-  const colSpan = el.body.closest('table').tHead.rows[0].cells.length;
-  const frag = document.createDocumentFragment();
-  rows.forEach(c => {
-    const tr = node('tr', 'case-row');
-    if (expanded.has(c.id)) tr.classList.add('open');
+  const l1 = node('span', 'l1');
+  l1.append(node('span', 'cid', testCase.id));
+  l1.append(node('span', `tech-badge ${techClass(testCase.technique)}`, t('tech.code.' + testCase.technique)));
+  l1.append(node('span', 'tgt', testCase.target));
+  if (data?.fixtures.get(testCase.id)) {
+    const fx = node('span', 'grpname', '🗃');
+    fx.title = t('dg.fixture');
+    l1.append(fx);
+  }
+  card.append(l1);
 
-    tr.append(node('td', 'cell-id', c.id));
+  const sp = node('span', 'sp');
+  if (testCase.impact === 'changed') {
+    sp.append(node('span', 'imp imp-changed', t('ui.impactChangedShort')));
+  }
+  sp.append(node('span', `prio prio-${testCase.priority}`, t('prio.' + testCase.priority)));
+  card.append(sp);
 
-    const tdTech = node('td');
-    tdTech.append(node('span', `tech-badge ${techClass(c.technique)}`, t('tech.code.' + c.technique)));
-    tr.append(tdTech);
+  card.append(node('span', 'ttl', testCase.title));
 
-    tr.append(node('td', 'cell-target', c.target));
+  const l3 = node('span', 'l3');
+  l3.append(node('span', 'dv', testCase.data));
+  l3.append(node('span', 'arr', '→'));
+  const ex = node('span', 'ex');
+  ex.append(node('span', 'exv', testCase.expected));
+  l3.append(ex);
+  // The note goes on its own line across the whole card rather than under the
+  // expected result. Sharing that column with a long value left it forty
+  // pixels wide — "⚠ Type…" — which is not a warning, it is a rumour of one.
+  if (testCase.notes) l3.append(node('span', 'note', `⚠ ${testCase.notes}`));
+  card.append(l3);
 
-    const tdTitle = node('td');
-    if (c.impact === 'changed' || c.impact === 'unrelated') tdTitle.append(impactBadge(c.impact));
-    tdTitle.append(node('span', null, c.title));
-    tdTitle.append(node('span', 'cell-group', c.group));
-    tr.append(tdTitle);
-
-    tr.append(node('td', 'cell-data', c.data));
-
-    const tdExp = node('td', 'cell-exp');
-    tdExp.append(node('span', null, c.expected));
-    if (c.notes) tdExp.append(node('span', 'cell-note', c.notes));
-    tr.append(tdExp);
-
-    const tdPrio = node('td');
-    tdPrio.append(node('span', `prio prio-${c.priority}`, t('prio.' + c.priority)));
-    tr.append(tdPrio);
-
-    tr.addEventListener('click', () => {
-      if (expanded.has(c.id)) expanded.delete(c.id);
-      else expanded.add(c.id);
-      renderTable();
-    });
-
-    frag.append(tr);
-    if (expanded.has(c.id)) frag.append(buildDetailRow(c, colSpan));
+  card.addEventListener('click', () => {
+    selectedId = selectedId === testCase.id ? null : testCase.id;
+    if (selectedId) inspOpen = true;
+    saveUi();
+    renderList();
+    renderInspector();
+    applyLayout();
   });
-  el.body.append(frag);
+  return card;
 }
 
 /**
- * The expanded panel under one case: the rows to create, anything that could
- * not be expressed as a row, and the query to run once the data is in place.
+ * The case list, grouped by the `group` each technique tags its cases with.
+ *
+ * Grouping is not decoration: six boundary cases on one column are one idea,
+ * and reading them as one block is what makes a list of forty cases reviewable
+ * instead of merely long.
  */
-function buildDetailRow(testCase, colSpan) {
-  const tr = node('tr', 'case-detail');
-  const td = node('td');
-  td.colSpan = colSpan;
+function renderList() {
+  const rows = visibleCases();
+  syncSearchCollapse();
+  el.caseList.replaceChildren();
+  el.caseList.classList.toggle('dense', density === 'dense');
 
-  if (testCase.rationale) {
-    const secWhy = node('div', 'fx-sec');
-    secWhy.append(node('div', 'fx-label', t('dg.rationale')));
-    secWhy.append(node('div', 'fx-rationale', testCase.rationale));
-    td.append(secWhy);
+  if (!rows.length) {
+    el.empty.hidden = false;
+    el.caseList.hidden = true;
+
+    const hasQuery = !!current;
+    const filtered = hasQuery && current.cases.length > 0;
+    el.empty.querySelector('.empty-title').textContent =
+      t(filtered ? 'ui.noMatchTitle' : (hasQuery ? 'ui.nothingTitle' : 'ui.emptyTitle'));
+    el.empty.querySelector('.empty-sub').textContent =
+      t(filtered ? 'ui.noMatchSub' : (hasQuery ? 'ui.nothingSub' : 'ui.emptySub'));
+    // The three steps are an answer to "what do I do here", so they belong on
+    // the blank page and nowhere else; a filtered-to-nothing list gets the one
+    // button that undoes it instead.
+    el.emptySteps.hidden = hasQuery;
+    el.emptyClear.hidden = !filtered;
+    return;
   }
+
+  el.empty.hidden = true;
+  el.caseList.hidden = false;
+
+  const groups = [];
+  const byName = new Map();
+  rows.forEach(c => {
+    const name = groupKeyOf(c);
+    let g = byName.get(name);
+    if (!g) { g = { name, items: [] }; byName.set(name, g); groups.push(g); }
+    g.items.push(c);
+  });
+
+  // Heading and body are siblings, not parent and child — see the note on
+  // .case-sect-head in the stylesheet: it is what keeps the band under the
+  // command bar showing one whole heading instead of a sliced one.
+  const frag = document.createDocumentFragment();
+  groups.forEach((g, i) => {
+    const open = !collapsedGroups.has(g.name);
+    const bodyId = `case-group-${i}`;
+
+    const head = node('button', 'case-sect-head');
+    head.type = 'button';
+    head.dataset.group = g.name;
+    head.setAttribute('aria-expanded', String(open));
+    head.setAttribute('aria-controls', bodyId);
+    head.title = t(open ? 'ui.groupCollapse' : 'ui.groupExpand');
+    head.append(node('span', 'caret', '▾'));
+    head.append(node('span', 't', g.name));
+    head.append(node('span', 'n', g.items.length));
+    head.append(node('span', 'line'));
+    head.addEventListener('click', (e) => toggleGroup(g.name, groups, e.shiftKey));
+
+    const body = node('div', 'case-sect-body');
+    body.id = bodyId;
+    body.hidden = !open;
+    g.items.forEach(c => body.append(caseCard(c)));
+
+    frag.append(head, body);
+  });
+  el.caseList.append(frag);
+}
+
+/**
+ * Shut or open one group — or, with Shift held, every group at once.
+ *
+ * Collapsing a block that sits above the pointer would otherwise haul the rest
+ * of the list up under it, so the heading that was clicked is put back on the
+ * pixel it was clicked on and the scroll offset absorbs the difference.
+ */
+function toggleGroup(name, groups, all) {
+  const scroller = el.caseList.closest('.main');
+  const wasAt = headOf(name)?.getBoundingClientRect().top;
+
+  if (all) {
+    const anyOpen = groups.some(g => !collapsedGroups.has(g.name));
+    groups.forEach(g => (anyOpen ? collapsedGroups.add(g.name) : collapsedGroups.delete(g.name)));
+  } else if (collapsedGroups.has(name)) {
+    collapsedGroups.delete(name);
+  } else {
+    collapsedGroups.add(name);
+  }
+
+  renderList();
+
+  const nowAt = headOf(name)?.getBoundingClientRect().top;
+  if (scroller && wasAt !== undefined && nowAt !== undefined) scroller.scrollTop += nowAt - wasAt;
+}
+
+/** Open every group for the duration of a search; put them back afterwards. */
+function syncSearchCollapse() {
+  const searching = !!el.search.value.trim();
+  if (searching && !collapsedBeforeSearch) {
+    collapsedBeforeSearch = new Set(collapsedGroups);
+    collapsedGroups.clear();
+  } else if (!searching && collapsedBeforeSearch) {
+    collapsedGroups.clear();
+    collapsedBeforeSearch.forEach(name => collapsedGroups.add(name));
+    collapsedBeforeSearch = null;
+  }
+}
+
+function headOf(name) {
+  return el.caseList.querySelector(`.case-sect-head[data-group="${CSS.escape(name)}"]`);
+}
+
+// ---- rendering: the inspector ----------------------------------------
+
+/**
+ * The one case on screen in full: why it matters, the rows to create, anything
+ * that could not be expressed as a row, and the query to run once the data is
+ * in place.
+ *
+ * This is what used to be a detail row spliced into the table under the case,
+ * which meant opening the fourth case pushed the fifth to the bottom of the
+ * window. A fixed column holds the same content without moving anything.
+ */
+function renderInspector() {
+  el.inspInner.replaceChildren();
+
+  const testCase = current?.cases.find(c => c.id === selectedId);
+  if (!testCase) {
+    selectedId = null;
+    const empty = node('div', 'insp-empty');
+    const box = node('div');
+    box.append(node('div', 'ic', '◧'));
+    box.append(node('p', null, t('ui.inspEmpty')));
+    empty.append(box);
+    el.inspInner.append(empty);
+    return;
+  }
+
+  const list = visibleCases();
+  const at = list.findIndex(c => c.id === testCase.id);
+
+  // --- head: identity and the walk through the filtered list ---
+  const head = node('div', 'insp-head');
+  const top = node('div', 'top');
+  top.append(node('span', 'cid', testCase.id));
+  top.append(node('span', `tech-badge ${techClass(testCase.technique)}`, t('tech.code.' + testCase.technique)));
+  top.append(node('span', `prio prio-${testCase.priority}`, t('prio.' + testCase.priority)));
+
+  const nav = node('span', 'nav');
+  const navBtn = (label, titleKey, delta, disabled) => {
+    const b = node('button', 't-btn t-btn-icon t-btn-ghost t-btn-sm', label);
+    b.title = t(titleKey);
+    b.disabled = disabled;
+    b.addEventListener('click', () => {
+      if (delta === 0) { selectedId = null; }
+      else {
+        const next = list[at + delta];
+        if (next) selectedId = next.id;
+      }
+      renderList();
+      renderInspector();
+    });
+    return b;
+  };
+  nav.append(navBtn('↑', 'ui.inspPrev', -1, at <= 0));
+  nav.append(navBtn('↓', 'ui.inspNext', 1, at < 0 || at >= list.length - 1));
+  nav.append(navBtn('✕', 'ui.inspClose', 0, false));
+  top.append(nav);
+  head.append(top);
+
+  head.append(node('h2', null, testCase.title));
+
+  const sub = node('div', 'sub');
+  sub.append(node('span', 'tgt', testCase.target));
+  if (testCase.group) sub.append(node('span', null, testCase.group));
+  if (testCase.impact === 'changed' || testCase.impact === 'unrelated') {
+    sub.append(node('span', `imp imp-${testCase.impact}`,
+      t(testCase.impact === 'changed' ? 'ui.impactChangedShort' : 'ui.impactUnrelatedShort')));
+  }
+  head.append(sub);
+  el.inspInner.append(head);
+
+  const body = node('div', 'insp-body');
+
+  // --- why this case exists ---
+  if (testCase.rationale) {
+    const sec = node('div', 'fx-sec');
+    sec.append(node('div', 'fx-label', t('dg.rationale')));
+    sec.append(node('div', 'fx-rationale', testCase.rationale));
+    body.append(sec);
+  }
+
+  // --- what to set up, and what should come back ---
+  const secData = node('div', 'fx-sec');
+  secData.append(node('div', 'fx-label', t('ui.colData')));
+  secData.append(node('div', 'fx-data', testCase.data));
+  const exp = node('div', 'fx-expected');
+  exp.append(node('b', null, `${t('dg.expected')}: `));
+  exp.append(node('span', null, testCase.expected));
+  secData.append(exp);
+  if (testCase.notes) {
+    // Same amber as the note on the card, so the two read as one thing said
+    // twice rather than as a warning and a footnote.
+    const req = node('div', 'fx-req fx-req-warn');
+    req.append(node('span', 'b', '⚠'));
+    req.append(node('span', null, testCase.notes));
+    secData.append(req);
+  }
+  body.append(secData);
 
   const fixture = data?.fixtures.get(testCase.id);
 
   if (!fixture) {
-    td.append(node('div', 'fx-req', t('dg.noFixture')));
-    tr.append(td);
-    return tr;
+    const sec = node('div', 'fx-sec');
+    sec.append(node('div', 'fx-label', t('dg.fixture')));
+    const req = node('div', 'fx-req');
+    req.append(node('span', 'b', '◆'));
+    req.append(node('span', null, t('dg.noFixture')));
+    sec.append(req);
+    body.append(sec);
+    el.inspInner.append(body);
+    return;
   }
 
   // --- rows to prepare ---
@@ -1085,29 +1556,134 @@ function buildDetailRow(testCase, colSpan) {
   if (fixture.tables.some(tb => tb.rows.some(r => Object.values(r.values).some(v => v.focus)))) {
     secRows.append(node('div', 'fx-note', t('dg.focusHint')));
   }
-  td.append(secRows);
+  body.append(secRows);
 
   // --- requirements no row can express ---
   if (fixture.requirements.length) {
     const secReq = node('div', 'fx-sec');
     secReq.append(node('div', 'fx-label', t('dg.requirements')));
-    fixture.requirements.forEach(r => secReq.append(node('div', 'fx-req', r.text)));
-    td.append(secReq);
+    fixture.requirements.forEach(r => {
+      const req = node('div', 'fx-req');
+      req.append(node('span', 'b', '◆'));
+      req.append(node('span', null, r.text));
+      secReq.append(req);
+    });
+    body.append(secReq);
   }
 
   // --- the query to run afterwards ---
   const v = verifyFor(activeSql(), testCase);
   const secSql = node('div', 'fx-sec');
   secSql.append(node('div', 'fx-label', t('dg.verify')));
-  secSql.append(node('pre', 'fx-sql', v.sql));
-  const exp = node('div', 'fx-exp');
-  exp.append(node('b', null, t('dg.expected') + ': '));
-  exp.append(node('span', null, v.expectation));
-  secSql.append(exp);
-  td.append(secSql);
+  const pre = node('pre', 'fx-sql');
+  pre.append(sqlHighlight(v.sql));
+  secSql.append(pre);
+  const vexp = node('div', 'fx-exp');
+  vexp.append(node('b', null, `${t('dg.expected')}:`));
+  vexp.append(node('span', null, v.expectation));
+  secSql.append(vexp);
+  body.append(secSql);
 
-  tr.append(td);
-  return tr;
+  el.inspInner.append(body);
+}
+
+// ---- rendering: the tabbed shells ------------------------------------
+
+function renderRail() {
+  const enabledTechs = [...el.techList.querySelectorAll('input[data-tech]')].filter(b => b.checked).length;
+  el.railTechCount.textContent = enabledTechs || '';
+  el.railValuesCount.textContent = valueCount || '';
+  el.railSchemaCount.textContent = data?.schema.tables.length || '';
+
+  // A tab with nothing behind it is not shown at all: an empty Schema pane
+  // teaches nothing, and the two that come and go are exactly the two that
+  // depend on a successful run.
+  const has = { sql: true, tech: true, values: valueCount > 0, schema: !!data?.schema.tables.length };
+  // Resolved before anything is marked active: a run that empties the pane you
+  // were on has to move you off it, and marking the old tab active first would
+  // leave the row with no active tab at all.
+  if (!has[railTab]) railTab = 'sql';
+
+  el.railTabs.querySelectorAll('.rtab').forEach(btn => {
+    const key = btn.dataset.rt;
+    btn.hidden = !has[key];
+    btn.classList.toggle('active', key === railTab);
+  });
+
+  Object.entries(RAIL_PANES).forEach(([key, pane]) => {
+    if (pane) pane.hidden = key !== railTab;
+  });
+}
+
+function renderInsight() {
+  const tabs = el.insightTabs.querySelectorAll('.itab');
+  let anyAvailable = false;
+
+  tabs.forEach(btn => {
+    const key = btn.dataset.it;
+    const state = insight[key];
+    const available = !!state?.available;
+    btn.hidden = !available;
+    if (available) anyAvailable = true;
+  });
+
+  el.itabDiffN.textContent = insight.diff.count || '';
+  el.itabFindingsN.textContent = insight.findings.count || '';
+  el.itabCoverageN.textContent = insight.coverage.count || '';
+  el.itabStaleN.textContent = insight.stale.count || '';
+  el.findingsDot.className = `dot${insight.findings.level ? ' dot-' + insight.findings.level : ''}`;
+
+  if (!anyAvailable) {
+    el.insight.hidden = true;
+    return;
+  }
+  el.insight.hidden = false;
+
+  // Fall back to the first tab that has something, so a run that removes the
+  // panel you were reading lands somewhere real rather than on a blank body.
+  // Never mid-run, though: see insightSettling.
+  if (!insightSettling && !insight[insightTab]?.available) {
+    const first = [...tabs].find(b => !b.hidden);
+    insightTab = first ? first.dataset.it : '';
+  }
+
+  tabs.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.it === insightTab && insightOpen);
+  });
+  Object.entries(INSIGHT_PANES).forEach(([key, pane]) => {
+    if (pane) pane.hidden = key !== insightTab;
+  });
+  el.insight.classList.toggle('collapsed', !insightOpen);
+  el.insightToggle.textContent = insightOpen ? '▴' : '▾';
+}
+
+/**
+ * Apply the two column toggles.
+ *
+ * `insp-open` is separate from `insp-off` because below 1240px the inspector
+ * stops being a column and becomes an overlay: there it must slide in only
+ * when there is a case to show, or it would cover the list it was opened from.
+ */
+function applyLayout() {
+  el.app.classList.toggle('rail-off', !railOpen);
+  el.app.classList.toggle('insp-off', !inspOpen);
+  el.app.classList.toggle('insp-open', inspOpen && !!selectedId);
+
+  const existing = el.app.querySelector('.rail-reopen');
+  if (existing) existing.remove();
+  if (!railOpen) {
+    const b = node('button', 'rail-reopen');
+    b.type = 'button';
+    b.textContent = t('ui.railReopen');
+    b.addEventListener('click', () => { railOpen = true; saveUi(); applyLayout(); });
+    el.app.append(b);
+  }
+
+  // Opening a column narrows the middle one, which is what wraps the technique
+  // pills onto another line. Saying so here rather than waiting to be told is
+  // the difference between the group headings parking under the command bar
+  // and parking a pill row's worth of empty band below it.
+  scheduleCmdHeight();
 }
 
 // ---- run -------------------------------------------------------------
@@ -1141,21 +1717,38 @@ function renderParseProblems(sql, result, target = el.parseErrors) {
       : t('ui.warn', { message: w.message })));
   });
   target.hidden = false;
+  // A parse error is the reason nothing else on the page updated, and the rail
+  // may well be showing the technique list — put the query back on screen.
+  if (errors.length) railTab = 'sql';
+}
+
+/** Wipe everything a result feeds, without touching the query or the options. */
+function clearResult() {
+  current = null;
+  data = null;
+  selectedId = null;
+  staleCases = [];
+  renderSchema();
+  renderValues();
+  renderAnalysis(null);
+  renderFindings([]);
+  renderCoverage([]);
+  renderTechniqueFilter(null);
+  renderClauseFilter();
+  renderColumnFilter();
+  renderFilterCount();
+  renderTriage();
+  setStats(null);
+  renderList();
+  renderInspector();
+  renderRail();
+  applyLayout();
 }
 
 /**
- * Run the full parse → generate → render pipeline for one SQL string.
- *
- * In single mode this is the whole page's model. In compare mode it still
- * drives the case table, findings, coverage and schema panels — off the
- * "after" query, since that is the version being tested — while `run()`
- * separately renders the "before" side's own parse errors and the diff
- * between the two.
- */
-/**
  * Render everything the results pane shows for one already-computed
  * generateCases() result: schema, value book, analysis, findings, coverage,
- * technique filter, stats, and the case table itself.
+ * technique filter, stats, and the case list itself.
  *
  * Shared by single mode (called from a plain generateCases() run) and by
  * compare mode's "after" side (called with the already-tagged result out of
@@ -1166,25 +1759,15 @@ function renderResult(sql, result, errorsEl) {
   renderParseProblems(sql, result, errorsEl);
 
   if (!result.ok) {
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
     el.parseStatus.textContent = t('ui.parseFailed');
-    renderAnalysis(null);
-    renderFindings([]);
-    renderCoverage([]);
-    el.techFilter.replaceChildren();
-    renderClauseFilter();
-    renderColumnFilter();
-    renderImpactFilter();
-    setStats(null);
-    renderTable();
+    clearResult();
     return;
   }
 
   current = result;
+  // A case that is no longer in the result cannot stay in the inspector.
+  if (selectedId && !result.cases.some(c => c.id === selectedId)) selectedId = null;
+
   // Fixtures depend only on the model and the case list, so they are rebuilt
   // with every generation — including a language switch, which re-runs it.
   try {
@@ -1204,30 +1787,21 @@ function renderResult(sql, result, errorsEl) {
   renderTechniqueFilter(result.stats);
   renderClauseFilter();
   renderColumnFilter();
-  renderImpactFilter();
+  renderFilterCount();
+  renderTriage();
   setStats(result.stats);
-  renderTable();
+  renderList();
+  renderInspector();
+  renderRail();
+  applyLayout();
 }
 
 /** Single mode: parse, generate and render one query. */
 function runFor(sql, errorsEl) {
   if (!sql.trim()) {
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
     errorsEl.hidden = true;
     el.parseStatus.textContent = t('ui.parseHint');
-    renderAnalysis(null);
-    renderFindings([]);
-    renderCoverage([]);
-    el.techFilter.replaceChildren();
-    renderClauseFilter();
-    renderColumnFilter();
-    renderImpactFilter();
-    setStats(null);
-    renderTable();
+    clearResult();
     return;
   }
 
@@ -1236,15 +1810,10 @@ function runFor(sql, errorsEl) {
     result = generateCases(sql, readOptions());
   } catch (err) {
     console.error('[SQLCASES] generation failed:', err);
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
     errorsEl.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
     errorsEl.hidden = false;
-    setStats(null);
-    renderTable();
+    el.parseStatus.textContent = t('ui.parseFailed');
+    clearResult();
     return;
   }
 
@@ -1253,7 +1822,7 @@ function runFor(sql, errorsEl) {
 
 /**
  * Compare mode: one generateComparison() call drives the whole page — the
- * case table, findings etc. still come off the "after" query (now with
+ * case list, findings etc. still come off the "after" query (now with
  * `.impact` tagged on each case), and the diff panel comes off the same
  * call's `.diff` rather than a second, separate diffQueries() run.
  */
@@ -1277,17 +1846,12 @@ function runCompare() {
     comparison = generateComparison(beforeSql, afterSql, readOptions());
   } catch (err) {
     console.error('[SQLCASES] comparison failed:', err);
-    current = null;
-    data = null;
-    expanded.clear();
-    renderSchema();
-    renderValues();
     el.parseErrorsAfter.replaceChildren(node('div', null, t('ui.genFailed', { message: err.message })));
     el.parseErrorsAfter.hidden = false;
-    setStats(null);
-    renderTable();
+    el.parseStatus.textContent = t('ui.parseFailed');
     renderDiff(null);
     renderStale([]);
+    clearResult();
     return;
   }
 
@@ -1298,16 +1862,26 @@ function runCompare() {
   renderResult(afterSql, comparison.after, el.parseErrorsAfter);
   renderDiff(comparison.diff);
   renderStale(comparison.before.ok ? comparison.before.cases.filter(c => c.impact === 'stale') : []);
+  renderTriage();
 }
 
 function run() {
-  if (mode !== 'compare') {
-    renderDiff(null);
-    renderStale([]);
-    runFor(el.sql.value, el.parseErrors);
-    return;
+  insightSettling = true;
+  try {
+    if (mode !== 'compare') {
+      renderDiff(null);
+      renderStale([]);
+      runFor(el.sql.value, el.parseErrors);
+    } else {
+      runCompare();
+    }
+  } finally {
+    // Resolved here and nowhere else, so the tab moves at most once per run —
+    // and only when the pane behind it really did go away.
+    insightSettling = false;
+    renderInsight();
+    renderTriage();
   }
-  runCompare();
 }
 
 function setStats(stats) {
@@ -1320,6 +1894,11 @@ function setStats(stats) {
   [el.csv, el.json, el.copyJson].forEach(b => { b.disabled = !enabled; });
   const hasData = enabled && !!data && data.schema.tables.length > 0;
   [el.dataCsv, el.verifySql].forEach(b => { b.disabled = !hasData; });
+  el.exportBtn.disabled = !enabled;
+  el.cmdbarDock.hidden = !enabled;
+  // ResizeObserver reports a hidden element as 0x0 but never fires for the
+  // `hidden` attribute itself, so the show/hide above has to say so.
+  scheduleCmdHeight();
 }
 
 // ---- persistence -----------------------------------------------------
@@ -1344,12 +1923,12 @@ function saveState() {
 
 function restoreState(done) {
   if (!storage) { applyTheme('light'); setLang(DEFAULT_LANG); done(); return; }
-  storage.get([STATE_KEY, THEME_KEY, LANG_KEY, PANELS_KEY, VALUES_KEY], (res) => {
+  storage.get([STATE_KEY, THEME_KEY, LANG_KEY, UI_KEY, VALUES_KEY], (res) => {
     applyTheme(res?.[THEME_KEY] === 'dark' ? 'dark' : 'light');
     // Only select the language here. Rendering and the first generation wait
     // until the saved query is back in the textarea, so startup runs once.
     setLang(res?.[LANG_KEY] || DEFAULT_LANG);
-    applyPanelState(res?.[PANELS_KEY]);
+    applyUiState(res?.[UI_KEY]);
     // Before the first generation: the saved values are an input to it, not a
     // decoration applied to the result afterwards.
     valuebook.load(res?.[VALUES_KEY]);
@@ -1420,10 +1999,11 @@ function applyStaticText() {
     .filter(l => l.code !== active.code)
     .reduce((widest, l) => (l.short.length > widest.length ? l.short : widest), '');
 
-  // #sqlLabel carries a fixed data-i18n key for single mode; compare mode
-  // overrides it below, so redo that override after the generic pass above
-  // would otherwise put the single-mode label back.
+  // #sqlLabel and the rail's first tab carry fixed data-i18n keys for single
+  // mode; compare mode overrides both, so redo those overrides after the
+  // generic pass above would otherwise put the single-mode labels back.
   setLabel(el.sqlLabel, mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
+  setLabel(el.railTabSqlLabel, mode === 'compare' ? 'ui.railSqlCompare' : 'ui.railSql');
 }
 
 /** Switch language, retranslate the chrome, then regenerate so cases follow. */
@@ -1438,7 +2018,7 @@ function applyLanguage(code) {
  *
  * The "before" side reuses #sqlInput rather than adding a third textarea —
  * one query is one query whichever mode is active, only its role and label
- * change, and the AFTER card is added/removed around it.
+ * change, and the AFTER block is shown or hidden beneath it.
  */
 function setMode(next) {
   mode = next === 'compare' ? 'compare' : 'single';
@@ -1447,6 +2027,11 @@ function setMode(next) {
   });
   el.sqlAfterCard.hidden = mode !== 'compare';
   setLabel(el.sqlLabel, mode === 'compare' ? 'ui.sqlQueryBefore' : 'ui.sqlQuery');
+  // The tab sits above two textareas in compare mode, so "Query" stops being
+  // the honest name for what is behind it.
+  setLabel(el.railTabSqlLabel, mode === 'compare' ? 'ui.railSqlCompare' : 'ui.railSql');
+  // Switching mode is switching what you are about to type into.
+  if (mode === 'compare') railTab = 'sql';
 }
 
 // ---- wiring ----------------------------------------------------------
@@ -1470,7 +2055,24 @@ function initExamples() {
   });
 }
 
+/** Close both dropdowns. They are mutually exclusive and share every dismissal. */
+function closeMenus() {
+  el.exportMenu.hidden = true;
+  el.filterPop.hidden = true;
+  el.exportBtn.setAttribute('aria-expanded', 'false');
+  el.filtersBtn.setAttribute('aria-expanded', 'false');
+}
+
+function toggleMenu(menu, button) {
+  const open = menu.hidden;
+  closeMenus();
+  menu.hidden = !open;
+  button.setAttribute('aria-expanded', String(open));
+}
+
 function initExports() {
+  el.exportBtn.addEventListener('click', () => toggleMenu(el.exportMenu, el.exportBtn));
+
   el.csv.addEventListener('click', () => {
     if (!current) return;
     downloadText(toCsv(current.cases), suggestFilename(current, 'csv'), 'text/csv');
@@ -1516,23 +2118,179 @@ function initExports() {
       toast(t('ui.toastCopyFail'));
     }
   });
+
+  // The menu is a list of one-shot actions, so every one of them dismisses it.
+  el.exportMenu.querySelectorAll('button').forEach(b => b.addEventListener('click', closeMenus));
+}
+
+function initLayoutControls() {
+  const toggleRail = () => { railOpen = !railOpen; saveUi(); applyLayout(); };
+  el.railToggle.addEventListener('click', toggleRail);
+  el.railClose.addEventListener('click', toggleRail);
+
+  el.inspToggle.addEventListener('click', () => {
+    inspOpen = !inspOpen;
+    saveUi();
+    applyLayout();
+  });
+
+  el.railTabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.rtab');
+    if (!btn) return;
+    railTab = btn.dataset.rt;
+    saveUi();
+    renderRail();
+  });
+
+  el.insightTabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.itab');
+    if (btn) {
+      // Clicking the tab you are already reading closes the block: it is the
+      // same gesture the accordions had, and the one that gets the height back.
+      if (btn.dataset.it === insightTab && insightOpen) insightOpen = false;
+      else { insightTab = btn.dataset.it; insightOpen = true; }
+      saveUi();
+      renderInsight();
+      renderTriage();
+      return;
+    }
+    if (e.target.closest('#btnInsight')) {
+      insightOpen = !insightOpen;
+      saveUi();
+      renderInsight();
+      renderTriage();
+    }
+  });
+
+  el.triage.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-tri]');
+    if (!btn) return;
+    const key = btn.dataset.tri;
+    if (key === 'stale') {
+      // Stale cases are not in the list, so this box opens the only panel that
+      // holds them rather than filtering a list they were never part of.
+      insightTab = 'stale';
+      insightOpen = true;
+      renderInsight();
+    } else {
+      activeImpact = activeImpact === key ? '' : key;
+      selectedId = null;
+      renderList();
+      renderInspector();
+    }
+    saveUi();
+    renderTriage();
+  });
+
+  el.density.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-d]');
+    if (!btn) return;
+    density = btn.dataset.d;
+    el.density.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+    saveUi();
+    renderList();
+  });
+}
+
+function initFilters() {
+  el.filtersBtn.addEventListener('click', () => toggleMenu(el.filterPop, el.filtersBtn));
+  el.closeFilters.addEventListener('click', closeMenus);
+  el.clearFilters.addEventListener('click', clearAllFilters);
+  el.emptyClear.addEventListener('click', clearAllFilters);
+
+  el.search.addEventListener('input', renderList);
+  el.prioFilter.addEventListener('change', () => { renderFilterCount(); renderList(); });
+  el.clauseFilter.addEventListener('change', () => {
+    activeClause = el.clauseFilter.value;
+    renderFilterCount();
+    renderList();
+  });
+  el.columnFilter.addEventListener('change', () => {
+    activeColumn = el.columnFilter.value;
+    renderFilterCount();
+    renderList();
+  });
+  el.fixtureFilter.addEventListener('change', () => {
+    onlyWithFixture = el.fixtureFilter.checked;
+    renderFilterCount();
+    renderList();
+  });
+
+  // A click anywhere that is not inside a dropdown closes both of them.
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.menu-wrap')) closeMenus();
+  });
+}
+
+/**
+ * Keep --cmd-h in step with the docked command bar's real height.
+ *
+ * The group headings in the list park directly under the bar, and the bar is
+ * not a fixed height: the technique pills wrap onto a second line on a narrow
+ * window, and onto a third in Vietnamese. Every pixel this number is wrong by
+ * is a pixel of the list showing in the band between the bar and the headings,
+ * or a pixel of heading hidden behind the bar, so it has to be exact — no
+ * rounding, and no waiting for the next thing to happen before it catches up.
+ *
+ * One ResizeObserver is not enough on its own. When a rewrap is set off by a
+ * width change elsewhere in the shell — opening the inspector, dragging the
+ * window narrower — the observation that arrives can still describe the bar as
+ * it was, leaving the number a full pill row (20-30px) short until something
+ * else disturbs it. So every trigger re-measures twice, once now and once on
+ * the next frame when layout has certainly settled, and a scroll re-measures
+ * as well: the band is only ever looked at while the list is moving, which
+ * makes a scroll the last chance to notice and the cheapest place to check.
+ */
+function publishCmdHeight() {
+  const h = el.cmdbarDock.hidden ? 0 : el.cmdbarDock.getBoundingClientRect().height;
+  const shell = el.cmdbarDock.parentElement;
+  const next = `${h.toFixed(2)}px`;
+  if (shell.style.getPropertyValue('--cmd-h') !== next) shell.style.setProperty('--cmd-h', next);
+}
+
+let cmdHeightFrame = 0;
+
+/** Measure now, and again next frame in case this one caught layout mid-flight. */
+function scheduleCmdHeight() {
+  publishCmdHeight();
+  cancelAnimationFrame(cmdHeightFrame);
+  cmdHeightFrame = requestAnimationFrame(publishCmdHeight);
+}
+
+function trackCmdbarHeight() {
+  scheduleCmdHeight();
+  if (typeof ResizeObserver === 'function') {
+    const observer = new ResizeObserver(scheduleCmdHeight);
+    observer.observe(el.cmdbarDock);
+    observer.observe(el.cmdbar);
+  }
+  window.addEventListener('resize', scheduleCmdHeight);
+  // Measured on the spot rather than deferred to the next frame: a scroll
+  // handler runs before the frame it belongs to is painted, so correcting the
+  // number here means the band is right in the very frame the reader sees. It
+  // is one rect read per scrolled frame, and it writes only when the number
+  // has actually moved.
+  el.cmdbarDock.parentElement.addEventListener('scroll', publishCmdHeight, { passive: true });
 }
 
 function init() {
   buildTechniqueList();
-  initPanels();
   initExamples();
   initExports();
+  initLayoutControls();
+  initFilters();
 
   el.analyze.addEventListener('click', () => { saveState(); run(); });
 
-  el.sql.addEventListener('keydown', (e) => {
+  const runOnCtrlEnter = (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
       saveState();
       run();
     }
-  });
+  };
+  el.sql.addEventListener('keydown', runOnCtrlEnter);
+  el.sqlAfter.addEventListener('keydown', runOnCtrlEnter);
 
   // Typing re-runs on a debounce: generation is pure and fast enough that
   // waiting for a button press only makes the tool feel slower than it is.
@@ -1540,14 +2298,6 @@ function init() {
   el.sql.addEventListener('input', () => {
     clearTimeout(debounce);
     debounce = setTimeout(() => { saveState(); run(); }, 500);
-  });
-
-  el.sqlAfter.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      saveState();
-      run();
-    }
   });
   let debounceAfter = null;
   el.sqlAfter.addEventListener('input', () => {
@@ -1560,6 +2310,7 @@ function init() {
       if (btn.dataset.mode === mode) return;
       setMode(btn.dataset.mode);
       saveState();
+      saveUi();
       run();
     });
   });
@@ -1581,11 +2332,6 @@ function init() {
 
   el.maxFull.addEventListener('change', () => { saveState(); run(); });
   el.joinConds.addEventListener('change', () => { saveState(); run(); });
-  el.prioFilter.addEventListener('change', renderTable);
-  el.search.addEventListener('input', renderTable);
-  el.clauseFilter.addEventListener('change', () => { activeClause = el.clauseFilter.value; renderTable(); });
-  el.columnFilter.addEventListener('change', () => { activeColumn = el.columnFilter.value; renderTable(); });
-  el.fixtureFilter.addEventListener('change', () => { onlyWithFixture = el.fixtureFilter.checked; renderTable(); });
 
   el.theme.addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
@@ -1604,12 +2350,55 @@ function init() {
   el.helpModal.addEventListener('click', (e) => {
     if (e.target === el.helpModal) el.helpModal.hidden = true;
   });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !el.helpModal.hidden) el.helpModal.hidden = true;
+
+  el.diagramBtn.addEventListener('click', openDiagram);
+  el.dgClose.addEventListener('click', closeDiagram);
+  el.diagramModal.addEventListener('click', (e) => {
+    if (e.target === el.diagramModal) closeDiagram();
   });
+  el.dgFit.addEventListener('click', () => diagram?.fit());
+  el.dgZoomIn.addEventListener('click', () => diagram?.zoomBy(1.25));
+  el.dgZoomOut.addEventListener('click', () => diagram?.zoomBy(1 / 1.25));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!el.diagramModal.hidden) { closeDiagram(); return; }
+    if (!el.helpModal.hidden) { el.helpModal.hidden = true; return; }
+    if (!el.exportMenu.hidden || !el.filterPop.hidden) { closeMenus(); return; }
+    // Escape with a case open closes the inspector, which is the only other
+    // thing on this page that is "open" in the sense Escape usually means.
+    if (selectedId) { selectedId = null; renderList(); renderInspector(); applyLayout(); }
+  });
+
+  // Walking the list from the keyboard, but only when the caret is not in a
+  // field — an arrow key inside the query textarea moves the caret and must
+  // keep doing so.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    if (!selectedId || e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const list = visibleCases();
+    const at = list.findIndex(c => c.id === selectedId);
+    const next = list[at + (e.key === 'ArrowDown' ? 1 : -1)];
+    if (!next) return;
+    e.preventDefault();
+    // Walking into a shut group opens it: the alternative is an arrow press
+    // that selects a case the list is not showing.
+    collapsedGroups.delete(groupKeyOf(next));
+    selectedId = next.id;
+    renderList();
+    renderInspector();
+  });
+
+  trackCmdbarHeight();
 
   restoreState(() => {
     applyStaticText();
+    el.density.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.d === density));
+    // A rail that starts shut on a narrow window is the same call the CSS
+    // makes at that width; making it here too keeps the toggle honest.
+    if (window.innerWidth < 900) railOpen = false;
     run();
     el.sql.focus();
   });

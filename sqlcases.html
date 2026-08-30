@@ -1,6 +1,18 @@
 <!DOCTYPE html>
 <!-- sqlcases.html — SQL Test Case Designer: parse a query, generate test cases.
 
+     Three columns, not two. The rail on the left is everything that feeds a
+     run — the query, the techniques, the sample values, the inferred schema —
+     stacked as tabs rather than as accordions, so opening one no longer pushes
+     the others off screen. The middle column is the case list and nothing
+     else. The inspector on the right holds one case at a time: its rationale,
+     the rows to prepare and the query to run afterwards, so opening a case
+     stops shoving every case below it down the page.
+
+     Each rail pane and each insight pane is written out here rather than built
+     by ui.js. The query textarea has a caret and an undo stack, and rebuilding
+     it on every tab switch would throw both away; ui.js only toggles `hidden`.
+
      Static text carries data-i18n="<key>" (textContent) or data-i18n-ph="<key>"
      (placeholder); ui.js fills both in on load and on every language switch.
      The help modal is the exception: its prose is long enough that keeping two
@@ -9,234 +21,284 @@
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SQL Test Case Designer</title>
   <link rel="stylesheet" href="css/sqlcases.css" />
 </head>
 <body>
 
   <header class="topbar">
+    <button id="btnRail" class="t-btn t-btn-icon" data-i18n-title="ui.railToggle">☰</button>
     <span class="topbar-title">🧪 <span data-i18n="ui.title"></span></span>
     <span class="topbar-sub" data-i18n="ui.subtitle"></span>
     <div class="topbar-actions">
       <button id="toggleLang" class="t-btn" data-i18n-title="ui.langTip">🌐 <span id="langLabel">VI</span></button>
-      <button id="btnHelp" class="t-btn" data-i18n="ui.help"></button>
-      <button id="toggleTheme" class="t-btn" data-i18n-title="ui.themeTip">🌙</button>
+      <button id="btnHelp" class="t-btn"><span data-i18n="ui.help"></span></button>
+      <button id="toggleTheme" class="t-btn t-btn-icon" data-i18n-title="ui.themeTip">🌙</button>
     </div>
   </header>
 
-  <main class="layout">
+  <div class="app" id="app">
 
-    <!-- ===== LEFT: input & options ===== -->
-    <section class="pane pane-input">
+    <!-- ===== LEFT RAIL: everything that feeds a run ===== -->
+    <aside class="rail" id="rail">
+      <div class="rail-head">
+        <div class="rail-tabs" id="railTabs">
+          <button type="button" class="rtab active" data-rt="sql">
+            <span id="railTabSqlLabel" data-i18n="ui.railSql"></span>
+          </button>
+          <button type="button" class="rtab" data-rt="tech">
+            <span data-i18n="ui.railTech"></span><span class="rtab-n" id="railTechCount"></span>
+          </button>
+          <button type="button" class="rtab" data-rt="values" hidden>
+            <span data-i18n="ui.railValues"></span><span class="rtab-n" id="railValuesCount"></span>
+          </button>
+          <button type="button" class="rtab" data-rt="schema" hidden>
+            <span data-i18n="ui.railSchema"></span><span class="rtab-n" id="railSchemaCount"></span>
+          </button>
+        </div>
+        <button id="btnRailClose" class="t-btn t-btn-icon t-btn-ghost" data-i18n-title="ui.railCollapse">⟨</button>
+      </div>
 
-      <div class="card">
-        <div class="card-head">
-          <h3 id="sqlLabel" data-i18n="ui.sqlQuery"></h3>
-          <div class="card-head-actions">
+      <div class="rail-body" id="railBody">
+
+        <section class="rail-pane" id="paneSql">
+          <div class="pane-head">
             <div class="pill-row" id="modeToggle">
-              <button type="button" class="pill active" data-mode="single" data-i18n="ui.modeSingle"></button>
-              <button type="button" class="pill" data-mode="compare" data-i18n="ui.modeCompare"></button>
+              <button type="button" class="pill active" data-mode="single"><span data-i18n="ui.modeSingle"></span></button>
+              <button type="button" class="pill" data-mode="compare"><span data-i18n="ui.modeCompare"></span></button>
             </div>
             <select id="sampleSelect" class="mini-select"></select>
-            <button id="btnClear" class="t-btn t-btn-sm" data-i18n="ui.clear"></button>
+            <button id="btnClear" class="t-btn t-btn-sm"><span data-i18n="ui.clear"></span></button>
           </div>
-        </div>
-        <textarea id="sqlInput" spellcheck="false" placeholder="SELECT u.id, u.name, COUNT(o.id) AS orders
-  FROM users u
-  LEFT JOIN orders o ON o.user_id = u.id
- WHERE u.age BETWEEN 18 AND 65
-   AND u.country IN ('VN', 'SG')
- GROUP BY u.id, u.name
-HAVING COUNT(o.id) > 3
- ORDER BY orders DESC
- LIMIT 20"></textarea>
-        <div class="input-foot">
-          <span class="helper" id="parseStatus"></span>
-          <button id="btnAnalyze" class="primary-gradient" data-i18n="ui.analyze"></button>
-        </div>
-        <div id="parseErrors" class="parse-errors" hidden></div>
-      </div>
+          <label class="pane-label" id="sqlLabel" for="sqlInput" data-i18n="ui.sqlQuery"></label>
+          <textarea id="sqlInput" spellcheck="false" placeholder="SELECT u.id, u.name, COUNT(o.id) AS orders&#10;  FROM users u&#10;  LEFT JOIN orders o ON o.user_id = u.id&#10; WHERE u.age BETWEEN 18 AND 65&#10; GROUP BY u.id, u.name&#10;HAVING COUNT(o.id) > 3&#10; LIMIT 20"></textarea>
+          <div id="parseErrors" class="parse-errors" hidden></div>
 
-      <!-- Compare mode only: the "after" side of the query, diffed against
-           #sqlInput above (which becomes the "before" side while this is shown). -->
-      <div class="card" id="sqlAfterCard" hidden>
-        <div class="card-head">
-          <h3 data-i18n="ui.sqlQueryAfter"></h3>
-        </div>
-        <textarea id="sqlInputAfter" spellcheck="false" data-i18n-ph="ui.sqlAfterPlaceholder"></textarea>
-        <div id="parseErrorsAfter" class="parse-errors" hidden></div>
-      </div>
+          <!-- Compare mode only: the "after" side of the query, diffed against
+               #sqlInput above (which becomes the "before" side while this is shown). -->
+          <div id="sqlAfterCard" hidden>
+            <label class="pane-label" for="sqlInputAfter" data-i18n="ui.sqlQueryAfter"></label>
+            <textarea id="sqlInputAfter" spellcheck="false" data-i18n-ph="ui.sqlAfterPlaceholder"></textarea>
+            <div id="parseErrorsAfter" class="parse-errors" hidden></div>
+          </div>
+        </section>
 
-      <details class="card panel" id="techPanel" open>
-        <summary class="panel-head">
-          <h3 data-i18n="ui.techniques"></h3>
-          <span class="panel-sum" id="techSummary"></span>
-        </summary>
-        <div class="panel-body">
-        <ul class="tech-list" id="techList"></ul>
+        <section class="rail-pane" id="paneTech" hidden>
+          <div class="pane-sum" id="techSummary"></div>
+          <ul class="tech-list" id="techList"></ul>
 
-        <div class="opt-row">
-          <label for="optMaxFull" data-i18n="ui.fullTableUpTo"></label>
-          <select id="optMaxFull" class="mini-select">
-            <option value="3"></option>
-            <option value="4" selected></option>
-            <option value="5"></option>
-            <option value="6"></option>
-          </select>
-        </div>
-        <p class="helper" data-i18n="ui.mcdcHint"></p>
+          <div class="opt-row">
+            <label for="optMaxFull" data-i18n="ui.fullTableUpTo"></label>
+            <select id="optMaxFull" class="mini-select">
+              <option value="3"></option>
+              <option value="4" selected></option>
+              <option value="5"></option>
+              <option value="6"></option>
+            </select>
+          </div>
+          <p class="helper" data-i18n="ui.mcdcHint"></p>
 
-        <label class="check-row">
-          <input type="checkbox" id="optJoinConds" checked />
-          <span data-i18n="ui.alsoOnClauses"></span>
-        </label>
-        </div>
-      </details>
+          <label class="check-row">
+            <input type="checkbox" id="optJoinConds" checked />
+            <span data-i18n="ui.alsoOnClauses"></span>
+          </label>
+        </section>
 
-      <details class="card panel" id="schemaCard" hidden>
-        <summary class="panel-head">
-          <h3 data-i18n="dg.schema"></h3>
-          <span class="panel-sum" id="schemaSummary"></span>
-        </summary>
-        <div class="panel-body">
+        <section class="rail-pane" id="paneValues" hidden>
+          <div class="vb-head">
+            <div class="pane-sum" id="valuesSummary"></div>
+            <button id="btnResetValues" class="t-btn t-btn-sm" data-i18n-title="vb.resetAllTip"><span data-i18n="vb.resetAll"></span></button>
+          </div>
+          <p class="helper" data-i18n="vb.hint"></p>
+          <div id="valuesBody"></div>
+        </section>
+
+        <section class="rail-pane" id="paneSchema" hidden>
+          <div class="vb-head sc-head">
+            <div class="pane-sum" id="schemaSummary"></div>
+            <button id="btnDiagram" class="t-btn t-btn-sm sc-dg-btn" data-i18n-title="dg.diagramTip">
+              <svg class="sc-dg-ico" viewBox="0 0 16 16" aria-hidden="true">
+                <rect x="0.9" y="1.6" width="6.2" height="4.6" rx="1.2"/>
+                <rect x="8.9" y="9.8" width="6.2" height="4.6" rx="1.2"/>
+                <path d="M4 6.2v3.3a2.6 2.6 0 0 0 2.6 2.6h2.3"/>
+              </svg>
+              <span data-i18n="dg.diagram"></span>
+            </button>
+          </div>
           <div id="schemaBody"></div>
           <p class="helper" data-i18n="dg.schemaHint"></p>
-        </div>
-      </details>
+        </section>
 
-      <details class="card panel" id="valuesCard" hidden>
-        <summary class="panel-head">
-          <h3 data-i18n="vb.title"></h3>
-          <span class="panel-sum" id="valuesSummary"></span>
-        </summary>
-        <div class="panel-body">
-          <div class="vb-head">
-            <p class="helper" data-i18n="vb.hint"></p>
-            <button id="btnResetValues" class="t-btn t-btn-sm" data-i18n="vb.resetAll" data-i18n-title="vb.resetAllTip"></button>
+      </div>
+
+      <div class="rail-foot">
+        <span class="status" id="parseStatus"></span>
+        <button id="btnAnalyze" class="primary-gradient" data-i18n="ui.analyze"></button>
+      </div>
+    </aside>
+
+    <!-- ===== CENTRE: the case list and nothing else ===== -->
+    <main class="main">
+
+      <div class="main-head">
+        <div class="metrics" id="statRow">
+          <div class="metric"><span class="metric-v" id="statTotal">0</span><span class="metric-l" data-i18n="ui.statCases"></span></div>
+          <div class="metric metric-hi"><span class="metric-v" id="statHigh">0</span><span class="metric-l" data-i18n="ui.statHigh"></span></div>
+          <div class="metric"><span class="metric-v" id="statConds">0</span><span class="metric-l" data-i18n="ui.statConditions"></span></div>
+          <div class="metric"><span class="metric-v" id="statJoins">0</span><span class="metric-l" data-i18n="ui.statJoins"></span></div>
+          <div class="metric"><span class="metric-v" id="statTables">0</span><span class="metric-l" data-i18n="ui.statTables"></span></div>
+        </div>
+        <div class="main-head-actions">
+          <div class="menu-wrap">
+            <button id="btnExport" class="t-btn" aria-expanded="false" aria-haspopup="true">
+              <span data-i18n="ui.export"></span><span class="caret">▾</span>
+            </button>
+            <div class="menu" id="exportMenu" hidden>
+              <button id="btnCsv" disabled><span class="i">📄</span><span data-i18n="ui.menuCsv"></span><small>.csv</small></button>
+              <button id="btnJson" disabled><span class="i">🧾</span><span data-i18n="ui.menuJson"></span><small>.json</small></button>
+              <button id="btnCopyJson" disabled><span class="i">📋</span><span data-i18n="ui.menuCopyJson"></span></button>
+              <hr />
+              <button id="btnDataCsv" disabled><span class="i">🗃</span><span data-i18n="ui.menuDataCsv"></span><small data-i18n="ui.menuManyCsv"></small></button>
+              <button id="btnVerifySql" disabled><span class="i">✅</span><span data-i18n="ui.menuVerifySql"></span><small>.sql</small></button>
+            </div>
           </div>
-          <div id="valuesBody"></div>
-        </div>
-      </details>
-
-      <details class="card panel" id="analysisCard" hidden>
-        <summary class="panel-head">
-          <h3 data-i18n="ui.whatParsed"></h3>
-          <span class="panel-sum" id="analysisSummary"></span>
-        </summary>
-        <div class="panel-body"><div id="analysisBody"></div></div>
-      </details>
-
-    </section>
-
-    <!-- ===== RIGHT: results ===== -->
-    <section class="pane pane-results">
-
-      <div class="results-head">
-        <div class="stat-row" id="statRow">
-          <div class="stat"><span class="stat-num" id="statTotal">0</span><span class="stat-lbl" data-i18n="ui.statCases"></span></div>
-          <div class="stat"><span class="stat-num" id="statHigh">0</span><span class="stat-lbl" data-i18n="ui.statHigh"></span></div>
-          <div class="stat"><span class="stat-num" id="statConds">0</span><span class="stat-lbl" data-i18n="ui.statConditions"></span></div>
-          <div class="stat"><span class="stat-num" id="statJoins">0</span><span class="stat-lbl" data-i18n="ui.statJoins"></span></div>
-          <div class="stat"><span class="stat-num" id="statTables">0</span><span class="stat-lbl" data-i18n="ui.statTables"></span></div>
-        </div>
-        <div class="export-row">
-          <button id="btnCsv" class="t-btn" data-i18n="ui.csv" disabled></button>
-          <button id="btnJson" class="t-btn" data-i18n="ui.json" disabled></button>
-          <button id="btnCopyJson" class="t-btn" data-i18n="ui.copyJson" disabled></button>
-          <button id="btnDataCsv" class="t-btn" data-i18n="dg.exportCsv" disabled></button>
-          <button id="btnVerifySql" class="t-btn" data-i18n="dg.exportVerify" disabled></button>
+          <button id="btnInsp" class="t-btn t-btn-icon" data-i18n-title="ui.inspToggle">◧</button>
         </div>
       </div>
 
-      <details class="strip" id="diffPanel" hidden open>
-        <summary class="panel-head">
-          <span class="panel-title" data-i18n="ui.diff"></span>
-          <span class="panel-sum" id="diffSummary"></span>
-        </summary>
-        <div class="panel-body" id="diffBody"></div>
-      </details>
-
-      <details class="strip" id="findingsPanel" hidden>
-        <summary class="panel-head">
-          <span class="panel-title" data-i18n="ui.findings"></span>
-          <span class="panel-sum" id="findingsSummary"></span>
-        </summary>
-        <div class="panel-body findings" id="findings"></div>
-      </details>
-
-      <details class="strip" id="coveragePanel" hidden>
-        <summary class="panel-head">
-          <span class="panel-title" data-i18n="ui.coverage"></span>
-          <span class="panel-sum" id="coverageSummary"></span>
-        </summary>
-        <div class="panel-body coverage" id="coverage"></div>
-      </details>
-
-      <!-- Compare mode only: cases from the "before" query whose source
-           condition/join/etc. no longer exists in the "after" query. -->
-      <details class="strip" id="stalePanel" hidden>
-        <summary class="panel-head">
-          <span class="panel-title" data-i18n="ui.stale"></span>
-          <span class="panel-sum" id="staleSummary"></span>
-        </summary>
-        <div class="panel-body" id="staleBody"></div>
-      </details>
-
-      <div class="filter-bar">
-        <div class="pill-row" id="techFilter"></div>
-        <span class="helper data-hint" data-i18n="dg.dataHint"></span>
-        <div class="filter-right">
-          <select id="prioFilter" class="mini-select">
-            <option value="" data-i18n="ui.allPriorities"></option>
-            <option value="High" data-i18n="ui.highOnly"></option>
-            <option value="Medium" data-i18n="ui.mediumOnly"></option>
-            <option value="Low" data-i18n="ui.lowOnly"></option>
-          </select>
-          <input type="search" id="searchBox" class="search" data-i18n-ph="ui.search" />
-        </div>
+      <!-- Compare mode only: three clickable buckets over the same cases the
+           list shows. Two of them filter it; the third opens the stale panel,
+           because those cases are not in the list to be filtered to. -->
+      <div class="triage" id="triage" hidden>
+        <button type="button" class="tri tri-changed" data-tri="changed">
+          <span class="tri-v" id="triChangedN">0</span>
+          <span class="tri-tx"><span class="tri-t" data-i18n="ui.impactChanged"></span><span class="tri-d" data-i18n="ui.impactChangedTip"></span></span>
+        </button>
+        <button type="button" class="tri tri-unrelated" data-tri="unrelated">
+          <span class="tri-v" id="triUnrelatedN">0</span>
+          <span class="tri-tx"><span class="tri-t" data-i18n="ui.impactUnrelated"></span><span class="tri-d" data-i18n="ui.impactUnrelatedTip"></span></span>
+        </button>
+        <button type="button" class="tri tri-stale" data-tri="stale">
+          <span class="tri-v" id="triStaleN">0</span>
+          <span class="tri-tx"><span class="tri-t" data-i18n="ui.impactStale"></span><span class="tri-d" data-i18n="ui.impactStaleTip"></span></span>
+        </button>
       </div>
 
-      <div class="filter-bar filter-bar-2">
-        <div class="pill-row" id="impactFilter" hidden></div>
-        <div class="filter-right">
-          <select id="clauseFilter" class="mini-select">
-            <option value="" data-i18n="ui.allClauses"></option>
-          </select>
-          <select id="columnFilter" class="mini-select">
-            <option value="" data-i18n="ui.allColumns"></option>
-          </select>
-          <label class="check-row check-row-inline">
-            <input type="checkbox" id="fixtureFilter" />
-            <span data-i18n="ui.onlyWithFixture"></span>
-          </label>
+      <!-- The strips that used to sit above the table, as one collapsible
+           tabbed block of bounded height. -->
+      <section class="insight" id="insight" hidden>
+        <div class="insight-tabs" id="insightTabs">
+          <button type="button" class="itab" data-it="diff" hidden>
+            <span class="dot dot-chg"></span><span data-i18n="ui.diff"></span><span class="itab-n" id="itabDiffN"></span>
+          </button>
+          <button type="button" class="itab" data-it="findings" hidden>
+            <span class="dot" id="findingsDot"></span><span data-i18n="ui.findings"></span><span class="itab-n" id="itabFindingsN"></span>
+          </button>
+          <button type="button" class="itab" data-it="coverage" hidden>
+            <span class="dot dot-ok"></span><span data-i18n="ui.coverage"></span><span class="itab-n" id="itabCoverageN"></span>
+          </button>
+          <button type="button" class="itab" data-it="stale" hidden>
+            <span class="dot dot-err"></span><span data-i18n="ui.stale"></span><span class="itab-n" id="itabStaleN"></span>
+          </button>
+          <button type="button" class="itab" data-it="analysis" hidden>
+            <span class="dot"></span><span data-i18n="ui.whatParsed"></span>
+          </button>
+          <button id="btnInsight" class="t-btn t-btn-icon t-btn-ghost collapse" data-i18n-title="ui.insightToggle">▾</button>
+        </div>
+        <div class="insight-body" id="insightBody">
+          <div class="insight-pane" id="paneDiff" hidden><div id="diffBody"></div></div>
+          <div class="insight-pane" id="paneFindings" hidden><div class="findings" id="findings"></div></div>
+          <div class="insight-pane" id="paneCoverage" hidden><div class="coverage" id="coverage"></div></div>
+          <div class="insight-pane" id="paneStale" hidden>
+            <p class="helper" data-i18n="ui.staleHint"></p>
+            <div id="staleBody"></div>
+          </div>
+          <div class="insight-pane" id="paneAnalysis" hidden><div id="analysisBody"></div></div>
+        </div>
+      </section>
+
+      <!-- Docked: this is the one band worth keeping on screen while
+           scrolling a long list, so it sticks and the rest scrolls past. -->
+      <div class="cmdbar-dock" id="cmdbarDock">
+      <div class="cmdbar" id="cmdbar">
+        <div class="cmd-row">
+          <div class="searchbox">
+            <span class="mag">🔍</span>
+            <input type="search" id="searchBox" class="search" data-i18n-ph="ui.search" />
+          </div>
+          <div class="cmd-actions">
+            <div class="menu-wrap">
+              <button id="btnFilters" class="t-btn" aria-expanded="false" aria-haspopup="true">
+                <span data-i18n="ui.filters"></span><span class="filter-count" id="filterCount" hidden>0</span>
+              </button>
+              <div class="popover" id="filterPop" hidden>
+                <div class="fl">
+                  <label for="prioFilter" data-i18n="ui.colPrio"></label>
+                  <select id="prioFilter" class="mini-select">
+                    <option value="" data-i18n="ui.allPriorities"></option>
+                    <option value="High" data-i18n="ui.highOnly"></option>
+                    <option value="Medium" data-i18n="ui.mediumOnly"></option>
+                    <option value="Low" data-i18n="ui.lowOnly"></option>
+                  </select>
+                </div>
+                <div class="fl">
+                  <label for="clauseFilter" data-i18n="ui.filterClause"></label>
+                  <select id="clauseFilter" class="mini-select">
+                    <option value="" data-i18n="ui.allClauses"></option>
+                  </select>
+                </div>
+                <div class="fl">
+                  <label for="columnFilter" data-i18n="ui.filterColumn"></label>
+                  <select id="columnFilter" class="mini-select">
+                    <option value="" data-i18n="ui.allColumns"></option>
+                  </select>
+                </div>
+                <label class="check-row check-row-inline">
+                  <input type="checkbox" id="fixtureFilter" />
+                  <span data-i18n="ui.onlyWithFixture"></span>
+                </label>
+                <div class="pop-foot">
+                  <button id="btnClearFilters" class="t-btn t-btn-sm" data-i18n="ui.clearFilters"></button>
+                  <button id="btnCloseFilters" class="t-btn t-btn-sm t-btn-primary" data-i18n="ui.filtersDone"></button>
+                </div>
+              </div>
+            </div>
+            <div class="seg" id="density">
+              <button type="button" data-d="full" class="active" data-i18n="ui.densityFull"></button>
+              <button type="button" data-d="dense" data-i18n="ui.densityDense"></button>
+            </div>
+          </div>
+        </div>
+        <div class="cmd-sep"></div>
+        <div class="cmd-row cmd-row-techs">
+          <span class="cmd-lbl" data-i18n="ui.colTech"></span>
+          <div class="pill-row" id="techFilter"></div>
         </div>
       </div>
+      </div>
 
-      <div class="table-wrap">
-        <table class="case-table" id="caseTable">
-          <thead>
-            <tr>
-              <th class="col-id" data-i18n="ui.colId"></th>
-              <th class="col-tech" data-i18n="ui.colTech"></th>
-              <th class="col-target" data-i18n="ui.colTarget"></th>
-              <th class="col-title" data-i18n="ui.colCase"></th>
-              <th class="col-data" data-i18n="ui.colData"></th>
-              <th class="col-exp" data-i18n="ui.colExpected"></th>
-              <th class="col-prio" data-i18n="ui.colPrio"></th>
-            </tr>
-          </thead>
-          <tbody id="caseBody"></tbody>
-        </table>
+      <div class="listwrap" id="listwrap">
+        <div class="caselist" id="caseList"></div>
         <div class="empty-state" id="emptyState">
           <div class="empty-icon">🧪</div>
           <div class="empty-title"></div>
           <div class="empty-sub"></div>
+          <div class="empty-steps" id="emptySteps">
+            <span class="step"><b>1</b><span data-i18n="ui.step1"></span></span>
+            <span class="step"><b>2</b><span data-i18n="ui.step2"></span></span>
+            <span class="step"><b>3</b><span data-i18n="ui.step3"></span></span>
+          </div>
+          <button id="btnEmptyClear" class="t-btn t-btn-sm" data-i18n="ui.clearFilters" hidden></button>
         </div>
       </div>
 
-    </section>
-  </main>
+    </main>
 
+    <!-- ===== RIGHT: one case at a time ===== -->
+    <aside class="insp" id="insp"><div id="inspInner"></div></aside>
+
+  </div>
   <!-- Help overlay -->
   <div class="modal-backdrop" id="helpModal" hidden>
     <div class="modal">
@@ -351,6 +413,33 @@ HAVING COUNT(o.id) > 3
           <li>Expected results describe what the SQL semantics require, not what your data currently contains.</li>
         </ul>
       </div>
+    </div>
+  </div>
+
+
+  <!-- The schema as a picture: tables as boxes, foreign keys as lines between
+       them, on a surface that pans, zooms and lets a box be dragged out of the
+       way. Everything in it comes from the same inference the Schema pane
+       lists; this is the same content read as a shape instead of a list. -->
+  <div class="modal-backdrop" id="diagramModal" hidden>
+    <div class="modal modal-diagram">
+      <div class="modal-head">
+        <h3 data-i18n="dg.diagramTitle"></h3>
+        <div class="dgm-tools">
+          <span class="dgm-count" id="dgCount"></span>
+          <button id="btnDgZoomOut" class="t-btn t-btn-sm t-btn-icon" data-i18n-title="dg.zoomOut">−</button>
+          <span class="dgm-zoom" id="dgZoom">100%</span>
+          <button id="btnDgZoomIn" class="t-btn t-btn-sm t-btn-icon" data-i18n-title="dg.zoomIn">+</button>
+          <button id="btnDgFit" class="t-btn t-btn-sm" data-i18n-title="dg.fitTip"><span data-i18n="dg.fit"></span></button>
+          <button id="btnDgClose" class="t-btn t-btn-sm t-btn-icon" data-i18n-title="dg.close">✕</button>
+        </div>
+      </div>
+      <div class="dgm-stage" id="dgStage">
+        <div class="dgm-world" id="dgWorld">
+          <svg class="dgm-links" id="dgLinks" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
+      <p class="helper dgm-hint" id="dgHint"></p>
     </div>
   </div>
 

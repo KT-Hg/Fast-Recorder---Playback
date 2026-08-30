@@ -20,6 +20,7 @@ import { generateCases, generateComparison } from './generate.js';
 import { diffQueries } from './diff.js';
 import { toCsv, toJson } from './export.js';
 import { inferSchema, buildAllFixtures, fixturesToCsv, valueSlots } from './datagen.js';
+import { planDiagram } from './diagram.js';
 import * as valuebook from './valuebook.js';
 import { setLang, missingKeys, clearMissingKeys, LANGUAGES } from './i18n.js';
 import { EN } from './i18n/en.js';
@@ -251,6 +252,24 @@ const JOINED = `SELECT u.id, u.name, COUNT(o.id) AS orders
     JSON.stringify(fk?.fk));
   check('type inferred from the comparison literal', users?.byName.get('age')?.type === 'integer',
     users?.byName.get('age')?.type);
+
+  // The diagram is a second reading of the same inference, so it is worth
+  // asserting that it puts the child to the right of the parent and finds the
+  // one link there is — a diagram that silently draws nothing looks like a
+  // query with no joins rather than like a bug.
+  const plan = planDiagram(schema.tables);
+  const nodeFor = (name) => plan.nodes.find(n => n.key === name);
+  check('diagram planned a node per table', plan.nodes.length === schema.tables.length,
+    `${plan.nodes.length}/${schema.tables.length}`);
+  check('the table pointed at sits in the first column', nodeFor('users')?.column === 0,
+    String(nodeFor('users')?.column));
+  check('the table holding the key sits one column right', nodeFor('orders')?.column === 1,
+    String(nodeFor('orders')?.column));
+  check('diagram found the join as a link', plan.links.length === 1, JSON.stringify(plan.links));
+  check('the link runs from the foreign key to the primary key',
+    plan.links[0]?.from.table === 'orders' && plan.links[0]?.from.column === 'user_id'
+    && plan.links[0]?.to.table === 'users' && plan.links[0]?.to.column === 'id',
+    JSON.stringify(plan.links[0]));
 
   const { fixtures } = buildAllFixtures(r.model, r.cases);
   check('every case got a fixture', fixtures.size === r.cases.length, `${fixtures.size}/${r.cases.length}`);
@@ -648,6 +667,37 @@ SHAPES.forEach((sql, i) => {
     check(`shape ${i + 1} vs ${(i + 1) % SHAPES.length + 1}: generateComparison does not throw`, false, err.message);
   }
 });
+
+// ---------------------------------------------------------------------
+// The diagram planner on its own: no schema, no links, and a ring of keys
+// ---------------------------------------------------------------------
+
+{
+  check('diagram plan of nothing is empty',
+    planDiagram([]).nodes.length === 0 && planDiagram(undefined).links.length === 0);
+
+  const single = inferSchema(generateCases('SELECT * FROM bookings WHERE guests >= 2').model);
+  const lone = planDiagram(single.tables);
+  check('one table plans one node and no link', lone.nodes.length === 1 && lone.links.length === 0,
+    `${lone.nodes.length} nodes, ${lone.links.length} links`);
+
+  // Two tables each holding the other's key is not something the inference
+  // produces today, but the walk that ranks the columns must not follow the
+  // ring if it ever does.
+  const a = { name: 'a', columns: [{ name: 'b_id', fk: { table: 'b', column: 'id' } }, { name: 'id', isPk: true }] };
+  const b = { name: 'b', columns: [{ name: 'a_id', fk: { table: 'a', column: 'id' } }, { name: 'id', isPk: true }] };
+  const ring = planDiagram([a, b]);
+  check('a ring of foreign keys still plans', ring.nodes.length === 2 && ring.links.length === 2,
+    `${ring.nodes.length} nodes, ${ring.links.length} links`);
+  check('a ring lands both tables in a real column',
+    ring.nodes.every(n => Number.isInteger(n.column) && n.column >= 0),
+    JSON.stringify(ring.nodes.map(n => n.column)));
+
+  // A key naming a table the query never mentions is dropped rather than drawn
+  // into a box that is not there.
+  const orphan = planDiagram([{ name: 'a', columns: [{ name: 'x_id', fk: { table: 'nowhere', column: 'id' } }] }]);
+  check('a key pointing outside the query draws no link', orphan.links.length === 0);
+}
 
 // ---------------------------------------------------------------------
 
