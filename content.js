@@ -1354,9 +1354,14 @@ function _fireVisibleCapture(crop, fromHotkey = false) {
   }));
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'START_VISIBLE_COUNTDOWN') {
     _startVisibleCountdown(msg.seconds || 3, !!msg.crop);
+    // The ack is what tells the worker the pill is up and this frame owns the
+    // count — without an answer it counts down on the toolbar badge instead and
+    // takes the shot itself, which is what has to happen on every tab this
+    // script is not injected into.
+    sendResponse({ ok: true });
   } else if (msg.type === 'FULL_CAPTURE_STATE') {
     _setFullCaptureActive(!!msg.active);
   }

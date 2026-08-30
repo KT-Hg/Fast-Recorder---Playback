@@ -561,6 +561,28 @@ Seven capture modes — all support optional watermark overlay and crop/edit:
 | Element | CDP + `getBoundingClientRect` | Exact element bounds |
 | Window | `desktopCapture` + `getUserMedia` | A whole OS window, browser chrome and all |
 
+### Countdown before a visible capture
+
+*Settings → Countdown* delays the visible capture by 3, 5 or 10 seconds so a
+dropdown or hover state can be opened before the shot. The **service worker owns
+the timer**, and only delegates the display:
+
+- On an http/https/file tab the countdown pill is drawn by `content.js`, which
+  acks the request and fires the capture itself when the count ends — cancellable
+  with the pill's ✕ or **Esc**. The request is pinned to `frameId: 0`, so a page
+  full of iframes gets one countdown and one shot, not one per frame.
+- **On every other tab** — this extension's own pages (`sqlcases.html`,
+  `editor.html`), `chrome://`, the Web Store — there is no content script to ask,
+  because `content_scripts.matches` does not cover those schemes. The count then
+  runs on the **toolbar badge** and the worker takes the shot itself, reporting the
+  result as a notification since the popup is gone by then. The same fallback
+  covers an ordinary page whose content script was never injected (one that was
+  already open when the extension was installed or reloaded).
+
+The capture itself always worked on those tabs; before the worker owned the
+timer, only the countdown message did not, so switching the countdown on made the
+button appear to do nothing at all there.
+
 ### Window capture
 
 Every other mode goes through the page renderer, which by design sees nothing

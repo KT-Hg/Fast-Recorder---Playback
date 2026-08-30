@@ -10,7 +10,7 @@
  * corruption when two captures race on the same tab.
  */
 
-import { tabMsg, sendCaptureNotification } from './utils.js';
+import { tabMsg, sendCaptureNotification, updateBadge } from './utils.js';
 import { isSessionOpen, markSessionClosed } from './cdp-session.js';
 import { ensureLockState, notifyLocked } from './update-check.js';
 
@@ -1337,6 +1337,53 @@ async function _takeElementScreenshot(tabId, selector, saveMode, prefix, crop, r
   }
 }
 
+/* ── Pre-capture countdown ──────────────────────────────────────────
+ * The countdown pill is drawn by content.js, which manifest.json only injects
+ * into http, https and file tabs. The popup used to message that script itself,
+ * so on any other tab — this extension's own pages (sqlcases.html, editor.html),
+ * chrome://, the Web Store — the message had no receiving end and the capture
+ * never happened: with the countdown off the same button worked, with it on
+ * nothing at all occurred.
+ *
+ * So the worker owns the countdown and only delegates the drawing. The page
+ * draws the pill and fires the shot itself when it can; when it cannot, the
+ * count runs on the toolbar badge — the same surface window capture already
+ * counts down on, and the one piece of UI every tab has.
+ * ────────────────────────────────────────────────────────────────── */
+
+const COUNTDOWN_BADGE_COLOR = '#3b82f6';
+
+const _wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+/** Count down on the toolbar badge, then hand the badge back to REC/playback. */
+async function _badgeCountdown(seconds) {
+  for (let left = seconds; left > 0; left--) {
+    chrome.action.setBadgeText({ text: String(left) });
+    chrome.action.setBadgeBackgroundColor({ color: COUNTDOWN_BADGE_COLOR });
+    await _wait(1000);
+  }
+  // Never clear the badge directly: a running recording's REC badge has to come
+  // back, and only the worker's own state knows what belongs there.
+  updateBadge();
+}
+
+/**
+ * Run the countdown before a visible capture.
+ *
+ * @returns {Promise<boolean>} true when the caller still owes the shot; false
+ *   when the page took the countdown over and will fire its own TAKE_SCREENSHOT.
+ */
+async function _runCountdown(tabId, seconds, crop) {
+  // A short timeout, because this is a liveness probe as much as a request:
+  // content.js answers immediately, and a tab without it fails immediately too.
+  // Only a page that is present but wedged waits out the timeout, and falling
+  // back to the badge is the right answer there as well.
+  const res = await tabMsg(tabId, { type: 'START_VISIBLE_COUNTDOWN', seconds, crop }, 1500);
+  if (res && res.ok) return false;
+  await _badgeCountdown(seconds);
+  return true;
+}
+
 /* ── Screenshot Message Handler ─────────────────────────────────────────────── */
 
 const FULL_TYPES   = ['TAKE_SCREENSHOT_FULL', 'TAKE_SCREENSHOT_SCROLL_V', 'TAKE_SCREENSHOT_SCROLL_H'];
@@ -1361,6 +1408,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function handleScreenshotRequest(request, sender, sendResponse) {
   const tabId = request.tabId || sender.tab?.id;
   if (!tabId) { sendResponse({ error: 'No tab ID' }); return; }
+
+  if (request.type === 'TAKE_SCREENSHOT' && request.countdown > 0) {
+    // Answered now rather than in `seconds` time: the popup closes the moment it
+    // asks for a countdown, so nothing is waiting for the capture's own result.
+    sendResponse({ countdown: request.countdown });
+    _runCountdown(tabId, request.countdown, !!request.crop).then((owed) => {
+      if (!owed) return; // the page is running the count and will fire the shot
+      // fromHotkey, because it means the same thing here: the popup is gone, so
+      // a notification is the only feedback the badge countdown can leave behind.
+      handleScreenshotRequest(
+        { ...request, countdown: 0, fromHotkey: true }, sender, () => {},
+      );
+    });
+    return;
+  }
 
   if (request.type === 'TAKE_SCREENSHOT_ELEMENT') {
     chrome.storage.sync.get(['screenshotSaveMode', 'screenshotPrefix'], (settings) => {

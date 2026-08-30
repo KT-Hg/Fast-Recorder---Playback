@@ -16,9 +16,9 @@ import { updateRangeFill } from './settings.js';
 
 /**
  * Dispatch a screenshot capture message for the active tab.
- * For the visible screenshot type, checks whether a countdown overlay should
- * be shown in the page first (content script handles the timer, then triggers
- * the actual capture via its own message after the countdown).
+ * For the visible screenshot type, a countdown is requested by handing the
+ * capture to the background with a `countdown` field; the background runs the
+ * timer and takes the shot when it ends.
  */
 function takeScreenshotWithCrop(msgType, crop = false) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -29,18 +29,24 @@ function takeScreenshotWithCrop(msgType, crop = false) {
     if (msgType === 'TAKE_SCREENSHOT') {
       chrome.storage.local.get(['screenshotCountdownEnabled', 'screenshotCountdownSeconds'], (res) => {
         if (res.screenshotCountdownEnabled) {
-          // frameId: 0 pins this to the main frame. content.js runs in every
-          // frame (manifest all_frames: true); an unscoped chrome.tabs.sendMessage
-          // fans this out to every matching iframe on the page too (ads, embeds,
-          // chat widgets…), and each frame independently runs its own countdown
-          // and fires its own TAKE_SCREENSHOT at the end — one click, one
-          // countdown UI, but a capture per frame. See bg/utils.js's tabMsg,
-          // which pins to frameId 0 for the same reason.
-          chrome.tabs.sendMessage(tabId, {
-            type: 'START_VISIBLE_COUNTDOWN',
-            seconds: res.screenshotCountdownSeconds || 3,
+          // The countdown used to be started from here, by messaging the page's
+          // content script directly. That script is only injected into http,
+          // https and file tabs (manifest content_scripts.matches), so on every
+          // other tab — the extension's own pages, chrome://, the Web Store —
+          // the message had no receiving end and the click did nothing at all:
+          // no countdown, no shot, no error. Turning the countdown on therefore
+          // looked like it broke capture on those pages.
+          //
+          // The background owns the countdown now: it draws the pill in the page
+          // when the page can draw one and counts down on the toolbar badge when
+          // it cannot, then takes the shot itself. See _runCountdown in
+          // bg/screenshot.js.
+          chrome.runtime.sendMessage({
+            type: msgType,
+            tabId,
             crop: !!crop,
-          }, { frameId: 0 });
+            countdown: res.screenshotCountdownSeconds || 3,
+          }, () => { void chrome.runtime.lastError; });
           window.close();
           return;
         }
