@@ -399,7 +399,14 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
     const dist=Math.hypot(x2-x1,y2-y1);
     if (dist<2) return;
     const ang=Math.atan2(y2-y1,x2-x1), hl=Math.min(dist*.35,Math.max(lw*5,14));
-    tCtx.beginPath(); tCtx.moveTo(x1,y1); tCtx.lineTo(x2,y2); tCtx.stroke();
+    // Stop the shaft right at the arrowhead's base (not the tip) so its round
+    // line-cap — which extends lw/2 past wherever it ends, per the round lineCap
+    // set on this context — bulges forward into the triangle instead of either
+    // poking out past the point (ends at the tip) or leaving a gap (pulled back
+    // by the full hl, which overshoots the base).
+    const baseDepth=hl*Math.cos(Math.PI/6);
+    const shaftX=x2-baseDepth*Math.cos(ang), shaftY=y2-baseDepth*Math.sin(ang);
+    tCtx.beginPath(); tCtx.moveTo(x1,y1); tCtx.lineTo(shaftX,shaftY); tCtx.stroke();
     tCtx.beginPath();
     tCtx.moveTo(x2,y2);
     tCtx.lineTo(x2-hl*Math.cos(ang-Math.PI/6), y2-hl*Math.sin(ang-Math.PI/6));

@@ -1668,6 +1668,10 @@ function applyLayout() {
   el.app.classList.toggle('rail-off', !railOpen);
   el.app.classList.toggle('insp-off', !inspOpen);
   el.app.classList.toggle('insp-open', inspOpen && !!selectedId);
+  // Mirrored onto <body> too: the topbar sits above .app, not inside it, and
+  // needs the same closed-panel gutter (see .topbar rules in sqlcases.css).
+  document.body.classList.toggle('rail-off', !railOpen);
+  document.body.classList.toggle('insp-off', !inspOpen);
 
   const existing = el.app.querySelector('.rail-reopen');
   if (existing) existing.remove();

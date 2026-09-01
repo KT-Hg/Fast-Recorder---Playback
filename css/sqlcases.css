@@ -302,6 +302,7 @@ span[data-i18n-alt] { display: inline-block; }
   padding: 10px 14px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
+  transition: padding 0.18s ease;
 }
 .topbar-title { font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
 .topbar-sub {
@@ -326,6 +327,14 @@ span[data-i18n-alt] { display: inline-block; }
 .app.rail-off { grid-template-columns: 0 minmax(0, 1fr) var(--insp); }
 .app.insp-off { grid-template-columns: var(--rail) minmax(0, 1fr) 0; }
 .app.rail-off.insp-off { grid-template-columns: 0 minmax(0, 1fr) 0; }
+/* A closed panel's border used to frame that edge of the content; without
+   it the topbar and case list run straight into the window edge. Each side
+   gets its own gutter, keyed only on that side's own toggle — so opening
+   the other panel never shrinks it back to 0. ui.js mirrors rail-off/
+   insp-off onto <body> too, since the topbar sits above .app rather than
+   inside it. */
+body.rail-off .topbar, .app.rail-off .main { padding-left: 24px; }
+body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
 
 /* ===== Left rail ===== */
 .rail {
@@ -705,6 +714,7 @@ span[data-i18n-alt] { display: inline-block; }
   background: var(--bg);
   overflow-y: auto;
   overflow-x: hidden;
+  transition: padding 0.18s ease;
 }
 .main-head {
   flex: 0 0 auto;
