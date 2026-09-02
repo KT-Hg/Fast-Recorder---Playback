@@ -145,6 +145,29 @@ textarea::placeholder {
   font-size: 12px;
 }
 
+/* Every plain <textarea> (upload filenames, manual step value, highlight
+   notes…) is otherwise resizable both ways by default, which can drag it
+   wider than this fixed-width popup, and its drag corner is a native widget
+   color-scheme doesn't reach — Chromium paints it in light chrome no matter
+   the theme, so it sits on the dark field as a bright square. Cap the
+   direction and match the corner to the field, same fix as sqlcases.css. */
+textarea {
+  resize: vertical;
+}
+textarea::-webkit-resizer {
+  background: var(--card);
+}
+
+/* Checkbox/radio tick color: color-scheme already makes these render as dark
+   controls, but without this they tick in the browser's generic blue rather
+   than the extension's own accent — only one radio group (.cond-match-label,
+   below) had this, so every other checkbox/radio in the popup was a shade
+   off. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--primary);
+}
+
 input:focus,
 select:focus,
 textarea:focus {

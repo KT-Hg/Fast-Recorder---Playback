@@ -1166,7 +1166,15 @@ function showConfirm(msg, onConfirm, { title = 'Confirm', danger = false, okLabe
 
   /* === 16. Keyboard handler === */
   document.addEventListener("keydown", e => {
-    if (textInput.style.display === "block") return;
+    // Guard every text/number field on the right panel (Width, Height, Stamp
+    // text, the Stamp "Type" select, sliders, …) the same way the canvas text
+    // tool's own #textInput is guarded — otherwise a bare-key shortcut like
+    // "v" (flip vertical) or "t" (Text tool) fires while the user is just
+    // typing into a field.
+    const ae = document.activeElement;
+    const typingInField = ae && ae !== document.body &&
+      (["INPUT", "TEXTAREA", "SELECT"].includes(ae.tagName) || ae.isContentEditable);
+    if (typingInField) return;
 
     /* === Shortcut capture mode === */
     if (capturingId !== null) {

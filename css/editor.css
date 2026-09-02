@@ -27,9 +27,16 @@
   --save-text: #93c5fd;
   --save-hover-bg: #1d4ed8;
   --modal-backdrop: rgba(0, 0, 0, 0.52);
+  /* Tells the browser to paint its own native widgets (checkbox tick, color
+     picker swatch, number spinner, select arrow…) in dark chrome instead of
+     the OS light default. Without this every native control on this page
+     renders as a light box glued onto the dark theme — popup.html and
+     sqlcases.html already set this per theme; the editor never did. */
+  color-scheme: dark;
 }
 
 body.light {
+  color-scheme: light;
   --bg-primary: #f8fafc;
   --bg-secondary: #e2e8f0;
   --bg-tertiary: #cbd5e1;
@@ -389,6 +396,11 @@ body {
   cursor: pointer;
 }
 
+/* "Keep ratio" in the Resize tab — the only native checkbox on this page.
+   color-scheme (above) makes it render in dark chrome; this just ties its
+   tick to the panel's own accent instead of the browser's generic blue. */
+.rp-row input[type="checkbox"] { accent-color: var(--accent); }
+
 .rp-input-num, .rp-input-text, .rp-select {
   width: 100%;
   padding: 4px 6px;
@@ -398,6 +410,21 @@ body {
   color: var(--text-primary);
   font-size: 11px;
   font-family: system-ui;
+}
+
+/* The browser's native up/down spinner on <input type=number> ignores the
+   dark theme and the input's own border-radius, so it renders as a
+   mismatched light box glued to the field (see rsWidth/rsHeight). Drop it,
+   same as the popup already does for its own number inputs. */
+.rp-input-num {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.rp-input-num::-webkit-outer-spin-button,
+.rp-input-num::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
 }
 
 .rp-btn-row { display: flex; gap: 5px; margin-top: 2px; }

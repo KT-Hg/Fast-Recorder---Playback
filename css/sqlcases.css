@@ -467,6 +467,13 @@ body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
   background: var(--code-bg);
   color: var(--code-text);
 }
+/* The drag-to-resize corner is its own native widget — the page's
+   color-scheme: dark (above) covers checkboxes/selects/spinners but
+   Chromium still paints this one in its light default, so it sits on the
+   dark textarea as a bright square. Match it to the field instead. */
+#sqlInput::-webkit-resizer, #sqlInputAfter::-webkit-resizer {
+  background: var(--code-bg);
+}
 #sqlAfterCard { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 #sqlInputAfter { min-height: 120px; }
 .rail-pane > .parse-errors, .rail-pane > .pane-head, .rail-pane > .pane-label { flex: 0 0 auto; }
