@@ -13,7 +13,7 @@ import { columnLabel } from '../values.js';
 import { t } from '../i18n.js';
 import {
   caseSourceFromCondition, caseSourceFromJoin, caseSourceFromOrderBy,
-  groupByKey, aggregateKey, writeKey
+  groupByKey, aggregateKey, writeKey, joinKey
 } from '../diff.js';
 
 function baseCase(fields) {
@@ -112,6 +112,80 @@ function joinCases(model) {
       );
     }
   });
+
+  return cases;
+}
+
+/**
+ * Cases that only exist once a query chains three or more tables — joinCases()
+ * above tests each join in isolation, but a chain has two failure modes none
+ * of those show on their own: a middle table with no match can cut the chain
+ * well before the last join is even reached, and a fan-out that reads as a
+ * modest 1:n on any single join compounds multiplicatively across the whole
+ * chain.
+ *
+ * The chain is read off join order, not the ON conditions themselves — join i
+ * is treated as connecting to table i+1 in FROM order. That is how the large
+ * majority of real join chains are written even though SQL does not require
+ * it, and it is enough to generate a useful case without solving general join
+ * graph inference.
+ */
+function multiJoinChainCases(model) {
+  if (model.joins.length < 2) return [];
+
+  const cases = [];
+  const chain = [model.tables[0]?.label || '?', ...model.joins.map(j => j.rightLabel)];
+  const chainText = chain.join(' → ');
+  const group = `JOIN · ${chain.join(' ⋈ ')}`;
+  const sourceIds = model.joins.map(joinKey);
+  const isInnerish = j => j.joinType === 'INNER' || j.joinType === 'CROSS' || j.implicit;
+
+  const add = (title, data, expected, extra = {}) => cases.push(baseCase({
+    group, target: chainText, condition: chainText, title, data, expected,
+    priority: 'High', sourceIds, clause: 'JOIN',
+    ...extra
+  }));
+
+  // A middle join's index — not the first table, not the last — chosen so
+  // there is always at least one join both before and after it to compare.
+  const midJoinIdx = Math.min(Math.floor(model.joins.length / 2), model.joins.length - 2);
+  const midLabel = chain[midJoinIdx + 1];
+  const laterAllInner = model.joins.slice(midJoinIdx + 1).every(isInnerish);
+
+  add(
+    t('st.chainOrphan', { table: midLabel, n: chain.length }),
+    t('st.chainOrphanData', { chain: chainText, table: midLabel }),
+    laterAllInner ? t('st.chainOrphanBreaks', { table: midLabel }) : t('st.chainOrphanNulls', { table: midLabel }),
+    {
+      spec: { population: Object.fromEntries(chain.map(label => [label, label === midLabel ? 0 : 1])) },
+      notes: t('st.chainOrphanNote')
+    }
+  );
+
+  // Every join simultaneously 1:n — does the row count compound multiplicatively?
+  const hasInflatableAggregate = model.grouping.aggregates.some(
+    a => !NON_DUPLICATING.has(a.name) && !a.distinct
+  );
+  const fanoutRows = 3 ** model.joins.length;
+  add(
+    t('st.chainFanout', { n: chain.length }),
+    t('st.chainFanoutData', { chain: chainText }),
+    hasInflatableAggregate
+      ? t('st.chainFanoutInflated', { n: fanoutRows, aggs: model.grouping.aggregates.map(a => a.sql).join(', ') })
+      : t('st.chainFanoutExp', { n: fanoutRows }),
+    {
+      // The fixture builder gives each table its own flat N rows, all pointing
+      // at whichever single parent row it generated last — it does not fan a
+      // child table out per parent row. That reproduces one join's 1:n fine,
+      // but not two chained ones at once, so the gap is named explicitly
+      // rather than silently handing over a fixture the case text overstates.
+      spec: {
+        population: Object.fromEntries(chain.map((label, i) => [label, i === 0 ? 1 : 3])),
+        requires: [{ text: t('st.chainFanoutRequire', { n: fanoutRows }) }]
+      },
+      notes: hasInflatableAggregate ? t('st.chainFanoutNote') : ''
+    }
+  );
 
   return cases;
 }
@@ -474,6 +548,7 @@ export function generateStructure(model) {
   return [
     ...baselineCases(model, model.selectsStar),
     ...joinCases(model),
+    ...multiJoinChainCases(model),
     ...outerJoinFilterCases(model),
     ...groupingCases(model),
     ...pagingCases(model),

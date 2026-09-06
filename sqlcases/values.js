@@ -208,6 +208,30 @@ export function likeExamples(pattern) {
   return { match, noMatch: core ? t('val.valueWithout', { core }) : noMatch, anchored, core };
 }
 
+const ACCENT_MAP = {
+  a: 'á', e: 'é', i: 'í', o: 'ó', u: 'ú', y: 'ý',
+  A: 'Á', E: 'É', I: 'Í', O: 'Ó', U: 'Ú', Y: 'Ý'
+};
+
+/**
+ * Add a diacritic to the first plain Latin vowel in `s`, or `null` when there
+ * is none to accent.
+ *
+ * Used to build an accent-varied twin of a LIKE pattern's literal text — most
+ * collations used for Vietnamese data (e.g. `Vietnamese_CI_AI` in SQL Server,
+ * a `_vietnamese_ci` collation in MySQL) treat "nguyen" and "nguyễn" as equal;
+ * a binary or plain `_bin`/`_cs_as` one does not, and that difference is easy
+ * to miss until it silently drops rows a user would expect to match.
+ */
+export function accentVariant(s) {
+  if (typeof s !== 'string') return null;
+  for (let i = 0; i < s.length; i++) {
+    const mark = ACCENT_MAP[s[i]];
+    if (mark) return s.slice(0, i) + mark + s.slice(i + 1);
+  }
+  return null;
+}
+
 /** Quote a raw JS value the way it would appear in SQL. */
 export function quote(v) {
   if (v === null || v === undefined) return 'NULL';

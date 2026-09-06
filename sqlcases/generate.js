@@ -22,8 +22,8 @@ import {
 
 /** The four technique groups, in the order their cases are listed. */
 export const TECHNIQUES = [
-  { key: 'epbva', labelKey: 'tech.epbva', codes: ['EP', 'BVA'] },
-  { key: 'decision', labelKey: 'tech.decision', codes: ['Decision Table', 'MC/DC', 'Branch Coverage'] },
+  { key: 'epbva', labelKey: 'tech.epbva', codes: ['EP', 'BVA', 'EP+BVA'] },
+  { key: 'decision', labelKey: 'tech.decision', codes: ['Decision Table', 'Pairwise', 'MC/DC', 'Branch Coverage'] },
   { key: 'null3vl', labelKey: 'tech.null3vl', codes: ['NULL / 3VL'] },
   { key: 'structure', labelKey: 'tech.structure', codes: ['Structure'] }
 ];
@@ -33,9 +33,12 @@ export const DEFAULT_OPTIONS = {
   decision: true,
   null3vl: true,
   structure: true,
-  /** Above this many conditions the decision table switches to MC/DC. */
+  /** Above this many conditions the decision table switches to pairwise. */
   maxFullTable: 4,
-  /** 'auto' honours maxFullTable; 'full' forces the complete table. */
+  /** Above this many conditions ('auto' mode only) pairwise gives way to MC/DC. */
+  maxPairwise: 8,
+  /** 'auto' honours maxFullTable/maxPairwise; 'full' forces the complete
+   *  table; 'pairwise' forces pairwise (up to 12 conditions, else MC/DC). */
   mode: 'auto',
   /** Include ON-clause predicates that filter rather than just match keys. */
   includeJoinConditions: true,
@@ -49,6 +52,100 @@ function dedupeKey(c) {
   return [c.technique, c.group, c.title, c.data, c.expected]
     .map(s => String(s || '').trim().toLowerCase())
     .join('¦');
+}
+
+/**
+ * Two cases can agree on `group` + `data` + `expected` without agreeing on
+ * `technique` or `title` — most commonly EP's boundary-adjacent
+ * representative and BVA's own boundary triple landing on the exact same
+ * value (see the note in ep-bva.js's generateEpBva()), but the same
+ * coincidence can in principle happen between any two technique modules that
+ * end up probing the same column with the same value. `technique` is left
+ * out of this key on purpose — that is exactly the field that tells two
+ * *different* techniques apart, so keying on it would hide the overlap this
+ * function exists to find. (`dedupeKey` above still keys on it, for the
+ * separate job of dropping an exact duplicate a single technique produced
+ * twice.)
+ */
+function mergeKey(c) {
+  return [c.group, c.data, c.expected].map(s => String(s || '').trim().toLowerCase()).join('¦');
+}
+
+/** `TECHNIQUES` order, flattened to a code → rank lookup — reused by the
+ *  sort step below and by mergeCoincidentCases() to decide which technique's
+ *  case "leads" a merge. */
+function techRankMap() {
+  const rank = new Map();
+  TECHNIQUES.forEach((tech, ti) => tech.codes.forEach((code, ci) => rank.set(code, ti * 10 + ci)));
+  return rank;
+}
+
+/**
+ * Fold every group of cases that share a `mergeKey()` — i.e. would set up
+ * the identical fixture row and expect the identical outcome — into one case
+ * tagged with every technique that arrived at it (`technique: 'EP+BVA'`,
+ * or more codes joined the same way for a rarer 3-or-more-way coincidence).
+ * A group where every case already shares one `technique` is left alone —
+ * that is a same-technique coincidence, a different situation the plain
+ * `dedupeKey` exact-duplicate pass below already handles.
+ *
+ * Runs once, globally, over every technique's raw output (including CTE
+ * bodies, since `group` already carries the `CTE · name ·` prefix by this
+ * point) — so this is not specific to EP/BVA, it just happens to be the pair
+ * that coincides in practice today (see ep-bva.js).
+ */
+function mergeCoincidentCases(cases) {
+  const buckets = new Map();
+  cases.forEach(c => {
+    const key = mergeKey(c);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(c);
+  });
+
+  const rank = techRankMap();
+  const result = [];
+  buckets.forEach(bucket => {
+    const techniques = [...new Set(bucket.map(c => c.technique))];
+    if (techniques.length <= 1) { result.push(...bucket); return; }
+
+    const ordered = techniques.sort((a, b) => (rank.get(a) ?? 99) - (rank.get(b) ?? 99));
+    const byTechnique = new Map();
+    bucket.forEach(c => { if (!byTechnique.has(c.technique)) byTechnique.set(c.technique, c); });
+    const technique = ordered.join('+');
+
+    if (ordered.length === 2 && ordered[0] === 'EP' && ordered[1] === 'BVA') {
+      // The common case gets its own wording: BVA's phrasing already names
+      // the boundary precisely, so it leads; EP is credited in a note.
+      const ep = byTechnique.get('EP'), bva = byTechnique.get('BVA');
+      const notes = [...new Set([bva.notes, ep.notes, t('ep.mergedNote', { epTitle: ep.title })].filter(Boolean))]
+        .join(' ');
+      result.push({ ...bva, technique, title: t('ep.mergedTitle', { bvaTitle: bva.title }), notes });
+      return;
+    }
+
+    // Any other combination: the first technique in canonical order leads,
+    // the rest are named in a note rather than given bespoke phrasing each.
+    const lead = byTechnique.get(ordered[0]);
+    const others = ordered.slice(1).map(code => byTechnique.get(code).title);
+    const notes = [...new Set([lead.notes, t('case.mergedNote', { titles: others.join('; ') })].filter(Boolean))]
+      .join(' ');
+    result.push({ ...lead, technique, notes });
+  });
+  return result;
+}
+
+/**
+ * Fold one CTE's own case list into the outer list.
+ *
+ * A CTE is a full query in its own right, so its cases come from running the
+ * same four technique modules on its own model — but they need to read as
+ * "this is inside the CTE" rather than being indistinguishable from the outer
+ * query's cases of the same shape. The `CTE · name ·` prefix does that for
+ * display and (via `group` already being part of dedupeKey) for dedup; `cte`
+ * marks the case so explain.js can still classify the *un*prefixed group.
+ */
+function foldCteCases(cases, cteName) {
+  return cases.map(c => ({ ...c, group: `CTE · ${cteName} · ${c.group}`, cte: cteName }));
 }
 
 /** Warnings the model itself justifies, shown above the results. */
@@ -120,15 +217,34 @@ function buildFindings(model) {
     });
   }
 
+  // A literal-0 or literal-NULL divisor is a defect in the query text itself,
+  // not something a fixture row can change — report it once instead of as a
+  // per-row case. CTE bodies are walked too, tagged with which CTE it is in.
+  const divisionDefectSources = [
+    { defects: model.divisionDefects, label: null },
+    ...model.ctes.map(cte => ({ defects: cte.model.divisionDefects, label: cte.name }))
+  ];
+  divisionDefectSources.forEach(({ defects, label }) => {
+    defects.forEach(d => {
+      const expr = label ? `CTE ${label}: ${d.sql}` : d.sql;
+      findings.push({
+        level: 'error',
+        message: t(d.kind === 'zero' ? 'find.divLiteralZero' : 'find.divLiteralNull', { expr })
+      });
+    });
+  });
+
   const nested = model.subqueries.filter(s => s.kind !== 'cte').length;
-  const ctes = model.subqueries.filter(s => s.kind === 'cte');
-  if (nested || ctes.length) {
-    const parts = [];
-    if (ctes.length) parts.push(tPlural(ctes.length, 'find.cteOne', 'find.cteMany', { names: ctes.map(c => c.name).join(', ') }));
-    if (nested) parts.push(tPlural(nested, 'find.subqOne', 'find.subqMany'));
+  if (nested) {
     findings.push({
       level: 'info',
-      message: t('find.outerOnly', { parts: parts.join(t('find.and')) })
+      message: t('find.outerOnly', { parts: tPlural(nested, 'find.subqOne', 'find.subqMany') })
+    });
+  }
+  if (model.ctes.length) {
+    findings.push({
+      level: 'info',
+      message: tPlural(model.ctes.length, 'find.cteOne', 'find.cteMany', { names: model.ctes.map(c => c.name).join(', ') })
     });
   }
 
@@ -165,18 +281,36 @@ export function generateCases(sql, userOptions = {}) {
   if (options.null3vl) raw.push(...generateNull3vl(model));
   if (options.structure) raw.push(...generateStructure(model));
 
-  // Dedupe, then order by technique, then priority, then group — so the list
-  // reads as sections rather than the order the modules happened to run in.
+  // Each CTE gets the same four techniques run against its own body, folded
+  // into the list under a "CTE · name ·" group prefix. This is on top of —
+  // not instead of — the "what if the CTE returns zero rows" baseline case
+  // structure.js already generates from the outer query's point of view.
+  model.ctes.forEach(cte => {
+    const sub = cte.model;
+    if (options.epbva) raw.push(...foldCteCases(generateEpBva(sub, options), cte.name));
+    if (options.decision) {
+      const dt = generateDecisionTable(sub, options);
+      raw.push(...foldCteCases(dt.cases, cte.name));
+      dt.summaries.forEach(s => coverage.push({ ...s, scope: `CTE · ${cte.name} · ${s.scope}` }));
+    }
+    if (options.null3vl) raw.push(...foldCteCases(generateNull3vl(sub), cte.name));
+    if (options.structure) raw.push(...foldCteCases(generateStructure(sub), cte.name));
+  });
+
+  // Fold cross-technique coincidences into one case each, dedupe an exact
+  // same-technique duplicate, then order by technique, then priority, then
+  // group — so the list reads as sections rather than the order the modules
+  // happened to run in.
+  const merged = mergeCoincidentCases(raw);
   const seen = new Set();
-  const deduped = raw.filter(c => {
+  const deduped = merged.filter(c => {
     const k = dedupeKey(c);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
 
-  const techRank = new Map();
-  TECHNIQUES.forEach((tech, ti) => tech.codes.forEach((code, ci) => techRank.set(code, ti * 10 + ci)));
+  const techRank = techRankMap();
 
   deduped.sort((a, b) => {
     const ta = techRank.get(a.technique) ?? 99;
@@ -227,9 +361,10 @@ function buildStats(cases, model) {
     stats.byTechnique[c.technique] = (stats.byTechnique[c.technique] || 0) + 1;
     if (stats.byPriority[c.priority] !== undefined) stats.byPriority[c.priority]++;
   });
-  stats.conditions = model.conditions.length + model.havingConditions.length;
-  stats.joins = model.joins.length;
-  stats.tables = model.tables.length;
+  stats.conditions = model.conditions.length + model.havingConditions.length +
+    model.ctes.reduce((n, c) => n + c.model.conditions.length + c.model.havingConditions.length, 0);
+  stats.joins = model.joins.length + model.ctes.reduce((n, c) => n + c.model.joins.length, 0);
+  stats.tables = model.tables.length + model.ctes.reduce((n, c) => n + c.model.tables.length, 0);
   return stats;
 }
 

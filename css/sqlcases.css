@@ -27,6 +27,12 @@
   --success-soft: rgba(15, 157, 99, 0.12);
   --secondary: #7c3aed;
   --secondary-soft: rgba(124, 58, 237, 0.10);
+  /* Text colour to pair with --danger/--warning as a *solid* toast
+     background — the soft-tint pairing used elsewhere (e.g. --warning on
+     --warning-soft) doesn't apply here, and which text colour reads depends
+     on how saturated each colour is in this theme vs. the dark one below. */
+  --toast-err-fg: #ffffff;
+  --toast-warn-fg: #1a1305;
 
   --bg: #f4f6f9;
   --card: #ffffff;
@@ -77,6 +83,11 @@
   --success-soft: rgba(52, 211, 153, 0.13);
   --secondary: #a78bfa;
   --secondary-soft: rgba(167, 139, 250, 0.14);
+  /* --danger/--warning are pastel in this theme, so the toast needs dark
+     text on top of them rather than the white that light mode's saturated
+     versions need. */
+  --toast-err-fg: #2a0605;
+  --toast-warn-fg: #241a02;
 
   --bg: #070d18;
   --card: #0e1624;
@@ -1256,11 +1267,27 @@ body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
    rather than to an invisible badge. */
 .tech-EP { background: var(--primary-soft); color: var(--primary); }
 .tech-BVA { background: var(--secondary-soft); color: var(--secondary); }
+/* A case tagged with more than one technique (techBadge() in ui.js splits it
+   into one inner span per code, e.g. "EP" + "BVA") renders as one pill: each
+   word keeps that technique's own text colour, and the compound selector
+   below beats the plain .tech-EP/.tech-BVA/etc. rules' specificity so the
+   words keep their colour but not their own background — a shared pill
+   background instead. Any combination gets the neutral badge background by
+   default (same fallback the comment above describes for an uncoloured
+   single code); EP+BVA specifically — the coincidence that actually happens
+   today, see mergeCoincidentCases() in generate.js — gets a smooth gradient
+   between the two techniques' own soft backgrounds instead of the flat one. */
+.tech-badge-split { display: inline-flex; align-items: center; gap: 2px; }
+.tech-badge-split.tech-EPBVA { background: linear-gradient(90deg, var(--primary-soft), var(--secondary-soft)); }
+.tech-badge-split .tech-badge-part { background: none; padding: 0; }
+.tech-badge-split .tech-badge-sep { color: var(--faint); }
 .tech-DecisionTable { background: var(--warning-soft); color: var(--warning); }
+.tech-Pairwise { background: rgba(79, 70, 229, 0.12); color: #4f46e5; }
 .tech-MCDC { background: rgba(219, 39, 119, 0.13); color: #be185d; }
 .tech-NULL3VL { background: rgba(13, 148, 136, 0.13); color: #0f766e; }
 .tech-BranchCoverage { background: var(--success-soft); color: var(--success); }
 .tech-Structure { background: var(--sunken); color: var(--muted); }
+[data-theme="dark"] .tech-Pairwise { color: #818cf8; }
 [data-theme="dark"] .tech-MCDC { color: #f472b6; }
 [data-theme="dark"] .tech-NULL3VL { color: #2dd4bf; }
 
@@ -1634,14 +1661,18 @@ body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
   padding: 1px 5px;
 }
 
-/* ===== Toast ===== */
+/* ===== Toast =====
+ * .toast-success is the original look (an inverted chip: dark-on-light or
+ * light-on-dark depending on theme) — kept as the default so a confirmation
+ * still reads as "neutral good news". .toast-error/.toast-warn switch to a
+ * solid --danger/--warning fill so a failure is distinguishable from a
+ * success at a glance and not just by the words, which auto-dismiss in
+ * 2.2s. */
 .toast {
   position: fixed;
   bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--text);
-  color: var(--bg);
   padding: 9px 18px;
   border-radius: 100px;
   font-size: 12.5px;
@@ -1649,6 +1680,9 @@ body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
   box-shadow: var(--shadow-lg);
   z-index: 300;
 }
+.toast-success { background: var(--text); color: var(--bg); }
+.toast-error { background: var(--danger); color: var(--toast-err-fg); }
+.toast-warn { background: var(--warning); color: var(--toast-warn-fg); }
 
 /* ===== Narrow screens =====
  *

@@ -251,6 +251,48 @@ function aggregateNullCases(model) {
   return cases;
 }
 
+/**
+ * Division/modulo whose divisor is a column, parameter or expression rather
+ * than a nonzero literal. Divide-by-zero and divide-by-NULL are different
+ * failures with different fixes — a zero denominator is an engine-specific
+ * error (or NULL, or Inf, depending on engine and settings), while a NULL
+ * denominator is unconditionally NULL, no error involved — so this technique
+ * names them as two separate cases rather than one vague "check the divisor".
+ */
+function divisionCases(model) {
+  const cases = [];
+
+  model.divisions.forEach(d => {
+    // The "DIV ·" tag is a stable classification anchor for explain.js — a
+    // divisor expression can itself start like a function call (`NULLIF(cost,
+    // 0)`), which would otherwise be misread as an aggregate NULL case.
+    const group = `DIV · ${d.context} · ${d.sql}`;
+    const columns = d.divisor.column ? [d.divisor.column] : [];
+    const specFor = (valueSql) => d.divisor.column
+      ? { set: [{ column: d.divisor.column, columnRaw: d.divisor.sql, valueSql }] }
+      : undefined;
+
+    cases.push(baseCase({
+      group, target: d.sql, condition: d.sql, columns,
+      title: t('n3.divByZero', { expr: d.sql }),
+      data: t('n3.divByZeroData', { divisor: d.divisor.sql }),
+      expected: t('n3.divByZeroExp'),
+      notes: t('n3.divByZeroNote'),
+      spec: specFor('0')
+    }));
+
+    cases.push(baseCase({
+      group, target: d.sql, condition: d.sql, columns,
+      title: t('n3.divByNull', { expr: d.sql }),
+      data: t('n3.divByNullData', { divisor: d.divisor.sql }),
+      expected: t('n3.divByNullExp'),
+      spec: specFor('NULL')
+    }));
+  });
+
+  return cases;
+}
+
 /** ORDER BY position of NULLs. */
 function orderingNullCases(model) {
   return model.paging.orderBy
@@ -350,6 +392,7 @@ export function generateNull3vl(model) {
     ...equalsNullCases(model),
     ...joinNullCases(model),
     ...aggregateNullCases(model),
+    ...divisionCases(model),
     ...orderingNullCases(model),
     ...writeNullCases(model)
   ];

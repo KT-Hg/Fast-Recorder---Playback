@@ -274,8 +274,11 @@ const JOINED = `SELECT u.id, u.name, COUNT(o.id) AS orders
   const { fixtures } = buildAllFixtures(r.model, r.cases);
   check('every case got a fixture', fixtures.size === r.cases.length, `${fixtures.size}/${r.cases.length}`);
 
-  // A boundary case must put its own value in the row, and mark it.
-  const bva = r.cases.find(c => c.technique === 'BVA' && c.target === 'u.age' && c.data.includes('17'));
+  // A boundary case must put its own value in the row, and mark it. EP and BVA
+  // can land on the same value for the same condition (see mergeOverlaps() in
+  // ep-bva.js), in which case the merged case is tagged 'EP+BVA' — still a
+  // BVA-sourced case as far as this check is concerned.
+  const bva = r.cases.find(c => c.technique.includes('BVA') && c.target === 'u.age' && c.data.includes('17'));
   const bvaRow = bva && fixtures.get(bva.id).tables.find(x => x.label === 'u').rows[0];
   check('boundary value lands in the row', bvaRow?.values.age?.plain === '17', bvaRow?.values.age?.plain);
   check('the value under test is flagged', bvaRow?.values.age?.focus === true);
@@ -286,7 +289,7 @@ const JOINED = `SELECT u.id, u.name, COUNT(o.id) AS orders
   check('foreign key points at the generated parent row', childFk === parentId, `${childFk} vs ${parentId}`);
 
   // `COUNT(o.id) = 4` is a row count, not a column value.
-  const having = r.cases.find(c => c.technique === 'BVA' && /COUNT/.test(c.target) && c.data.includes('4'));
+  const having = r.cases.find(c => c.technique.includes('BVA') && /COUNT/.test(c.target) && c.data.includes('4'));
   const orderRows = having && fixtures.get(having.id).tables.find(x => x.label === 'o').rows.length;
   check('HAVING COUNT drives the number of child rows', orderRows === 4, String(orderRows));
 
@@ -311,7 +314,7 @@ const JOINED = `SELECT u.id, u.name, COUNT(o.id) AS orders
   const { schema, fixtures } = buildAllFixtures(r.model, r.cases);
   check('unqualified columns resolve when there is one table',
     !!schema.tables[0]?.byName.get('age') && !!schema.tables[0]?.byName.get('name'));
-  const c = r.cases.find(x => x.technique === 'BVA' && x.data.includes('19'));
+  const c = r.cases.find(x => x.technique.includes('BVA') && x.data.includes('19'));
   check('single-table fixture carries the value',
     c && fixtures.get(c.id).tables[0].rows[0].values.age.plain === '19');
 }

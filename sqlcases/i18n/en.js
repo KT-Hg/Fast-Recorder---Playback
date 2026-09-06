@@ -47,7 +47,7 @@ export const EN = {
   'ui.railReopen': 'Query ›',
   'ui.fullTableUpTo': 'Full decision table up to',
   'ui.condRules': '{n} conditions ({rules} rules)',
-  'ui.mcdcHint': 'Beyond that, combinations switch to MC/DC — one rule pair per condition instead of 2ⁿ rows.',
+  'ui.mcdcHint': 'Above that, combinations switch to pairwise (covers every pair of conditions) up to 8 conditions; past 8, MC/DC takes over — one rule pair per condition instead of full coverage.',
   'ui.alsoOnClauses': 'Also partition filtering predicates found in ON clauses',
   'ui.techCases': '{n} cases',
 
@@ -77,6 +77,9 @@ export const EN = {
   'ui.toastJson': 'Analysis and cases exported to JSON',
   'ui.toastCopied': 'JSON copied to clipboard',
   'ui.toastCopyFail': 'Could not copy — use the JSON download instead',
+  'ui.toastNoDataRows': 'Nothing to export — every table came back empty',
+  'ui.toastFixtureError': 'Could not build sample data — case rows may be missing below',
+  'ui.toastSaveError': 'Could not save — your changes may not survive closing this tab',
 
   'ui.allPriorities': 'All priorities',
   'ui.highOnly': 'High only',
@@ -189,8 +192,10 @@ export const EN = {
 
   'tech.code.EP': 'EP',
   'tech.code.BVA': 'BVA',
+  'tech.code.EP+BVA': 'EP + BVA',
   'tech.code.Decision Table': 'Decision Table',
   'tech.code.MC/DC': 'MC/DC',
+  'tech.code.Pairwise': 'Pairwise',
   'tech.code.Branch Coverage': 'Branch Coverage',
   'tech.code.NULL / 3VL': 'NULL / 3VL',
   'tech.code.Structure': 'Structure',
@@ -266,6 +271,15 @@ export const EN = {
 
   // ---------- equivalence partitioning ----------
   'ep.anyValue': 'Any value',
+  // EP/BVA overlap: shown when a partition-representative case and a
+  // boundary-triple case land on the exact same value + outcome (see
+  // mergeCoincidentCases() in generate.js) and are folded into one case.
+  'ep.mergedTitle': "{bvaTitle} (also EP's partition case)",
+  'ep.mergedNote': 'Same value and expected outcome as the EP case "{epTitle}" for this condition — merged into one to avoid a duplicate fixture row.',
+  // Any other combination of techniques landing on the exact same case (see
+  // mergeCoincidentCases() in generate.js) — a rarer coincidence than EP/BVA,
+  // so this note just names what else matched rather than explaining why.
+  'case.mergedNote': 'Also matches: {titles} — merged into one case instead of several that would build an identical row.',
   'ep.above': '{col} above the threshold',
   'ep.at': '{col} exactly at the threshold',
   'ep.below': '{col} below the threshold',
@@ -304,6 +318,9 @@ export const EN = {
   'ep.like.wildcardLiteral': '{col} contains the wildcard characters % and _ literally',
   'ep.like.wildcardExp': 'Wildcards in stored data must not be interpreted as pattern syntax',
   'ep.like.wildcardParam': 'Pattern comes from a parameter — verify user input is escaped before interpolation',
+  'ep.like.accentOnly': '{col} differs from the pattern only by a Vietnamese diacritic',
+  'ep.like.accentCollation': 'Depends on column collation — a _CI_AI / _vietnamese_ci collation treats the accented and unaccented forms as equal, a _bin / _cs_as one does not',
+  'ep.like.accentNote': 'Different from letter case — many engines default to accent-sensitive comparison even under a case-insensitive collation; pin it down separately',
   'ep.bool.true': '{col} is TRUE',
   'ep.bool.false': '{col} is FALSE',
   'ep.null.isNull': '{col} is NULL',
@@ -332,6 +349,7 @@ export const EN = {
   'dt.group': 'condition combinations',
   'dt.rule': 'Rule {n} — {vector}',
   'dt.modeFull': 'Full decision table',
+  'dt.modePairwise': 'Pairwise (every pair of conditions)',
   'dt.modeMcdc': 'MC/DC (reduced)',
   'dt.masked': '{id} cannot independently affect the result',
   'dt.maskedExp': 'Review the clause — a condition with no independent effect is usually redundant or a logic error',
@@ -406,6 +424,14 @@ export const EN = {
   'n3.distinctNull': 'DISTINCT over rows containing NULL',
   'n3.distinctNullData': 'Two rows identical except that both have NULL in the same column',
   'n3.distinctNullExp': 'They collapse to one row — DISTINCT treats NULLs as duplicates of each other',
+
+  'n3.divByZero': '{expr} with a zero divisor',
+  'n3.divByZeroData': 'Set {divisor} = 0',
+  'n3.divByZeroExp': 'Engine-specific: MySQL (default mode) returns NULL, PostgreSQL/SQL Server raise "division by zero" — confirm the real target engine\'s behaviour, do not assume',
+  'n3.divByZeroNote': 'Different from a NULL divisor — this is a latent runtime error, not just NULL propagating',
+  'n3.divByNull': '{expr} with a NULL divisor',
+  'n3.divByNullData': 'Set {divisor} = NULL',
+  'n3.divByNullExp': 'The result is NULL — not an error, just NULL propagating through the arithmetic',
   'n3.orderNull': 'NULL placement when sorting by {key}',
   'n3.orderNullData': 'Rows with {key} = NULL mixed with non-NULL values',
   'n3.orderNullFirst': 'NULLs appear first as declared',
@@ -441,7 +467,7 @@ export const EN = {
   'st.cteEmpty': 'CTE {name} returns no rows',
   'st.cteEmptyData': 'Seed data so {name} matches nothing',
   'st.cteEmptyExp': 'Every join against it drops rows (or yields NULLs through an outer join) — the outer query must still behave',
-  'st.cteEmptyNote': 'The CTE body is not analysed in detail — run it separately through this tool for its own cases',
+  'st.cteEmptyNote': "This is on top of the CTE's own cases (grouped under \"CTE · {name} ·\" below), not instead of them",
 
   'st.noJoinCond': 'no join condition',
   'st.rows3x4': '{left} has 3 rows, {right} has 4 rows',
@@ -467,6 +493,18 @@ export const EN = {
   'st.card1nExp': 'The {left} row appears 3 times in the result',
   'st.card1nInflated': 'The {left} row appears 3 times, so {aggs} is inflated 3×',
   'st.card1nNote': 'Row-duplication through a join is the usual cause of aggregates that are too large — verify against a hand-computed figure',
+
+  'st.chainOrphan': 'Middle table {table} matches nothing, cutting a {n}-table chain',
+  'st.chainOrphanData': 'Chain {chain}: {table} empty, every other table has matching data',
+  'st.chainOrphanBreaks': 'Every table after {table} disappears from the result — the joins after it are all INNER, so their own matching rows never show either',
+  'st.chainOrphanNulls': 'Tables after {table} still appear but with NULL columns — at least one join after it is LEFT/FULL, so the chain is not fully cut',
+  'st.chainOrphanNote': 'A middle table going orphan is not the same as the first or last one going orphan — a case of its own keeps "0 rows" from being mixed up between chain positions',
+  'st.chainFanout': 'Every join in a {n}-table chain is simultaneously 1:n',
+  'st.chainFanoutData': 'Chain {chain}: each table matches 3 rows of the next one',
+  'st.chainFanoutExp': 'The result row count compounds across every join (up to {n} rows for one source row), not just adds up the way a single join would',
+  'st.chainFanoutInflated': 'The row count compounds up to {n} — {aggs} is inflated far more than a single 1:n join would cause',
+  'st.chainFanoutNote': 'Compounding across several joins is the most common cause of badly wrong aggregate figures — consider COUNT(DISTINCT …) or pre-aggregating before the join',
+  'st.chainFanoutRequire': 'The auto-generated fixture gives each table 3 flat rows that all point at a single shared parent row — to actually reach {n} result rows, split them by hand: each row of one table needs to point at a different row of the table before it, not share one',
   'st.outerCancelled': 'WHERE filters {right}, cancelling the {type} JOIN',
   'st.outerCancelledExp': 'Row is DROPPED — "{cond}" is UNKNOWN against the NULLs the outer join produced, so the query behaves as an INNER JOIN',
   'st.outerCancelledNote': 'If unmatched {left} rows should survive, move this predicate into the ON clause',
@@ -594,6 +632,16 @@ export const EN = {
   'rationale.bva.threshold': 'Boundary Value Analysis around the threshold of {cond}: the just-below / on / just-above triple is exactly where an off-by-one defect (`>` used where `>=` was meant, or the reverse) actually shows up — EP only checks which side wins, BVA pins down precisely where the line is drawn.',
   'rationale.bva.range': 'Boundary Value Analysis around both endpoints of the BETWEEN in {cond}: each bound gets its own below/on/above triple, because an off-by-one defect can sit at only one end while the other stays correct.',
   'rationale.bva.generic': 'Boundary Value Analysis around {cond}: values immediately adjacent to the boundary are where boundary-related defects (off-by-one, the wrong operator, a type mismatch) tend to cluster.',
+  // EP and BVA landed on the exact same value + outcome for this condition
+  // (see mergeOverlaps() in ep-bva.js) — one merged case instead of two that
+  // would set up an identical fixture row.
+  'rationale.epbva.equality': "Equivalence Partitioning and Boundary Value Analysis agree on the exact-match value of {cond}: there is only one input that satisfies it, so EP's matching partition and BVA's on-the-boundary point are the same test — merged here into one case instead of two that would build an identical row.",
+  'rationale.epbva.notEqual': "Equivalence Partitioning and Boundary Value Analysis land on the same value for the not-equal check ({cond}): the excluded value (or the value right next to it) is both the EP partition representative and a BVA boundary point here, so the two techniques' cases coincide and are merged into one.",
+  'rationale.epbva.threshold': "Equivalence Partitioning and Boundary Value Analysis land on the same value for the ordered comparison ({cond}): EP's representative for this side of {col} happens to be exactly the value BVA also probes for an off-by-one defect — merged into one case instead of two that would build an identical row.",
+  'rationale.epbva.range': "Equivalence Partitioning and Boundary Value Analysis land on the same value just outside the BETWEEN range in {cond}: EP's outside-the-range representative for {col} is the same value BVA probes one step past that bound — merged into one case instead of two that would build an identical row.",
+  'rationale.epbva.generic': 'Equivalence Partitioning and Boundary Value Analysis coincide on {cond}: the two techniques arrived at the same value and the same expected outcome, so they are combined here into one case instead of two.',
+  // Any technique combination other than EP+BVA that lands on the same case.
+  'rationale.case.merged': 'More than one technique arrived at this exact case: the same setup and the same expected outcome, so they are combined here into one instead of listing the same check more than once.',
   'rationale.dt.rule': "One row of the decision table for {group}: exercises one specific TRUE/FALSE combination of the conditions, matching the AND/OR logic actually written in the SQL. Testing each condition alone (EP/BVA) cannot catch a defect that only appears when conditions combine — a swapped AND/OR, or a missing set of parentheses.",
   'rationale.dt.masked': 'No combination exists where flipping this condition between TRUE and FALSE changes the final outcome — a sign of a masked condition, usually because another condition already subsumes it or the logic is redundant. Worth a second look at the SQL: is this condition actually doing anything?',
   'rationale.dt.branch': "Branch coverage for the CASE expression {cond}: WHEN branches are evaluated top to bottom and the first match wins, even when a row satisfies more than one WHEN. The branch most often missed is the one nobody wrote — no ELSE means a row that matches no WHEN silently returns NULL instead of raising an error.",
@@ -604,6 +652,7 @@ export const EN = {
   'rationale.n3.equalsLiteral': "`{cond}` writes `= NULL` or `<> NULL` — this is almost certainly a defect in the SQL itself, not the application: under three-valued logic, any `=`/`<>` comparison against NULL evaluates UNKNOWN, never TRUE. As written the condition can never match any row — IS NULL / IS NOT NULL is what was meant.",
   'rationale.n3.notInSubquery': 'NOT IN against a subquery ({cond}): if the subquery returns even a single NULL row, the whole NOT IN evaluates UNKNOWN for every outer row → the result comes back completely empty, silently, with no error. This is one of the hardest-to-spot NULL traps in SQL; NOT EXISTS does not have this problem.',
   'rationale.n3.generic': 'NULL in {cond}: confirms the behaviour when the column in question is NULL — because NULL does not follow ordinary two-valued Boolean logic, a condition that reads correctly can still silently drop rows that carry a NULL.',
+  'rationale.n3.division': 'The divisor in {cond} is not a nonzero constant: divide-by-zero and divide-by-NULL are two different failures — divide-by-zero is engine-specific (NULL, an error, or Inf), while divide-by-NULL is unconditionally NULL with no error at all. Both fail silently without a case of their own.',
   'rationale.st.join': 'Cardinality of {group}: a single-row test cannot expose a row-duplication defect — this case sets up the exact match count (0, 1, or many) on each side to surface it: a 1:n JOIN inflating SUM/COUNT without DISTINCT, a WHERE predicate on the right side of a LEFT JOIN silently turning it into an INNER JOIN, or an unmatched row kept or dropped incorrectly for the join type in use.',
   'rationale.st.grouping': "Result shape of {group}: confirms the number of groups/rows produced matches what GROUP BY/HAVING specify — the defects here (a selected column that is neither grouped nor aggregated, HAVING filtering the wrong groups, an empty table yielding zero groups rather than an error) don't show up when looking at a single sample row.",
   'rationale.st.ordering': 'Result order of {group}: confirms the sort direction is correct and stable — when the sort key has ties with no secondary key to break them, the order among tied rows is unspecified and can change between runs, producing pagination bugs that are hard to reproduce.',
@@ -643,6 +692,7 @@ export const EN = {
   'dg.expected': 'Expected',
   'dg.requirements': 'Cannot be expressed as a row — set up by hand',
   'dg.noFixture': 'This case has no concrete rows to derive; follow the description in the case itself.',
+  'dg.fixtureErrorInline': 'Sample-data generation failed for this result, so this case has no rows — not by design. Try Analyze again.',
   'dg.focusHint': 'Highlighted cell = the value under test',
   'dg.row.none': 'no rows at all',
   'dg.rowCount': '{n} row(s)',
@@ -691,8 +741,10 @@ export const EN = {
   'find.dmlNoWhere': '{kind} on {table} has no WHERE clause — it affects every row.',
   'find.inflated': '{aggs} sits above a join — a 1:n match duplicates rows and inflates the result.',
   'find.unknownType': 'Could not infer a type for {cols} — boundary values for those are placeholders.',
-  'find.cteOne': '1 CTE ({names})',
-  'find.cteMany': '{n} CTEs ({names})',
+  'find.divLiteralZero': '"{expr}" divides by the literal 0 — always an error (or always NULL, engine-specific) regardless of data, not conditional on any row.',
+  'find.divLiteralNull': '"{expr}" divides by a literal NULL — the result is always NULL, regardless of data.',
+  'find.cteOne': 'CTE {names} is analysed on its own terms too — its cases carry a "CTE · {names} ·" group prefix.',
+  'find.cteMany': '{n} CTEs ({names}) are analysed on their own terms too — each one\'s cases carry a "CTE · name ·" group prefix.',
   'find.subqOne': '1 nested subquery',
   'find.subqMany': '{n} nested subqueries',
   'find.and': ' and ',

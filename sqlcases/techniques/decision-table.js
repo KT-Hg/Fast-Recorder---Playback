@@ -74,6 +74,54 @@ function mcdcRules(conds, tree) {
   };
 }
 
+/**
+ * A greedy pairwise (all-pairs) covering array for `n` boolean factors: every
+ * pair of conditions sees all 4 TRUE/FALSE combinations across the returned
+ * masks, in far fewer rows than the full 2^n table — the middle ground
+ * between the full table (every combination, stops scaling past a handful of
+ * conditions) and MC/DC (one pair of rules per condition, proves each can
+ * independently flip the outcome but says nothing about how two conditions
+ * interact together).
+ *
+ * Each step picks, deterministically, the row that covers the most
+ * still-uncovered pairs — not the smallest possible array, but a small and
+ * fully reproducible one. No randomness: a tool whose whole point is that
+ * re-running it reproduces the same case list cannot pick rows by chance.
+ */
+function pairwiseMasks(n) {
+  const total = 1 << n;
+  const needed = new Set();
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) needed.add(`${i}.${a}${j}.${b}`);
+    }
+  }
+
+  const pairKeysFor = (mask) => {
+    const keys = [];
+    for (let i = 0; i < n; i++) {
+      const a = bit(mask, i) ? 1 : 0;
+      for (let j = i + 1; j < n; j++) keys.push(`${i}.${a}${j}.${bit(mask, j) ? 1 : 0}`);
+    }
+    return keys;
+  };
+
+  const chosen = [];
+  while (needed.size > 0) {
+    let bestMask = 0, bestKeys = [], bestGain = -1;
+    for (let mask = 0; mask < total; mask++) {
+      const keys = pairKeysFor(mask);
+      let gain = 0;
+      for (const k of keys) if (needed.has(k)) gain++;
+      if (gain > bestGain) { bestGain = gain; bestMask = mask; bestKeys = keys; }
+    }
+    bestKeys.forEach(k => needed.delete(k));
+    chosen.push(bestMask);
+    if (bestGain === 0) break; // every pair already covered — should be unreachable
+  }
+  return chosen;
+}
+
 /** Human label for a truth vector: "C1=T, C2=F, C3=T". */
 function vectorLabel(conds, values) {
   return conds.map(c => `${c.id}=${values[c.id] ? 'T' : 'F'}`).join(', ');
@@ -118,17 +166,24 @@ function tableFor(conds, tree, label, kind, options) {
 
   const cases = [];
   const maxFull = options.maxFullTable ?? 4;
+  // 'auto' switches to pairwise once the full table stops fitting but before
+  // MC/DC's per-condition pairs are the only coverage left — pairwise is the
+  // only one of the three that says anything about two conditions interacting,
+  // so it is worth the extra rows over MC/DC while it stays cheap to compute.
+  // An explicit 'pairwise' request gets a higher cap since the user asked for
+  // it deliberately; the O(2^n) greedy scan behind it is what keeps both caps
+  // well under the full table's own 16-condition ceiling.
+  const maxPairwise = options.maxPairwise ?? 8;
   const legend = conds.map(c => `${c.id} = ${c.sql}`).join(' | ');
 
   // A single condition has no combinations to explore — EP/BVA already covers it.
   if (conds.length === 1) return { cases: [], summary: null };
 
-  const useFull = options.mode === 'full'
-    ? conds.length <= 16
-    : conds.length <= maxFull;
+  const useFull = conds.length <= (options.mode === 'full' ? 16 : maxFull);
+  const usePairwise = !useFull && conds.length <= (options.mode === 'pairwise' ? 12 : maxPairwise);
 
   const base = {
-    technique: useFull ? 'Decision Table' : 'MC/DC',
+    technique: useFull ? 'Decision Table' : usePairwise ? 'Pairwise' : 'MC/DC',
     group: `${label} · ${t('dt.group')}`,
     target: label,
     condition: legend,
@@ -145,6 +200,12 @@ function tableFor(conds, tree, label, kind, options) {
     for (let mask = 0; mask < (1 << conds.length); mask++) {
       rules.push({ mask, values: vectorFor(mask, conds) });
     }
+  } else if (usePairwise) {
+    rules = pairwiseMasks(conds.length).map(mask => ({ mask, values: vectorFor(mask, conds) }));
+    // Masked-condition detection (below, via mcdcRules) is not run for
+    // pairwise — it would double the work for a finding that still surfaces
+    // whenever the same query is small enough for the full table, or large
+    // enough to fall through to actual MC/DC.
   } else if (conds.length > 20) {
     // Beyond this the 2^n scan behind MC/DC is not worth running in a popup.
     return {
@@ -205,7 +266,7 @@ function tableFor(conds, tree, label, kind, options) {
     conditionCount: conds.length,
     ruleCount: rules.length,
     fullTableSize: conds.length <= 20 ? (1 << conds.length) : null,
-    mode: t(useFull ? 'dt.modeFull' : 'dt.modeMcdc'),
+    mode: t(useFull ? 'dt.modeFull' : usePairwise ? 'dt.modePairwise' : 'dt.modeMcdc'),
     conditionCoverage: conds.length ? Math.round(100 * conds.filter(c => seenTrue.has(c.id) && seenFalse.has(c.id)).length / conds.length) : 100,
     decisionCoverage: outcomes.size === 2 ? 100 : 50,
     maskedConditions: masked.map(c => c.id),

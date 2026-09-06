@@ -44,7 +44,8 @@ const RX = {
   orderByGroup: /^ORDER BY\s*·/,
   setopGroup: /^(UNION|INTERSECT|EXCEPT)\b/,
   dmlGroup: /^(UPDATE|DELETE|INSERT)\s*·/,
-  cteGroup: /^CTE\s*·/
+  cteGroup: /^CTE\s*·/,
+  divGroup: /^DIV\s*·/
 };
 
 /** EP and BVA both test a single predicate; only the wording differs. */
@@ -61,6 +62,10 @@ function classifyPredicate(cond, prefix) {
 }
 
 function classifyNull(cond, group) {
+  // Checked ahead of funcCall below: a divisor expression can itself start
+  // like a function call (`NULLIF(cost, 0) / revenue`), which would
+  // otherwise be misclassified as an aggregate-NULL case.
+  if (RX.divGroup.test(group)) return 'n3.division';
   if (RX.joinGroup.test(group)) return 'n3.joinKey';
   if (RX.groupByPrefix.test(cond) || RX.orderByPrefix.test(cond)) return 'n3.groupOrder';
   if (RX.equalsLiteralNull.test(cond)) return 'n3.equalsLiteral';
@@ -83,16 +88,43 @@ function classifyStructure(cond, group, target) {
   return 'st.generic';
 }
 
+// A case folded in from a CTE body carries `CTE · name · ` ahead of its own
+// group text (see generate.js's foldCteCases) so the results table shows
+// where it comes from — but every RX above matches on the group *as the
+// technique module that built it wrote it*, anchored at the start of the
+// string. Stripping the CTE tag back off before classifying is what keeps a
+// join case found inside a CTE still reading as "this is about a join"
+// instead of falling through to the generic CTE rationale.
+const CTE_TAG = /^CTE\s*·\s*[^·]+\s*·\s*/;
+
+/**
+ * A case tagged with more than one technique (technique 'EP+BVA', or more
+ * codes joined the same way — see mergeCoincidentCases() in generate.js)
+ * gets its own rationale rather than falling through to one technique's
+ * classifier, which would silently credit only the first code involved.
+ * EP+BVA specifically is common enough to word precisely; any other
+ * combination — a rarer coincidence — gets a rationale that just says two
+ * techniques agree, without guessing at a technique-specific reason.
+ */
+function classifyMerged(technique, cond) {
+  const codes = technique.split('+');
+  if (codes.length === 2 && codes.includes('EP') && codes.includes('BVA')) return classifyPredicate(cond, 'epbva');
+  return 'case.merged';
+}
+
 /** Which rationale key a case falls under. */
 function classify(c) {
   const cond = c.condition || '';
-  const group = c.group || '';
+  const group = c.cte ? (c.group || '').replace(CTE_TAG, '') : (c.group || '');
   const target = c.target || '';
+
+  if (c.technique.includes('+')) return classifyMerged(c.technique, cond);
 
   switch (c.technique) {
     case 'EP': return classifyPredicate(cond, 'ep');
     case 'BVA': return classifyPredicate(cond, 'bva');
     case 'Decision Table':
+    case 'Pairwise':
     case 'MC/DC':
       // Rule rows carry an explicit sequence (their table position); a masked
       // condition does not, because it never won a row of its own.

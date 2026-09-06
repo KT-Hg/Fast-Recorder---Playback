@@ -13,7 +13,7 @@
  * inventing `'abc' - 1`.
  */
 
-import { isOrdered, shift, midpoint, notEqualTo, outsideList, likeExamples, stepLabel, columnLabel } from '../values.js';
+import { isOrdered, shift, midpoint, notEqualTo, outsideList, likeExamples, accentVariant, stepLabel, columnLabel } from '../values.js';
 import { nonNullValue } from '../hints.js';
 import { t } from '../i18n.js';
 import { caseSourceFromCondition } from '../diff.js';
@@ -213,6 +213,16 @@ function partitionsFor(cond, kind) {
           priority: 'Medium',
           notes: cond.values[0]?.kind === 'param' ? t('ep.like.wildcardParam') : ''
         }));
+        const accented = accentVariant(ex.core);
+        if (accented) {
+          cases.push(makeCase('EP', cond, {
+            title: t('ep.like.accentOnly', { col }),
+            data: `${col} = '${accented}'`,
+            expected: t('ep.like.accentCollation'),
+            priority: 'Medium',
+            notes: t('ep.like.accentNote')
+          }));
+        }
       }
       break;
     }
@@ -326,6 +336,17 @@ function boundariesFor(cond, kind) {
  * @param {object} model — from analyze()
  * @param {object} options — { includeJoinConditions: boolean }
  * @returns {Array} generated cases
+ *
+ * Note: EP's boundary-adjacent representative and BVA's own boundary triple
+ * often land on the exact same value with the exact same expected outcome —
+ * e.g. for `age >= 18`, EP's "at the threshold" case and BVA's "exactly on"
+ * case both set `age = 18` and expect the row back (EP picks its
+ * "above"/"at"/"below" values with the same `shift()`/`notEqualTo()`
+ * step-of-1 arithmetic BVA uses for its own triple). This module does not
+ * fold those together itself — generate.js's mergeCoincidentCases() does
+ * that once, across every technique's output, so EP+BVA is handled by the
+ * same general mechanism as any other pair of techniques that happen to
+ * agree on a case, not a special case local to this file.
  */
 export function generateEpBva(model, options = {}) {
   const cases = [];

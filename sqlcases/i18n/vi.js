@@ -47,7 +47,7 @@ export const VI = {
   'ui.railReopen': 'Câu truy vấn ›',
   'ui.fullTableUpTo': 'Bảng quyết định đầy đủ tối đa',
   'ui.condRules': '{n} điều kiện ({rules} luật)',
-  'ui.mcdcHint': 'Vượt ngưỡng đó, tổ hợp chuyển sang MC/DC — mỗi điều kiện một cặp luật thay vì 2ⁿ dòng.',
+  'ui.mcdcHint': 'Vượt ngưỡng đó, tổ hợp chuyển sang pairwise (phủ mọi cặp điều kiện) tới 8 điều kiện; quá 8 điều kiện thì chuyển tiếp sang MC/DC — mỗi điều kiện một cặp luật thay vì phủ đầy đủ.',
   'ui.alsoOnClauses': 'Phân hoạch cả điều kiện lọc nằm trong mệnh đề ON',
   'ui.techCases': '{n} case',
 
@@ -77,6 +77,9 @@ export const VI = {
   'ui.toastJson': 'Đã xuất phân tích và danh sách case ra JSON',
   'ui.toastCopied': 'Đã chép JSON vào clipboard',
   'ui.toastCopyFail': 'Không chép được — hãy dùng nút tải JSON',
+  'ui.toastNoDataRows': 'Không có gì để xuất — mọi bảng đều rỗng',
+  'ui.toastFixtureError': 'Không dựng được dữ liệu mẫu — một số case bên dưới có thể thiếu dòng dữ liệu',
+  'ui.toastSaveError': 'Không lưu được — thay đổi có thể mất khi đóng tab này',
 
   'ui.allPriorities': 'Mọi mức ưu tiên',
   'ui.highOnly': 'Chỉ mức Cao',
@@ -189,8 +192,10 @@ export const VI = {
 
   'tech.code.EP': 'EP',
   'tech.code.BVA': 'BVA',
+  'tech.code.EP+BVA': 'EP + BVA',
   'tech.code.Decision Table': 'Bảng quyết định',
   'tech.code.MC/DC': 'MC/DC',
+  'tech.code.Pairwise': 'Pairwise',
   'tech.code.Branch Coverage': 'Phủ nhánh',
   'tech.code.NULL / 3VL': 'NULL / 3VL',
   'tech.code.Structure': 'Cấu trúc',
@@ -266,6 +271,15 @@ export const VI = {
 
   // ---------- equivalence partitioning ----------
   'ep.anyValue': 'Giá trị bất kỳ',
+  // EP/BVA trùng nhau: hiện khi 1 case đại diện phân hoạch (EP) và 1 case
+  // bộ ba giá trị biên (BVA) rơi đúng vào cùng 1 giá trị + cùng kỳ vọng (xem
+  // mergeCoincidentCases() trong generate.js) và được gộp lại thành 1 case.
+  'ep.mergedTitle': '{bvaTitle} (đồng thời là case phân hoạch của EP)',
+  'ep.mergedNote': 'Cùng giá trị và cùng kỳ vọng với case EP "{epTitle}" của điều kiện này — đã gộp lại thành 1 để tránh trùng dòng dữ liệu.',
+  // Mọi tổ hợp kỹ thuật khác cùng rơi vào 1 case (xem mergeCoincidentCases()
+  // trong generate.js) — hiếm gặp hơn cặp EP/BVA, nên ghi chú này chỉ nêu tên
+  // case trùng chứ không giải thích lý do.
+  'case.mergedNote': 'Cũng trùng với: {titles} — đã gộp lại thành 1 case thay vì nhiều case cho ra cùng 1 dòng dữ liệu.',
   'ep.above': '{col} trên ngưỡng',
   'ep.at': '{col} đúng bằng ngưỡng',
   'ep.below': '{col} dưới ngưỡng',
@@ -304,6 +318,9 @@ export const VI = {
   'ep.like.wildcardLiteral': '{col} chứa chính ký tự đại diện % và _',
   'ep.like.wildcardExp': 'Ký tự đại diện nằm trong dữ liệu không được hiểu thành cú pháp mẫu',
   'ep.like.wildcardParam': 'Mẫu đến từ tham số — kiểm tra input người dùng đã được escape trước khi ghép chuỗi',
+  'ep.like.accentOnly': '{col} chỉ khác mẫu ở dấu tiếng Việt',
+  'ep.like.accentCollation': 'Phụ thuộc collation của cột — collation kiểu _CI_AI/_vietnamese_ci coi có dấu và không dấu là như nhau, collation _bin/_cs_as thì không',
+  'ep.like.accentNote': 'Khác với chữ hoa/chữ thường — nhiều hệ quản trị mặc định phân biệt dấu ngay cả khi collation không phân biệt hoa thường; cần chốt rõ ràng riêng',
   'ep.bool.true': '{col} bằng TRUE',
   'ep.bool.false': '{col} bằng FALSE',
   'ep.null.isNull': '{col} là NULL',
@@ -332,6 +349,7 @@ export const VI = {
   'dt.group': 'tổ hợp điều kiện',
   'dt.rule': 'Luật {n} — {vector}',
   'dt.modeFull': 'Bảng quyết định đầy đủ',
+  'dt.modePairwise': 'Pairwise (mọi cặp điều kiện)',
   'dt.modeMcdc': 'MC/DC (rút gọn)',
   'dt.masked': '{id} không thể tác động độc lập lên kết quả',
   'dt.maskedExp': 'Xem lại mệnh đề — điều kiện không có tác động độc lập thường là thừa hoặc sai logic',
@@ -406,6 +424,14 @@ export const VI = {
   'n3.distinctNull': 'DISTINCT trên các dòng có chứa NULL',
   'n3.distinctNullData': 'Hai dòng giống hệt nhau và cùng mang NULL ở cùng một cột',
   'n3.distinctNullExp': 'Chúng gộp thành một dòng — DISTINCT coi các NULL là trùng nhau',
+
+  'n3.divByZero': '{expr} với mẫu số bằng 0',
+  'n3.divByZeroData': 'Đặt {divisor} = 0',
+  'n3.divByZeroExp': 'Tuỳ hệ quản trị: MySQL (chế độ mặc định) trả NULL, PostgreSQL/SQL Server báo lỗi "division by zero" — xác nhận hành vi thật của hệ đang dùng, đừng giả định',
+  'n3.divByZeroNote': 'Khác với mẫu số NULL — đây là một lỗi runtime tiềm ẩn, không chỉ là NULL lan truyền',
+  'n3.divByNull': '{expr} với mẫu số NULL',
+  'n3.divByNullData': 'Đặt {divisor} = NULL',
+  'n3.divByNullExp': 'Kết quả là NULL — không phải lỗi, chỉ là NULL lan truyền qua phép toán',
   'n3.orderNull': 'Vị trí của NULL khi sắp xếp theo {key}',
   'n3.orderNullData': 'Các dòng có {key} = NULL trộn lẫn với các dòng có giá trị',
   'n3.orderNullFirst': 'NULL nằm đầu đúng như đã khai báo',
@@ -441,7 +467,7 @@ export const VI = {
   'st.cteEmpty': 'CTE {name} không trả về dòng nào',
   'st.cteEmptyData': 'Tạo dữ liệu sao cho {name} không khớp gì cả',
   'st.cteEmptyExp': 'Mọi join với nó đều làm mất dòng (hoặc sinh NULL qua outer join) — câu truy vấn ngoài vẫn phải chạy đúng',
-  'st.cteEmptyNote': 'Phần thân CTE không được phân tích chi tiết — hãy dán riêng nó vào công cụ này để có bộ case riêng',
+  'st.cteEmptyNote': 'Case này cộng thêm vào bộ case riêng của CTE (nhóm dưới nhãn "CTE · {name} ·" bên dưới), không thay thế nó',
 
   'st.noJoinCond': 'không có điều kiện join',
   'st.rows3x4': '{left} có 3 dòng, {right} có 4 dòng',
@@ -467,6 +493,18 @@ export const VI = {
   'st.card1nExp': 'Dòng {left} xuất hiện 3 lần trong kết quả',
   'st.card1nInflated': 'Dòng {left} xuất hiện 3 lần, nên {aggs} bị thổi phồng lên 3 lần',
   'st.card1nNote': 'Nhân bản dòng qua join là nguyên nhân thường gặp khiến số liệu tổng hợp bị lớn hơn thực tế — hãy đối chiếu với con số tính tay',
+
+  'st.chainOrphan': 'Bảng giữa {table} không khớp dòng nào, cắt chuỗi {n} bảng',
+  'st.chainOrphanData': 'Chuỗi {chain}: {table} rỗng, các bảng còn lại đều có dữ liệu khớp',
+  'st.chainOrphanBreaks': 'Mọi bảng phía sau {table} biến mất khỏi kết quả — các JOIN sau nó đều là INNER, nên dù bản thân chúng có dòng khớp cũng không xuất hiện',
+  'st.chainOrphanNulls': 'Các bảng phía sau {table} vẫn xuất hiện nhưng với cột NULL — có ít nhất một JOIN sau nó là LEFT/FULL nên chuỗi không bị cắt hẳn',
+  'st.chainOrphanNote': 'Một bảng mồ côi ở giữa chuỗi không giống bảng đầu hay cuối mồ côi — cần case riêng để không nhầm "0 dòng" ở các vị trí khác nhau trong chuỗi',
+  'st.chainFanout': 'Mọi join trong chuỗi {n} bảng đều 1:n cùng lúc',
+  'st.chainFanoutData': 'Chuỗi {chain}: mỗi bảng khớp 3 dòng của bảng kế tiếp',
+  'st.chainFanoutExp': 'Số dòng kết quả nhân dồn qua từng join (tối đa {n} dòng cho 1 dòng gốc), không cộng dồn tuyến tính như một join đơn lẻ',
+  'st.chainFanoutInflated': 'Số dòng nhân dồn lên tới {n} — {aggs} bị thổi phồng nặng hơn nhiều so với một join 1:n đơn lẻ',
+  'st.chainFanoutNote': 'Cộng dồn qua nhiều join là nguyên nhân số liệu tổng hợp sai lệch nghiêm trọng nhất — cân nhắc COUNT(DISTINCT …) hoặc gộp nhóm trước khi join',
+  'st.chainFanoutRequire': 'Bộ dữ liệu tự sinh chỉ tạo 3 dòng phẳng cho mỗi bảng, đều trỏ chung vào MỘT dòng cha — để thật sự có {n} dòng kết quả, hãy tách thủ công: mỗi dòng của một bảng cần trỏ riêng vào từng dòng của bảng trước nó, không dùng chung',
   'st.outerCancelled': 'WHERE lọc trên {right}, làm vô hiệu {type} JOIN',
   'st.outerCancelledExp': 'Dòng BỊ LOẠI — "{cond}" cho ra UNKNOWN trên các NULL do outer join sinh ra, nên câu truy vấn hành xử như INNER JOIN',
   'st.outerCancelledNote': 'Nếu muốn giữ lại các dòng {left} không khớp, hãy chuyển điều kiện này vào mệnh đề ON',
@@ -594,6 +632,16 @@ export const VI = {
   'rationale.bva.threshold': 'Boundary Value Analysis quanh ngưỡng của {cond}: bộ ba giá trị ngay dưới / đúng tại / ngay trên biên là nơi lỗi off-by-one (dùng `>` thay vì `>=`, hoặc ngược lại) thực sự lộ ra — EP chỉ kiểm tra phía nào thắng, BVA xác định chính xác ranh giới nằm ở đâu.',
   'rationale.bva.range': 'Boundary Value Analysis quanh 2 đầu mút của BETWEEN trong {cond}: mỗi biên có bộ ba dưới/đúng/trên riêng, vì lỗi off-by-one có thể chỉ xảy ra ở một đầu trong khi đầu kia vẫn đúng.',
   'rationale.bva.generic': 'Boundary Value Analysis quanh {cond}: giá trị ngay sát biên là nơi các lỗi liên quan đến ranh giới (off-by-one, sai toán tử, sai kiểu dữ liệu) thường tập trung.',
+  // EP và BVA rơi đúng vào cùng 1 giá trị + cùng kỳ vọng cho điều kiện này
+  // (xem mergeOverlaps() trong ep-bva.js) — gộp thành 1 case thay vì 2 case
+  // cho ra cùng 1 dòng dữ liệu.
+  'rationale.epbva.equality': 'Equivalence Partitioning và Boundary Value Analysis trùng nhau ở giá trị đúng-bằng của {cond}: chỉ có đúng 1 giá trị thoả điều kiện này, nên lớp "khớp" của EP và điểm "đúng tại biên" của BVA là cùng 1 phép kiểm tra — gộp lại thành 1 case ở đây thay vì 2 case cho ra cùng 1 dòng dữ liệu.',
+  'rationale.epbva.notEqual': 'Equivalence Partitioning và Boundary Value Analysis trùng nhau ở phép so sánh khác ({cond}): giá trị bị loại (hoặc giá trị ngay sát nó) vừa là đại diện phân hoạch của EP vừa là điểm biên của BVA, nên case của 2 kỹ thuật trùng nhau và được gộp thành 1.',
+  'rationale.epbva.threshold': 'Equivalence Partitioning và Boundary Value Analysis trùng nhau ở phép so sánh có thứ tự ({cond}): đại diện của EP cho phía này của {col} đúng bằng giá trị mà BVA cũng dùng để dò lỗi off-by-one — gộp lại thành 1 case thay vì 2 case cho ra cùng 1 dòng dữ liệu.',
+  'rationale.epbva.range': 'Equivalence Partitioning và Boundary Value Analysis trùng nhau ở giá trị ngay ngoài khoảng BETWEEN trong {cond}: đại diện "ngoài khoảng" của EP cho {col} chính là giá trị BVA dò ngay sát biên đó — gộp lại thành 1 case thay vì 2 case cho ra cùng 1 dòng dữ liệu.',
+  'rationale.epbva.generic': 'Equivalence Partitioning và Boundary Value Analysis trùng nhau ở {cond}: 2 kỹ thuật cho ra cùng 1 giá trị và cùng 1 kỳ vọng, nên được gộp lại thành 1 case duy nhất thay vì 2.',
+  // Mọi tổ hợp kỹ thuật khác ngoài EP+BVA cùng rơi vào 1 case.
+  'rationale.case.merged': 'Nhiều hơn 1 kỹ thuật cùng đi đến đúng case này: cùng cách thiết lập, cùng kỳ vọng, nên được gộp lại thành 1 case duy nhất ở đây thay vì liệt kê lặp lại cùng 1 phép kiểm tra.',
   'rationale.dt.rule': 'Một hàng của bảng quyết định cho {group}: kiểm tra một tổ hợp giá trị TRUE/FALSE cụ thể của các điều kiện, đúng theo logic AND/OR đã viết trong SQL. Test riêng từng điều kiện (EP/BVA) không đủ để phát hiện lỗi chỉ xuất hiện khi các điều kiện kết hợp với nhau — nhầm AND thành OR, hoặc thiếu dấu ngoặc.',
   'rationale.dt.masked': 'Không có tổ hợp nào mà việc đổi điều kiện này giữa TRUE và FALSE làm thay đổi kết quả cuối cùng — dấu hiệu của một điều kiện bị che khuất, thường do một điều kiện khác đã bao trùm nó hoặc logic bị dư thừa. Đáng xem lại: điều kiện này có thực sự cần thiết không?',
   'rationale.dt.branch': 'Coverage cho biểu thức CASE {cond}: các nhánh WHEN được đánh giá tuần tự và nhánh đầu tiên khớp sẽ thắng, kể cả khi một dòng thoả nhiều WHEN. Nhánh dễ bị bỏ sót nhất là nhánh không ai viết ra — thiếu ELSE khiến dòng không khớp WHEN nào âm thầm trả về NULL thay vì báo lỗi.',
@@ -604,6 +652,7 @@ export const VI = {
   'rationale.n3.equalsLiteral': '`{cond}` viết `= NULL` hoặc `<> NULL` — đây gần như chắc chắn là lỗi trong chính câu SQL, không phải lỗi ứng dụng: theo logic 3 trị, mọi so sánh với NULL bằng `=`/`<>` đều trả UNKNOWN, không bao giờ TRUE. Điều kiện viết như vậy sẽ không bao giờ khớp bất kỳ dòng nào — ý định đúng phải là IS NULL / IS NOT NULL.',
   'rationale.n3.notInSubquery': 'NOT IN với subquery ({cond}): nếu subquery trả về dù chỉ 1 dòng NULL, toàn bộ NOT IN sẽ trả UNKNOWN cho mọi dòng ngoài → kết quả rỗng hoàn toàn, âm thầm, không báo lỗi gì. Đây là một trong những bẫy NULL khó phát hiện nhất trong SQL; NOT EXISTS không gặp vấn đề này.',
   'rationale.n3.generic': 'NULL trong {cond}: xác nhận hành vi khi cột liên quan mang giá trị NULL — vì NULL không tuân theo logic Boolean 2 trị thông thường, một điều kiện đọc có vẻ đúng vẫn có thể âm thầm loại bỏ dòng có NULL.',
+  'rationale.n3.division': 'Mẫu số trong {cond} không phải hằng số khác 0: chia cho 0 và chia cho NULL là hai lỗi khác nhau — chia cho 0 tuỳ hệ quản trị (NULL, lỗi, hoặc Inf), còn chia cho NULL luôn cho NULL không báo lỗi gì. Cả hai đều lặng lẽ nếu không có case riêng.',
   'rationale.st.join': 'Cardinality của {group}: một test 1-dòng không thể phát hiện lỗi nhân bản dòng — case này thiết lập đúng số dòng khớp (0, 1, hoặc nhiều) ở mỗi bên để lộ ra: JOIN 1:n làm SUM/COUNT bị thổi phồng nếu thiếu DISTINCT, điều kiện lọc ở bảng phải của LEFT JOIN âm thầm biến nó thành INNER JOIN, hoặc dòng không khớp bị giữ/loại sai theo loại JOIN.',
   'rationale.st.grouping': 'Hình dạng kết quả của {group}: kiểm tra số nhóm/dòng sinh ra đúng như GROUP BY/HAVING quy định — các lỗi ở đây (chọn cột không nằm trong GROUP BY và không được gộp, HAVING lọc sai nhóm, bảng rỗng cho ra 0 nhóm thay vì lỗi) không hiện ra khi chỉ nhìn 1 dòng dữ liệu mẫu.',
   'rationale.st.ordering': 'Thứ tự kết quả của {group}: xác nhận chiều sắp xếp đúng và ổn định — khi khoá sắp xếp có giá trị trùng (ties) mà không có khoá phụ để phá vỡ, thứ tự giữa các dòng trùng là không xác định và có thể đổi giữa các lần chạy, gây lỗi phân trang khó tái hiện.',
@@ -643,6 +692,7 @@ export const VI = {
   'dg.expected': 'Mong đợi',
   'dg.requirements': 'Không diễn đạt được thành dòng dữ liệu — cần chuẩn bị thủ công',
   'dg.noFixture': 'Case này không suy ra được dòng dữ liệu cụ thể; hãy làm theo mô tả trong chính case đó.',
+  'dg.fixtureErrorInline': 'Việc sinh dữ liệu mẫu cho kết quả này bị lỗi nên case không có dòng nào — không phải chủ ý thiết kế. Hãy thử Phân tích lại.',
   'dg.focusHint': 'Ô được tô sáng = giá trị đang được test',
   'dg.row.none': 'không có dòng nào',
   'dg.rowCount': '{n} dòng',
@@ -691,8 +741,10 @@ export const VI = {
   'find.dmlNoWhere': '{kind} trên {table} không có mệnh đề WHERE — nó tác động lên mọi dòng.',
   'find.inflated': '{aggs} nằm trên một join — quan hệ 1:n nhân bản dòng và làm số liệu bị thổi phồng.',
   'find.unknownType': 'Không suy được kiểu dữ liệu cho {cols} — giá trị biên của các cột đó chỉ là chỗ điền tạm.',
-  'find.cteOne': '1 CTE ({names})',
-  'find.cteMany': '{n} CTE ({names})',
+  'find.divLiteralZero': '"{expr}" chia cho literal 0 — luôn lỗi (hoặc luôn NULL, tuỳ hệ quản trị) bất kể dữ liệu, không phụ thuộc dòng nào cả.',
+  'find.divLiteralNull': '"{expr}" chia cho literal NULL — kết quả luôn là NULL, không phụ thuộc dữ liệu.',
+  'find.cteOne': 'CTE {names} cũng được phân tích riêng — case của nó có nhãn nhóm "CTE · {names} ·".',
+  'find.cteMany': '{n} CTE ({names}) cũng được phân tích riêng — case của mỗi CTE có nhãn nhóm "CTE · tên ·".',
   'find.subqOne': '1 subquery lồng nhau',
   'find.subqMany': '{n} subquery lồng nhau',
   'find.and': ' và ',

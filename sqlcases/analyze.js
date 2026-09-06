@@ -345,6 +345,36 @@ function caseSql(e) {
   return `${head} ${whens}${e.else ? ` ELSE ${exprToSql(e.else)}` : ''} END`;
 }
 
+/**
+ * Every `/` or `%` whose divisor is not a nonzero literal — i.e. where the
+ * denominator could plausibly be zero or NULL at runtime, which is exactly
+ * the case a tester needs a fixture row for. A divisor already written as a
+ * literal (`x / 0`, `x / NULL`) is not a "what if" — it is a defect in the
+ * query itself regardless of what data exists, so it goes to `defects`
+ * instead of `out` and is reported once rather than asking for a row that
+ * cannot change the outcome.
+ */
+function findDivisions(expr, context, out, defects) {
+  const walk = (e) => {
+    if (!e || typeof e !== 'object') return;
+    if (e.type === 'binary' && (e.op === '/' || e.op === '%')) {
+      const right = unwrap(e.right);
+      if (right?.type === 'literal') {
+        if (right.kind === 'number' && right.value === 0) defects.push({ sql: exprToSql(e), kind: 'zero' });
+        else if (right.kind === 'null') defects.push({ sql: exprToSql(e), kind: 'null' });
+      } else {
+        out.push({ context, op: e.op, sql: exprToSql(e), divisor: describeOperand(e.right) });
+      }
+    }
+    for (const k of Object.keys(e)) {
+      const v = e[k];
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(expr);
+}
+
 /** Collect every aggregate call inside an expression. */
 function findAggregates(expr, out = []) {
   const AGG = new Set(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'GROUP_CONCAT', 'STRING_AGG', 'ARRAY_AGG', 'STDDEV', 'VARIANCE']);
@@ -399,9 +429,15 @@ function tableLabel(ref) {
  * Build the analysis model.
  *
  * @param {object} ast — from parse()
+ * @param {string} [idPrefix] — prefixed onto every condition/join id this call
+ *   mints ('C1', 'H1', 'J1' become e.g. 'K1_C1'). A CTE body is analysed by a
+ *   recursive call to this same function, and its ids must not collide with
+ *   the outer query's — two independent id sequences both starting at 1 would
+ *   otherwise make the change-impact diff (diff.js) match a case in the CTE
+ *   against an unrelated condition in the outer query, or vice versa.
  * @returns {object} model consumed by the technique modules
  */
-export function analyze(ast) {
+export function analyze(ast, idPrefix = '') {
   const model = {
     statement: ast?.type || 'unknown',
     tables: [],
@@ -415,7 +451,10 @@ export function analyze(ast) {
     paging: { orderBy: [], limit: null, offset: null },
     writes: null,
     subqueries: [],
+    ctes: [],
     caseExprs: [],
+    divisions: [],
+    divisionDefects: [],
     columns: [],
     selectAliases: [],
     selectsStar: false,
@@ -427,7 +466,7 @@ export function analyze(ast) {
 
   if (ast.type === 'setop') {
     // Analyse the left branch and flag the set operation itself.
-    const left = analyze(ast.left);
+    const left = analyze(ast.left, idPrefix);
     left.notes.push({
       level: 'info',
       message: `${ast.op}${ast.all ? ' ALL' : ''} combines two result sets — only the first branch is analysed in detail.`
@@ -463,7 +502,7 @@ export function analyze(ast) {
     // model.joinConditions — a diff between two versions of the query needs
     // the AND/OR/NOT shape to tell "same conditions, reshuffled logic" apart
     // from "same conditions, unchanged", the same way it does for WHERE/HAVING.
-    const onTree = j.on ? collectConditions(j.on, `ON ${label}`, model.joinConditions, 'J') : null;
+    const onTree = j.on ? collectConditions(j.on, `ON ${label}`, model.joinConditions, `${idPrefix}J`) : null;
     model.joins.push({
       index: idx,
       joinType: j.joinType,
@@ -484,9 +523,9 @@ export function analyze(ast) {
   useTables(model.tables);
 
   // --- predicates -----------------------------------------------------
-  model.whereTree = collectConditions(ast.where, 'WHERE', model.conditions, 'C');
+  model.whereTree = collectConditions(ast.where, 'WHERE', model.conditions, `${idPrefix}C`);
   if (ast.having) {
-    model.havingTree = collectConditions(ast.having, 'HAVING', model.havingConditions, 'H');
+    model.havingTree = collectConditions(ast.having, 'HAVING', model.havingConditions, `${idPrefix}H`);
   }
 
   // --- grouping / paging ----------------------------------------------
@@ -551,6 +590,20 @@ export function analyze(ast) {
   (ast.ctes || []).forEach(c => model.subqueries.push({ kind: 'cte', name: c.name }));
   collectSubqueries(ast, model.subqueries);
 
+  // A CTE body is a full query — its own predicates, joins and grouping need
+  // the same EP/BVA/decision-table/NULL/structure coverage the outer query
+  // gets, not just the "what if it returns zero rows" baseline case. Keying
+  // the id prefix by the CTE's name (rather than its position) keeps ids
+  // stable across edits that reorder CTEs, which matters for the change-impact
+  // diff. `c.select` can never carry its own nested `ctes` (the parser does
+  // not support WITH inside a CTE body), so this recursion is exactly one
+  // level deep — never unbounded.
+  model.ctes = (ast.ctes || []).map(c => ({
+    name: c.name,
+    columns: c.columns,
+    model: analyze(c.select, `K_${c.name}_`)
+  }));
+
   model.selectsStar = (ast.columns || []).some(c => c.expr?.type === 'star');
   // `COUNT(o.id) AS orders` puts `orders` into ORDER BY, where it parses as a
   // column reference. It is a name for a result column, not a stored one, so
@@ -561,6 +614,11 @@ export function analyze(ast) {
   if (ast.where) findCases(ast.where, 'WHERE', model.caseExprs);
   if (ast.having) findCases(ast.having, 'HAVING', model.caseExprs);
   (ast.set || []).forEach(sv => findCases(sv.value, `SET ${sv.column}`, model.caseExprs));
+
+  (ast.columns || []).forEach(c => findDivisions(c.expr, c.alias ? `SELECT ${c.alias}` : 'SELECT list', model.divisions, model.divisionDefects));
+  if (ast.where) findDivisions(ast.where, 'WHERE', model.divisions, model.divisionDefects);
+  if (ast.having) findDivisions(ast.having, 'HAVING', model.divisions, model.divisionDefects);
+  (ast.set || []).forEach(sv => findDivisions(sv.value, `SET ${sv.column}`, model.divisions, model.divisionDefects));
 
   model.columns = findColumns(ast);
   model.params = findParams(ast);

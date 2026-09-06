@@ -39,6 +39,22 @@ const VALUES_KEY = 'sqlCasesValues';
  */
 const storage = (typeof chrome !== 'undefined' && chrome.storage?.local) || null;
 
+/**
+ * storage.set() wrapped to surface a write failure (quota exceeded, revoked
+ * permission) instead of swallowing it — otherwise the query, theme or
+ * sample values look saved right up until the page is reopened and they
+ * turn out not to be, with nothing having said so in between.
+ */
+function storageSet(items) {
+  if (!storage) return;
+  storage.set(items, () => {
+    if (chrome.runtime.lastError) {
+      console.error('[SQLCASES] storage write failed:', chrome.runtime.lastError);
+      toast(t('ui.toastSaveError'), 'error');
+    }
+  });
+}
+
 const EXAMPLES = [
   {
     labelKey: 'ui.ex.report',
@@ -238,6 +254,15 @@ let activeImpact = '';
 let onlyWithFixture = false;
 /** Inferred schema and per-case fixtures for the current result. */
 let data = null;
+/**
+ * True when the last buildAllFixtures() call threw instead of producing
+ * `data`. Lets the inspector's "no fixture" message tell a genuine no-fixture
+ * case (by design) apart from every case going fixture-less because
+ * generation itself blew up — those looked identical before this flag
+ * existed. Only fires the toast on the rising edge so re-running the same
+ * broken query on every keystroke doesn't spam it.
+ */
+let fixtureError = false;
 /** The one case the inspector is showing, or null. */
 let selectedId = null;
 /** 'single' analyses #sqlInput alone; 'compare' diffs it against #sqlInputAfter. */
@@ -312,7 +337,7 @@ const insight = {
 };
 
 function saveUi() {
-  storage?.set({ [UI_KEY]: { railTab, railOpen, inspOpen, insightTab, insightOpen, density } });
+  storageSet({ [UI_KEY]: { railTab, railOpen, inspOpen, insightTab, insightOpen, density } });
 }
 
 function applyUiState(state) {
@@ -391,8 +416,15 @@ function pillLabel(key) {
 }
 
 let toastTimer = null;
-function toast(message) {
+/**
+ * `type` picks the toast's colour ('success' | 'error' | 'warn') so a failure
+ * reads as a failure instead of looking identical to a confirmation — call
+ * sites must pass it explicitly rather than rely on a default, since silently
+ * defaulting a forgotten call to 'success' would make a real error look fine.
+ */
+function toast(message, type) {
   el.toast.textContent = message;
+  el.toast.className = `toast toast-${type}`;
   el.toast.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.toast.hidden = true; }, 2200);
@@ -408,6 +440,40 @@ function toast(message) {
  */
 function techClass(technique) {
   return 'tech-' + technique.replace(/[^A-Za-z0-9]/g, '');
+}
+
+/**
+ * A case's `technique` is usually one code ('EP'), but can be several joined
+ * with '+' when two techniques converged on the exact same case (e.g.
+ * 'EP+BVA' — see mergeOverlaps() in ep-bva.js). Filtering by 'EP' alone must
+ * still surface that merged case — it genuinely is an EP case, just also a
+ * BVA one — so this checks membership rather than exact equality.
+ */
+function techniqueMatches(caseTechnique, filterValue) {
+  return caseTechnique === filterValue || caseTechnique.split('+').includes(filterValue);
+}
+
+/**
+ * The technique badge shown on a case card and in the inspector header.
+ *
+ * A plain technique renders as the usual single-colour pill. A merged one
+ * ('EP+BVA' — see mergeOverlaps() in ep-bva.js) renders as one pill with a
+ * smooth gradient between the two techniques' own soft backgrounds, and
+ * "EP"/"BVA" each kept in that technique's own text colour (see
+ * `.tech-badge-split` in sqlcases.css) — the two original badges' colours
+ * combined into one, rather than a third colour belonging to neither.
+ */
+function techBadge(technique) {
+  const codes = technique.split('+');
+  if (codes.length === 1) {
+    return node('span', `tech-badge ${techClass(technique)}`, t('tech.code.' + technique));
+  }
+  const badge = node('span', `tech-badge tech-badge-split ${techClass(technique)}`);
+  codes.forEach((code, i) => {
+    if (i > 0) badge.append(node('span', 'tech-badge-sep', '+'));
+    badge.append(node('span', `tech-badge-part ${techClass(code)}`, t('tech.code.' + code)));
+  });
+  return badge;
 }
 
 /** Line and column of a character offset, for parse-error messages. */
@@ -783,7 +849,7 @@ function commitValue(slot, raw) {
 }
 
 function saveValues() {
-  storage?.set({ [VALUES_KEY]: valuebook.toJSON() });
+  storageSet({ [VALUES_KEY]: valuebook.toJSON() });
 }
 
 // ---- rendering: findings & coverage ----------------------------------
@@ -1163,8 +1229,13 @@ function renderTechniqueFilter(stats) {
     return b;
   };
 
+  // A merged code like 'EP+BVA' counts towards its own pill *and* towards
+  // 'EP' and 'BVA' individually — the count next to a pill should match how
+  // many cases clicking it will actually show (see techniqueMatches()).
+  const countFor = code => (current?.cases || []).filter(c => techniqueMatches(c.technique, code)).length;
+
   el.techFilter.append(mk('ui.filterAll', '', stats?.total ?? 0));
-  codes.forEach(code => el.techFilter.append(mk('tech.code.' + code, code, stats.byTechnique[code])));
+  codes.forEach(code => el.techFilter.append(mk('tech.code.' + code, code, countFor(code))));
   scheduleCmdHeight();
 }
 
@@ -1213,7 +1284,7 @@ function visibleCases() {
   const q = el.search.value.trim().toLowerCase();
   const prio = el.prioFilter.value;
   return current.cases.filter(c => {
-    if (activeTechnique && c.technique !== activeTechnique) return false;
+    if (activeTechnique && !techniqueMatches(c.technique, activeTechnique)) return false;
     if (prio && c.priority !== prio) return false;
     if (activeClause && c.clause !== activeClause) return false;
     if (activeImpact && c.impact !== activeImpact) return false;
@@ -1246,7 +1317,7 @@ function caseCard(testCase) {
 
   const l1 = node('span', 'l1');
   l1.append(node('span', 'cid', testCase.id));
-  l1.append(node('span', `tech-badge ${techClass(testCase.technique)}`, t('tech.code.' + testCase.technique)));
+  l1.append(techBadge(testCase.technique));
   l1.append(node('span', 'tgt', testCase.target));
   if (data?.fixtures.get(testCase.id)) {
     const fx = node('span', 'grpname', '🗃');
@@ -1436,7 +1507,7 @@ function renderInspector() {
   const head = node('div', 'insp-head');
   const top = node('div', 'top');
   top.append(node('span', 'cid', testCase.id));
-  top.append(node('span', `tech-badge ${techClass(testCase.technique)}`, t('tech.code.' + testCase.technique)));
+  top.append(techBadge(testCase.technique));
   top.append(node('span', `prio prio-${testCase.priority}`, t('prio.' + testCase.priority)));
 
   const nav = node('span', 'nav');
@@ -1506,9 +1577,14 @@ function renderInspector() {
   if (!fixture) {
     const sec = node('div', 'fx-sec');
     sec.append(node('div', 'fx-label', t('dg.fixture')));
-    const req = node('div', 'fx-req');
-    req.append(node('span', 'b', '◆'));
-    req.append(node('span', null, t('dg.noFixture')));
+    // Two different reasons look the same to a case without a fixture: the
+    // case genuinely has no rows to derive (by design), or fixture
+    // generation for this whole result blew up (a bug). Silently falling
+    // back to the by-design message for the second case would hide the
+    // failure the toast above already reported.
+    const req = node('div', fixtureError ? 'fx-req fx-req-warn' : 'fx-req');
+    req.append(node('span', 'b', fixtureError ? '⚠' : '◆'));
+    req.append(node('span', null, t(fixtureError ? 'dg.fixtureErrorInline' : 'dg.noFixture')));
     sec.append(req);
     body.append(sec);
     el.inspInner.append(body);
@@ -1776,9 +1852,14 @@ function renderResult(sql, result, errorsEl) {
   // with every generation — including a language switch, which re-runs it.
   try {
     data = buildAllFixtures(result.model, result.cases);
+    fixtureError = false;
   } catch (err) {
     console.error('[SQLCASES] fixture generation failed:', err);
     data = null;
+    // Rising edge only — retyping the same broken query re-runs this on
+    // every debounce tick, and a fresh toast each time would just be noise.
+    if (!fixtureError) toast(t('ui.toastFixtureError'), 'error');
+    fixtureError = true;
   }
   renderSchema();
   renderValues();
@@ -1912,7 +1993,7 @@ function saveState() {
   TECHNIQUES.forEach(tech => {
     techniques[tech.key] = el.techList.querySelector(`input[data-tech="${tech.key}"]`)?.checked ?? true;
   });
-  storage?.set({
+  storageSet({
     [STATE_KEY]: {
       sql: el.sql.value,
       sqlAfter: el.sqlAfter.value,
@@ -2080,22 +2161,29 @@ function initExports() {
   el.csv.addEventListener('click', () => {
     if (!current) return;
     downloadText(toCsv(current.cases), suggestFilename(current, 'csv'), 'text/csv');
-    toast(t('ui.toastCsv', { n: current.cases.length }));
+    toast(t('ui.toastCsv', { n: current.cases.length }), 'success');
   });
 
   el.json.addEventListener('click', () => {
     if (!current) return;
     downloadText(toJson(activeSql(), current), suggestFilename(current, 'json'), 'application/json');
-    toast(t('ui.toastJson'));
+    toast(t('ui.toastJson'), 'success');
   });
 
   el.dataCsv.addEventListener('click', () => {
     if (!current || !data) return;
     const files = fixturesToCsv(data.schema, data.fixtures, current.cases).filter(f => f.rows > 0);
+    // Every table came back empty (all rows filtered out above) — nothing
+    // was actually downloaded, so this must not read as the success toast
+    // below or the click looks like it worked when it did nothing.
+    if (!files.length) {
+      toast(t('ui.toastNoDataRows'), 'warn');
+      return;
+    }
     // One file per table, as asked. chrome.downloads queues them, so a
     // multi-table query produces several downloads from the single click.
     files.forEach(f => downloadText(f.csv, `testdata_${f.table.replace(/[^a-z0-9_-]+/gi, '_')}.csv`, 'text/csv'));
-    toast(t('dg.toastCsv', { n: files.length }));
+    toast(t('dg.toastCsv', { n: files.length }), 'success');
   });
 
   el.verifySql.addEventListener('click', () => {
@@ -2109,17 +2197,17 @@ function initExports() {
       lines.push(v.sql, '');
     });
     downloadText(lines.join('\n'), suggestFilename(current, 'sql'), 'text/plain');
-    toast(t('dg.toastVerify'));
+    toast(t('dg.toastVerify'), 'success');
   });
 
   el.copyJson.addEventListener('click', async () => {
     if (!current) return;
     try {
       await navigator.clipboard.writeText(toJson(activeSql(), current));
-      toast(t('ui.toastCopied'));
+      toast(t('ui.toastCopied'), 'success');
     } catch (err) {
       console.error('[SQLCASES] clipboard write failed:', err);
-      toast(t('ui.toastCopyFail'));
+      toast(t('ui.toastCopyFail'), 'error');
     }
   });
 
@@ -2331,7 +2419,7 @@ function init() {
     if (!valuebook.clearAll()) return;
     saveValues();
     run();
-    toast(t('vb.toastReset'));
+    toast(t('vb.toastReset'), 'success');
   });
 
   el.maxFull.addEventListener('change', () => { saveState(); run(); });
@@ -2340,7 +2428,7 @@ function init() {
   el.theme.addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
     applyTheme(next);
-    storage?.set({ [THEME_KEY]: next });
+    storageSet({ [THEME_KEY]: next });
   });
 
   el.lang.addEventListener('click', () => {
