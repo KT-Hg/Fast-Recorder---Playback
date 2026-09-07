@@ -13,7 +13,7 @@
  * inventing `'abc' - 1`.
  */
 
-import { isOrdered, shift, midpoint, notEqualTo, outsideList, likeExamples, accentVariant, stepLabel, columnLabel } from '../values.js';
+import { isOrdered, shift, midpoint, notEqualTo, outsideList, likeExamples, accentVariant, columnLabel } from '../values.js';
 import { nonNullValue } from '../hints.js';
 import { t } from '../i18n.js';
 import { caseSourceFromCondition } from '../diff.js';
@@ -265,7 +265,6 @@ function boundariesFor(cond, kind) {
   if (cond.columnToColumn) return cases;
 
   const ordered = isOrdered(type);
-  const unit = stepLabel(type);
 
   const add = (title, data, matches, extra = {}) => cases.push(makeCase('BVA', cond, {
     title, data, expected: outcomeFor(kind, matches), priority: 'High', ...extra
@@ -280,14 +279,21 @@ function boundariesFor(cond, kind) {
     ...extra
   }));
 
-  /** Emit the -1 / on / +1 triple around one boundary value. */
+  /**
+   * Emit the -1 / on / +1 triple around one boundary value.
+   *
+   * `lo`/`hi` each carry back the unit they actually used (`unitLabel`) —
+   * read from `shift()`'s result rather than recomputed from `type` here, so
+   * an unbound operand's title never claims a magnitude (e.g. "0.01") that
+   * the query text never gave us; see `shift()` in values.js.
+   */
   const triple = (operand, label, at, below, above) => {
     const lo = shift(operand, type, -1);
     const hi = shift(operand, type, 1);
-    const note = lo.exact ? '' : (lo.note || t('bva.stepSize', { unit }));
-    addVal(t('bva.justBelow', { col, value: lo.sql, label, unit }), `${lo.sql}`, below, { notes: note });
+    const note = lo.exact ? '' : (lo.note || t('bva.stepSize', { unit: lo.unitLabel }));
+    addVal(t('bva.justBelow', { col, value: lo.sql, label, unit: lo.unitLabel }), `${lo.sql}`, below, { notes: note });
     addVal(t('bva.exactlyOn', { col, value: operand.sql, label }), `${operand.sql}`, at);
-    addVal(t('bva.justAbove', { col, value: hi.sql, label, unit }), `${hi.sql}`, above, { notes: note });
+    addVal(t('bva.justAbove', { col, value: hi.sql, label, unit: hi.unitLabel }), `${hi.sql}`, above, { notes: note });
   };
 
   if (!ordered) {

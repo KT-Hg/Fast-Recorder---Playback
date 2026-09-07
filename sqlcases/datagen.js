@@ -158,8 +158,16 @@ export function inferSchema(model) {
       const parse = (raw) => {
         const dot = raw.lastIndexOf('.');
         const tbl = dot > 0 ? byLabel.get(raw.slice(0, dot).toLowerCase()) : (tables.length === 1 ? tables[0] : null);
+        if (!tbl) return null;
         const name = dot > 0 ? raw.slice(dot + 1) : raw;
-        return tbl ? { tbl, col: tbl.byName.get(name.toLowerCase()) } : null;
+        // A join key can name a column no SELECT/WHERE ever spelled under this
+        // table's own label — a correlated subquery in an ON clause is read
+        // through its own alias (`h.order_id`), never the outer one (`s.order_id`),
+        // so the column would otherwise not exist under `s` at all. The key
+        // still names a real column, so give the table one rather than
+        // silently dropping the relationship, the same way a missing PK does.
+        const col = tbl.byName.get(name.toLowerCase()) || addColumn(tbl, name, typeFromName(name).type);
+        return { tbl, col };
       };
       const a = parse(k.left);
       const b = parse(k.right);

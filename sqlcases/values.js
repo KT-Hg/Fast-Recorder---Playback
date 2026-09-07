@@ -70,33 +70,44 @@ function tidyNumber(n, reference) {
  * @param {{kind:string, value?:*, sql:string}} operand — from analyze.describeOperand
  * @param {string} type — inferred data type
  * @param {number} steps — e.g. -1, 0, +1
- * @returns {{sql: string, exact: boolean, note: string}} — `exact:false` means
- *   we could not compute it and the string is a human instruction instead.
+ * @returns {{sql: string, exact: boolean, note: string, unitLabel: string}} —
+ *   `exact:false` means we could not compute it and the string is a human
+ *   instruction instead. `unitLabel` is what was actually used for the step,
+ *   for a caller that renders it next to `sql` (e.g. BVA's case title) —
+ *   reading it back here instead of recomputing `stepLabel(type)` is what
+ *   keeps the two from disagreeing.
  */
 export function shift(operand, type, steps) {
-  if (steps === 0) return { sql: operand.sql, exact: operand.kind === 'literal', note: '' };
-
-  const dir = steps < 0 ? 'below' : 'above';
-  const mag = Math.abs(steps);
   const unit = stepLabel(type);
+  if (steps === 0) return { sql: operand.sql, exact: operand.kind === 'literal', note: '', unitLabel: unit };
+
+  const mag = Math.abs(steps);
 
   if (operand.kind !== 'literal') {
+    // The base itself is symbolic (an unbound bind parameter), so a computed
+    // magnitude like "0.01" or "1" would claim precision the query text never
+    // gave us — the real step is a business decision, not something the
+    // tokenizer can read off `@amount`. Name the step instead of guessing a
+    // number for integer/decimal; date/datetime/time keep their calendar or
+    // clock unit, which is not a guess the way a decimal's precision is.
+    const relUnit = (type === 'integer' || type === 'decimal') ? t('val.step.smallest') : unit;
     return {
-      sql: `${operand.sql} ${steps < 0 ? '-' : '+'} ${mag} ${unit === t('val.step.none') ? t('val.unit') : unit}`,
+      sql: `${operand.sql} ${steps < 0 ? '-' : '+'} ${mag} ${relUnit === t('val.step.none') ? t('val.unit') : relUnit}`,
       exact: false,
-      note: t('val.relativeTo', { expr: operand.sql })
+      note: t('val.relativeTo', { expr: operand.sql }),
+      unitLabel: relUnit
     };
   }
 
   if (type === 'integer' && typeof operand.value === 'number') {
-    return { sql: String(operand.value + steps), exact: true, note: '' };
+    return { sql: String(operand.value + steps), exact: true, note: '', unitLabel: unit };
   }
 
   if (type === 'decimal' && typeof operand.value === 'number') {
     const raw = String(operand.value);
     const decimals = (raw.split('.')[1] || '').length;
     const delta = decimals > 0 ? Math.pow(10, -decimals) : STEPS.decimal.delta;
-    return { sql: String(tidyNumber(operand.value + delta * steps, raw)), exact: true, note: '' };
+    return { sql: String(tidyNumber(operand.value + delta * steps, raw)), exact: true, note: '', unitLabel: unit };
   }
 
   if (type === 'date' || type === 'datetime') {
@@ -104,7 +115,7 @@ export function shift(operand, type, steps) {
     if (parsed) {
       const ms = parsed.hasTime ? 1000 : 86400000;
       const shifted = new Date(parsed.date.getTime() + steps * ms);
-      return { sql: `'${formatTemporal(shifted, parsed.hasTime, parsed.hasSeconds)}'`, exact: true, note: '' };
+      return { sql: `'${formatTemporal(shifted, parsed.hasTime, parsed.hasSeconds)}'`, exact: true, note: '', unitLabel: unit };
     }
   }
 
@@ -112,11 +123,12 @@ export function shift(operand, type, steps) {
     return {
       sql: t(steps < 0 ? 'val.adjacentBelow' : 'val.adjacentAbove', { value: operand.sql }),
       exact: false,
-      note: t('val.noNumericNeighbour')
+      note: t('val.noNumericNeighbour'),
+      unitLabel: unit
     };
   }
 
-  return { sql: `${operand.sql} ${steps < 0 ? '−' : '+'} ${mag} ${unit}`, exact: false, note: '' };
+  return { sql: `${operand.sql} ${steps < 0 ? '−' : '+'} ${mag} ${unit}`, exact: false, note: '', unitLabel: unit };
 }
 
 /** A plausible value that is clearly inside a range (not on its edge). */

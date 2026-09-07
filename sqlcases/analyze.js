@@ -514,7 +514,10 @@ export function analyze(ast, idPrefix = '') {
       onTree,
       onSql: j.on ? exprToSql(j.on) : (j.using.length ? `USING (${j.using.join(', ')})` : null),
       using: j.using,
-      keys: j.on ? joinKeys(j.on) : j.using.map(c => ({ left: `${leftLabel}.${c}`, right: `${label}.${c}` }))
+      // model.tables already carries FROM plus every join up to and including
+      // this one (pushed just above), so joinKeys can resolve the alias on
+      // either side of the ON clause without waiting on useTables().
+      keys: j.on ? joinKeys(j.on, model.tables) : j.using.map(c => ({ left: `${leftLabel}.${c}`, right: `${label}.${c}` }))
     });
   });
 
@@ -670,16 +673,92 @@ function collectSubqueries(node, out, depth = 0) {
   }
 }
 
-/** Pull the `a.x = b.y` pairs out of a join condition. */
-function joinKeys(expr) {
-  const keys = [];
+/** alias/name (lowercased) -> real table name (lowercased), for one FROM/JOIN scope. */
+function aliasMap(tables) {
+  const m = new Map();
+  (tables || []).forEach(t => {
+    if (!t || t.isSubquery) return;
+    m.set(String(t.alias || t.name).toLowerCase(), String(t.name).toLowerCase());
+  });
+  return m;
+}
+
+/**
+ * Find the FK a correlated scalar subquery is hiding.
+ *
+ * `s.id = (SELECT h.id FROM order_status_history h WHERE h.order_id = o.id
+ * ORDER BY h.changed_at DESC LIMIT 1)` picks the latest row of the table
+ * already being joined — the outer `=` only pins down *which* row, the real
+ * join key (`order_status_history.order_id = orders.id`) is the correlation
+ * inside the subquery's own WHERE. This walks that WHERE's AND-chain looking
+ * for a `col = col` leaf where exactly one side belongs to the subquery's own
+ * FROM/JOIN (`self`) and the other does not (it must then reach out to the
+ * surrounding query, `outer`).
+ *
+ * `self` is accepted only when it resolves to the same base table as
+ * `anchorTable` — the table the outer ON is already comparing against. That
+ * guard is what keeps an unrelated correlated subquery (one that happens to
+ * reference some other table) from being drawn as a fabricated link.
+ */
+function subqueryCorrelation(subquery, anchorTable) {
+  const stmt = subquery.select;
+  if (!stmt) return null;
+  const fromList = stmt.from || (stmt.table ? [stmt.table] : []);
+  const inner = aliasMap([...fromList, ...(stmt.joins || []).map(j => j.table)]
+    .filter(Boolean)
+    .map(ref => ({ name: ref.name, alias: ref.alias, isSubquery: ref.kind === 'subquery' })));
+
+  const pairs = [];
   const walk = (e) => {
     if (!e) return;
     const n = unwrap(e);
     if (n.type === 'binary' && n.op === 'AND') { walk(n.left); walk(n.right); return; }
     if (n.type === 'binary' && n.op === '=' && isColumn(n.left) && isColumn(n.right)) {
-      keys.push({ left: asColumn(n.left).raw, right: asColumn(n.right).raw });
+      pairs.push([asColumn(n.left), asColumn(n.right)]);
     }
+  };
+  walk(stmt.where);
+
+  for (const [l, r] of pairs) {
+    const lIn = l.table && inner.get(l.table.toLowerCase());
+    const rIn = r.table && inner.get(r.table.toLowerCase());
+    if (!!lIn === !!rIn) continue; // need exactly one side inside the subquery's own scope
+    const [self, outer, selfTable] = lIn ? [l, r, lIn] : [r, l, rIn];
+    if (selfTable === String(anchorTable).toLowerCase()) return { selfCol: self.name, outerRaw: outer.raw };
+  }
+  return null;
+}
+
+/**
+ * Pull the `a.x = b.y` pairs out of a join condition.
+ *
+ * `scopeTables` is the FROM/JOIN list visible at this point in the query
+ * (from `model.tables`) — needed only to resolve which base table the plain
+ * column side of `col = (subquery)` belongs to, so a correlated subquery on
+ * the other side can be checked for self-reference (see `subqueryCorrelation`).
+ */
+function joinKeys(expr, scopeTables) {
+  const keys = [];
+  const outerAlias = aliasMap(scopeTables);
+  const walk = (e) => {
+    if (!e) return;
+    const n = unwrap(e);
+    if (n.type === 'binary' && n.op === 'AND') { walk(n.left); walk(n.right); return; }
+    if (n.type !== 'binary' || n.op !== '=') return;
+    if (isColumn(n.left) && isColumn(n.right)) {
+      keys.push({ left: asColumn(n.left).raw, right: asColumn(n.right).raw });
+      return;
+    }
+    // One side may be a scalar subquery standing in for "the matching row of
+    // the table this ON is already about" — see subqueryCorrelation() above.
+    const colSide = isColumn(n.left) ? n.left : isColumn(n.right) ? n.right : null;
+    const subSide = unwrap(n.left)?.type === 'subquery' ? unwrap(n.left)
+      : unwrap(n.right)?.type === 'subquery' ? unwrap(n.right) : null;
+    if (!colSide || !subSide) return;
+    const anchor = asColumn(colSide);
+    const anchorTable = anchor.table && outerAlias.get(anchor.table.toLowerCase());
+    const hit = anchorTable && subqueryCorrelation(subSide, anchorTable);
+    if (hit) keys.push({ left: `${anchor.table}.${hit.selfCol}`, right: hit.outerRaw });
   };
   walk(expr);
   return keys;
