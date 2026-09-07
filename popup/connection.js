@@ -178,9 +178,7 @@ export function updateStatusIndicator() {
   const statusIndicator = document.getElementById('statusIndicator');
   const statusText = document.getElementById('statusText');
   const connectionStatus = document.getElementById('connectionStatus');
-  const recordingBadge = document.getElementById('recordingBadge');
   const scenarioList = document.getElementById('scenarioList');
-  const recordingTopBar = document.getElementById('recordingTopBar');
   const nowPlayingBar = document.getElementById('nowPlayingBar');
   const nowPlayingIcon = document.getElementById('nowPlayingIcon');
   const nowPlayingName = document.getElementById('nowPlayingName');
@@ -202,8 +200,6 @@ export function updateStatusIndicator() {
       statusIndicator.classList.remove('playing', 'sequence');
       if (statusText) statusText.textContent = '● REC';
       if (statusDot) statusDot.className = 'status-dot recording';
-      if (recordingBadge) recordingBadge.classList.add('show');
-      if (recordingTopBar) recordingTopBar.classList.add('show');
       if (status.recordingScenarioId && scenarioList && !scenarioList.value) {
         scenarioList.value = status.recordingScenarioId;
       }
@@ -216,8 +212,6 @@ export function updateStatusIndicator() {
       const seqProgress = `${status.currentScenarioIndex + 1}/${status.totalScenarios}`;
       if (statusText) statusText.textContent = '▶▶';
       if (statusDot) statusDot.className = 'status-dot active';
-      if (recordingBadge) recordingBadge.classList.remove('show');
-      if (recordingTopBar) recordingTopBar.classList.remove('show');
       _setNowPlaying(true, { icon: '▶▶', name: status.scenarioName || 'Sequence', step: `seq ${seqProgress}` });
       _updatePanel({
         name: status.scenarioName || 'Sequence',
@@ -237,8 +231,6 @@ export function updateStatusIndicator() {
         : stepProgress;
       if (statusText) statusText.textContent = '▶';
       if (statusDot) statusDot.className = 'status-dot active';
-      if (recordingBadge) recordingBadge.classList.remove('show');
-      if (recordingTopBar) recordingTopBar.classList.remove('show');
       const isSwitched = !!(status.originalScenarioName && status.scenarioName !== status.originalScenarioName);
       _setNowPlaying(true, {
         icon: '▶',
@@ -262,8 +254,6 @@ export function updateStatusIndicator() {
       statusIndicator.classList.remove('recording', 'sequence');
       if (statusText) statusText.textContent = '▶';
       if (statusDot) statusDot.className = 'status-dot active';
-      if (recordingBadge) recordingBadge.classList.remove('show');
-      if (recordingTopBar) recordingTopBar.classList.remove('show');
       const betweenStep = `row ${status.csvCurrentRow + 1}/${status.csvTotalRows} · waiting…`;
       _setNowPlaying(true, { icon: '⏸', name: status.csvScenarioName || '', step: betweenStep });
       _updatePanel({
@@ -279,8 +269,6 @@ export function updateStatusIndicator() {
     } else {
       statusIndicator.classList.remove('active', 'recording', 'playing', 'sequence');
       if (statusText) statusText.textContent = '';
-      if (recordingBadge) recordingBadge.classList.remove('show');
-      if (recordingTopBar) recordingTopBar.classList.remove('show');
       if (!_csvDoneActive) _setNowPlaying(false);
       _setProgress(false, 0, 0);
       _scheduleNextPoll(false);

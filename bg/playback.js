@@ -238,6 +238,7 @@ export async function playActionsOnTab(
             _notifyActionFailed(i, action, 'Navigation timed out or tab was closed');
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: 'Navigation timed out' });
           }
+          if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
         }
 
@@ -276,6 +277,7 @@ export async function playActionsOnTab(
             _notifyActionFailed(i, action, result.error);
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
           }
+          if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
         }
 
@@ -303,6 +305,7 @@ export async function playActionsOnTab(
             _notifyActionFailed(i, action, e.message);
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });
           }
+          if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
         }
 
@@ -319,6 +322,7 @@ export async function playActionsOnTab(
             _notifyActionFailed(i, action, result.error);
             if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
           }
+          if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
         }
 

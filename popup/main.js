@@ -621,6 +621,7 @@ const pickElement = document.getElementById("pickElement");
 const newFlow = document.getElementById("newFlow");
 const saveFlow = document.getElementById("saveFlow");
 const scenarioName = document.getElementById("scenarioName");
+const autoSaveNotice = document.getElementById("autoSaveNotice");
 const renameScenario = document.getElementById("renameScenario");
 const renameInput = document.getElementById("renameInput");
 const deleteScenario = document.getElementById("deleteScenario");
@@ -651,7 +652,6 @@ const undoAction = document.getElementById("undoAction");
 const redoAction = document.getElementById("redoAction");
 
 // v2 elements
-const recordingBadge = document.getElementById("recordingBadge");
 const actionCount = document.getElementById("actionCount");
 
 // Condition elements
@@ -3224,6 +3224,7 @@ function loadScenarios() {
       if (sid && scenarioList) {
         scenarioList.value = sid;
         if (scenarioList.value === sid) {
+          toggleScenarioActions(true);
           previewActions();
         }
         chrome.storage.local.remove("pendingRecordScenarioId");
@@ -3519,6 +3520,22 @@ function toggleScenarioActions(enabled) {
     const ms = document.getElementById("moveSection");
     if (rs) rs.style.display = "none";
     if (ms) ms.style.display = "none";
+  }
+
+  // Save Scenario only applies to a fresh, unsaved buffer — once an existing
+  // scenario is selected, recording/manual edits save straight into it, so
+  // showing Save would just invite an accidental duplicate. Hide the button
+  // only (not the whole card) so Name/Folder/New stay usable to start a
+  // brand-new scenario while one is selected for editing.
+  if (saveFlow) saveFlow.style.display = enabled ? "none" : "";
+  if (autoSaveNotice) {
+    autoSaveNotice.style.display = enabled ? "" : "none";
+    if (enabled) {
+      const name = scenariosCache[scenarioList.value]?.name;
+      autoSaveNotice.textContent = name
+        ? `✓ Editing "${name}" — changes save automatically`
+        : "✓ Changes save automatically";
+    }
   }
 }
 

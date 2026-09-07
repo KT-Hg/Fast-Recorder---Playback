@@ -9,11 +9,18 @@
 </head>
 
 <body>
-  <div id="recordingTopBar" role="status" aria-live="polite">● RECORDING — Actions are being captured</div>
-  <div id="pickerInstructionBar" role="status" aria-live="polite"></div>
-
   <!-- ===== STICKY HEADER: Status Bar + Tab Nav ===== -->
   <div class="sticky-header" id="activationCard">
+    <!-- This bar must live INSIDE .sticky-header (not as a sibling before it):
+         the header is position:fixed and pinned to viewport top regardless of what
+         precedes it in the DOM, so a sibling bar would (a) get visually covered by
+         the fixed header and (b) still consume flow height above #headerSpacer,
+         which only measures .sticky-header's own offsetHeight — producing a gap
+         between the tab row and the content below whenever the bar shows. Keeping
+         it as the header's first child makes its height part of the header and
+         lets initHeaderSpacer's MutationObserver (subtree:true) pick up .show
+         toggles automatically. -->
+    <div id="pickerInstructionBar" role="status" aria-live="polite"></div>
     <!-- Update banner — shown by popup/update-banner.js when a newer version is on the Web Store -->
     <div class="update-banner" id="updateBanner" role="status" aria-live="polite" hidden>
       <span class="update-banner-icon" aria-hidden="true">⬆</span>
@@ -116,9 +123,6 @@
   <!-- ===== TAB: RECORD & PLAY ===== -->
   <div class="tab-panel active" id="tabRecord">
     <div class="main-content" id="mainContent" role="main">
-
-    <!-- Recording badge (floating) -->
-    <span id="recordingBadge" class="recording-badge">● Recording</span>
 
     <!-- RECORD -->
     <div class="card">
@@ -434,6 +438,10 @@
         <button id="newFlow" class="secondary">New</button>
         <button id="saveFlow" class="primary-gradient">Save Scenario</button>
       </div>
+      <!-- Shown instead of Save while an existing scenario is selected — its edits
+           already save straight to storage, so Save here would only invite a
+           duplicate. Name/Folder/New stay usable to start a brand-new scenario. -->
+      <span class="helper-text" id="autoSaveNotice" style="display:none;color:var(--success);">✓ Changes save automatically</span>
     </div>
 
     <!-- MANAGE SCENARIOS -->

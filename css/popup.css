@@ -1800,24 +1800,6 @@ body.modal-open {
    instead so it stays readable in both themes. */
 .toast.toast-warn    { background: var(--warning); color: #422006; }
 
-/* Recording badge */
-.recording-badge {
-  display: none;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--danger);
-  background: rgba(239, 68, 68, 0.1);
-  padding: 3px 10px;
-  border-radius: 10px;
-  animation: pulse-text 1s ease infinite;
-}
-.recording-badge.show { display: inline-block; }
-
-@keyframes pulse-text {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
 /* Count badge on Preview button */
 .count-badge {
   display: inline-block;
@@ -1855,20 +1837,6 @@ body.modal-open {
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-
-/* Recording top bar */
-#recordingTopBar {
-  display: none;
-  background: linear-gradient(90deg, var(--danger) 0%, var(--danger-dark) 100%);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  text-align: center;
-  padding: 5px 12px;
-  animation: pulse-text 1.5s ease infinite;
-  letter-spacing: 0.03em;
-}
-#recordingTopBar.show { display: block; }
 
 /* Keyboard focus indicators */
 button:focus-visible,
