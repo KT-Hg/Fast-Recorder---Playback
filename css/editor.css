@@ -107,7 +107,10 @@ body {
   opacity: 0; transition: opacity .15s;
   z-index: 50;
 }
-.sidebar .s-btn:hover::after { opacity: 1; }
+/* Focus shows the tip too: the sidebar is icon-only, so a keyboard user
+   tabbing through it would otherwise have nothing naming the tool. */
+.sidebar .s-btn:hover::after,
+.sidebar .s-btn:focus-visible::after { opacity: 1; }
 
 /* === Main area === */
 .main-area {

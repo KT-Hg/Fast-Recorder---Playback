@@ -522,7 +522,11 @@ body.insp-off .topbar, .app.insp-off .main { padding-right: 24px; }
 }
 .check-row:hover { background: var(--sunken); }
 .check-row input { margin: 2px 0 0; flex: 0 0 auto; cursor: pointer; accent-color: var(--primary); }
-.check-row .tech-name { flex: 1 1 auto; }
+/* The technique's own name and the plain line explaining it share one column,
+   so the case count stays against the right edge beside the pair rather than
+   beside the name alone. */
+.check-row .tech-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.check-row .tech-desc { font-size: 11px; line-height: 1.35; color: var(--muted); }
 .check-row .tech-count {
   margin-left: auto;
   font-size: 11px;

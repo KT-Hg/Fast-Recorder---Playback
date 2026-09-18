@@ -183,12 +183,23 @@ export const EN = {
   'ui.ex.case': 'CASE expression — branch coverage',
   'ui.ex.update': 'UPDATE — arithmetic, idempotency',
   'ui.ex.insert': 'INSERT — nullability, column list',
+  // Shown once, on the first visit, next to the sample query put in the box.
+  'ui.firstRunSample': 'Started you off with a sample query. Press Clear to paste your own.',
 
   // ---------- technique + priority labels ----------
   'tech.epbva': 'EP + BVA',
   'tech.decision': 'Decision Table + Coverage',
   'tech.null3vl': 'NULL & 3-valued logic',
   'tech.structure': 'JOIN / GROUP BY / ORDER-LIMIT',
+
+  // One plain line per technique, shown under its name in the rail. The names
+  // above are the field's own terms; these say what the cases will be for
+  // without asking the reader to know those terms first. The help modal
+  // carries the full version.
+  'tech.desc.epbva': 'Per condition: a passing value, a failing one, and the boundary between them',
+  'tech.desc.decision': 'Every true/false combination of the conditions, as a table of rules',
+  'tech.desc.null3vl': 'Rows lost where a NULL makes a condition UNKNOWN instead of true',
+  'tech.desc.structure': 'Defects in the shape of the result: fan-out, orphans, groups, paging',
 
   'tech.code.EP': 'EP',
   'tech.code.BVA': 'BVA',

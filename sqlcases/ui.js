@@ -422,12 +422,15 @@ let toastTimer = null;
  * sites must pass it explicitly rather than rely on a default, since silently
  * defaulting a forgotten call to 'success' would make a real error look fine.
  */
-function toast(message, type) {
+function toast(message, type, ms = 2200) {
   el.toast.textContent = message;
   el.toast.className = `toast toast-${type}`;
   el.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.toast.hidden = true; }, 2200);
+  // `ms` is for the rare message that has to be read rather than glanced at —
+  // the first-run note, which arrives while the reader is still taking the
+  // page in. Every confirmation after an action keeps the default.
+  toastTimer = setTimeout(() => { el.toast.hidden = true; }, ms);
 }
 
 /**
@@ -540,7 +543,17 @@ function buildTechniqueList() {
     input.addEventListener('change', () => { saveState(); run(); });
     const name = node('span', 'tech-name');
     setLabel(name, tech.labelKey);
-    label.append(input, name, node('span', 'tech-count', ''));
+    // The name is the technique's own term — "EP + BVA", "MC/DC" — which only
+    // says what the cases are for to someone who already knows it. The line
+    // under it says that in plain words. It carries data-i18n rather than a
+    // second explicit pass in applyStaticText(): the generic sweep there
+    // already retranslates anything holding that attribute.
+    const desc = node('span', 'tech-desc');
+    desc.dataset.i18n = `tech.desc.${tech.key}`;
+    setLabel(desc, desc.dataset.i18n);
+    const text = node('span', 'tech-text');
+    text.append(name, desc);
+    label.append(input, text, node('span', 'tech-count', ''));
     li.append(label);
     el.techList.append(li);
   });
@@ -2006,8 +2019,20 @@ function saveState() {
   });
 }
 
+/**
+ * Put back what the last visit left, and tell the caller whether this is a
+ * first visit.
+ *
+ * With nothing saved, the query box opens empty and the page is left
+ * describing itself to someone who has not seen it work yet. Seeding the first
+ * example instead means the first thing on screen is a real query with real
+ * cases under it; init() follows it with the toast naming the button that
+ * clears it. Anything saved — including a query deliberately cleared to empty
+ * — is a returning reader and is restored untouched.
+ */
 function restoreState(done) {
-  if (!storage) { applyTheme('light'); setLang(DEFAULT_LANG); done(); return; }
+  const seedSample = () => { el.sql.value = EXAMPLES[0].sql; };
+  if (!storage) { applyTheme('light'); setLang(DEFAULT_LANG); seedSample(); done(true); return; }
   storage.get([STATE_KEY, THEME_KEY, LANG_KEY, UI_KEY, VALUES_KEY], (res) => {
     applyTheme(res?.[THEME_KEY] === 'dark' ? 'dark' : 'light');
     // Only select the language here. Rendering and the first generation wait
@@ -2030,8 +2055,10 @@ function restoreState(done) {
           if (input) input.checked = !!on;
         });
       }
+    } else {
+      seedSample();
     }
-    done();
+    done(!s);
   });
 }
 
@@ -2485,7 +2512,7 @@ function init() {
 
   trackCmdbarHeight();
 
-  restoreState(() => {
+  restoreState((firstVisit) => {
     applyStaticText();
     el.density.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.d === density));
     // A rail that starts shut on a narrow window is the same call the CSS
@@ -2493,6 +2520,9 @@ function init() {
     if (window.innerWidth < 900) railOpen = false;
     run();
     el.sql.focus();
+    // After applyStaticText(), or the note would be in whatever language the
+    // catalog defaulted to rather than the one now on screen.
+    if (firstVisit) toast(t('ui.firstRunSample'), 'success', 6000);
   });
 }
 

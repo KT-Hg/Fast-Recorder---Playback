@@ -183,12 +183,22 @@ export const VI = {
   'ui.ex.case': 'Biểu thức CASE — độ phủ nhánh',
   'ui.ex.update': 'UPDATE — số học, tính idempotent',
   'ui.ex.insert': 'INSERT — cho phép NULL, danh sách cột',
+  // Hiện đúng một lần, ở lần mở đầu tiên, kèm câu SQL mẫu đã điền sẵn vào ô.
+  'ui.firstRunSample': 'Đã điền sẵn một câu SQL mẫu. Bấm Xoá để dán câu của bạn.',
 
   // ---------- technique + priority labels ----------
   'tech.epbva': 'EP + BVA (phân hoạch & giá trị biên)',
   'tech.decision': 'Bảng quyết định + độ phủ',
   'tech.null3vl': 'NULL & logic 3 trạng thái',
   'tech.structure': 'JOIN / GROUP BY / ORDER-LIMIT',
+
+  // Mỗi kỹ thuật một dòng nói thẳng, hiện ngay dưới tên ở cột trái. Tên phía
+  // trên là thuật ngữ của nghề; mấy dòng này nói case sẽ kiểm cái gì mà không
+  // đòi người đọc phải biết thuật ngữ đó trước. Bản đầy đủ nằm ở modal Hướng dẫn.
+  'tech.desc.epbva': 'Mỗi điều kiện: một giá trị thoả, một giá trị trượt, và đúng ngay tại biên',
+  'tech.desc.decision': 'Mọi tổ hợp đúng/sai giữa các điều kiện, dựng thành bảng luật',
+  'tech.desc.null3vl': 'Dòng bị rơi mất khi NULL làm điều kiện thành UNKNOWN thay vì đúng',
+  'tech.desc.structure': 'Lỗi ở hình dạng kết quả: nhân dòng, mồ côi, gom nhóm, phân trang',
 
   'tech.code.EP': 'EP',
   'tech.code.BVA': 'BVA',

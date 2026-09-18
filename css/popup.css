@@ -1706,6 +1706,14 @@ body.modal-open {
 .ch-badge-value  { background: rgba(139,92,246,0.15); color: var(--secondary); }
 .ch-badge-url    { background: rgba(245,158,11,0.15);  color: #f59e0b; }
 .ch-badge-attr   { background: rgba(249,115,22,0.15);  color: #f97316; }
+/* The names the card guides in main.js actually write. They had no rules here,
+   so every badge in every guide rendered as bare uppercase text and the colour
+   coding those guides lean on — blue for the thing you click, red for the
+   thing you cannot undo — said nothing. */
+.badge-blue      { background: rgba(59,130,246,0.15); color: var(--primary); }
+.badge-gray      { background: rgba(107,114,128,0.18); color: var(--muted); }
+.badge-purple    { background: rgba(139,92,246,0.15); color: var(--secondary); }
+.badge-red       { background: rgba(239,68,68,0.15);  color: var(--danger); }
 
 .ch-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .ch-desc { font-size: 12px; color: var(--muted); margin: 3px 0 6px; line-height: 1.5; }
