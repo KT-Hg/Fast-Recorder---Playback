@@ -1385,3 +1385,20 @@ function handleMessage(request, sender, sendResponse) {
   }
 }
 
+
+/* === DB tools ═══════════════════════════════════════════════════════════════
+ * The Adminer integration lives entirely in its own content script and its own
+ * page; the only thing it needs from here is a tab. Kept as a separate listener
+ * so it stays out of the playback router's lock handling — none of the locks
+ * above apply to it.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request?.type !== "DBTOOLS_OPEN_MANAGER" && request?.type !== "dbtools-open-manager") return;
+  const suffix = request.sessionId ? `?session=${encodeURIComponent(request.sessionId)}` : "";
+  chrome.tabs.create({ url: chrome.runtime.getURL(`dbtools.html${suffix}`) }, () => {
+    void chrome.runtime.lastError;
+    sendResponse({ ok: true });
+  });
+  return true;
+});

@@ -1,0 +1,163 @@
+/**
+ * dbtools.css — the test-session manager page.
+ *
+ * Token names match popup.css and sqlcases.css so the shared `popupTheme`
+ * storage key still means the same thing on all three surfaces; a user who set
+ * the extension to dark does not get one page in light.
+ *
+ * Fixed shell, same as sqlcases.html: the two column bodies scroll, the page
+ * does not. A session with two hundred changes must not push the buttons that
+ * act on it off the bottom of the window.
+ */
+
+:root {
+  --primary: #2f6df6;
+  --danger: #dc2626;
+  --warning: #c2740a;
+  --success: #0f9d63;
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --sunken: #eef1f7;
+  --text: #1b2030;
+  --muted: #5c6579;
+  --border: #d7dbe5;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  --bg: #161a23;
+  --surface: #1f2430;
+  --sunken: #191e28;
+  --text: #e6e9ef;
+  --muted: #9aa3b5;
+  --border: #39405180;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+body { display: flex; flex-direction: column; }
+
+.topbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.topbar-title { font-weight: 600; }
+.spacer { flex: 1; }
+
+.shell { flex: 1; display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
+
+.rail {
+  border-right: 1px solid var(--border); background: var(--surface);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.rail h2 { margin: 0; padding: 12px 14px 8px; font-size: 12px; text-transform: uppercase; color: var(--muted); }
+.session-list { overflow: auto; padding: 0 8px 12px; display: grid; gap: 6px; align-content: start; }
+
+.sess {
+  text-align: left; width: 100%; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: inherit; font: inherit;
+}
+.sess:hover { background: var(--sunken); }
+.sess.active { background: var(--sunken); border-color: var(--border); }
+.sess .t { font-weight: 600; display: block; word-break: break-word; }
+.sess .s { color: var(--muted); font-size: 12px; }
+
+.detail { display: flex; flex-direction: column; min-height: 0; }
+.detail-head { padding: 14px; border-bottom: 1px solid var(--border); background: var(--surface); display: grid; gap: 8px; }
+.detail-title { display: flex; align-items: center; gap: 8px; }
+.sess-name { font-size: 16px; font-weight: 600; }
+.meta { color: var(--muted); font-size: 12px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.change-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+}
+.change-list { overflow: auto; padding: 10px 14px 24px; display: grid; gap: 8px; align-content: start; }
+.empty { color: var(--muted); }
+
+.change {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden;
+}
+.change.undone { opacity: .55; }
+.change > summary {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none;
+}
+.change > summary::-webkit-details-marker { display: none; }
+.change .op {
+  font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--sunken); border: 1px solid var(--border);
+}
+.change .op.delete { color: var(--danger); }
+.change .op.insert { color: var(--success); }
+.change .tbl { font-weight: 600; }
+.change .grow { flex: 1; }
+.change .warn { color: var(--warning); font-size: 12px; }
+.change-body { padding: 0 10px 10px; display: grid; gap: 10px; }
+
+table.diff { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.diff th, table.diff td {
+  text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top;
+  word-break: break-word;
+}
+table.diff th { color: var(--muted); font-weight: 500; font-size: 12px; }
+table.diff td.val { font-family: var(--mono); font-size: 12px; }
+td.val .null { color: var(--muted); font-style: italic; }
+td.before { background: rgba(220, 38, 38, .07); }
+td.after  { background: rgba(15, 157, 99, .07); }
+
+pre.sql {
+  margin: 0; padding: 8px 10px; background: var(--sunken); border-radius: 6px;
+  font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+}
+
+.pill {
+  font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  background: var(--sunken); border: 1px solid var(--border); color: var(--muted);
+}
+.pill.open { color: var(--success); border-color: currentColor; }
+
+.btn {
+  font: inherit; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+}
+.btn:hover { background: var(--sunken); }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger-outline { color: var(--danger); border-color: var(--danger); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.report { padding: 8px 10px; border-radius: 6px; background: var(--sunken); font-size: 13px; white-space: pre-wrap; }
+.report.err { color: var(--danger); }
+.report.ok { color: var(--success); }
+
+.dlg { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--surface); color: var(--text); }
+.dlg::backdrop { background: rgba(8, 10, 16, .5); }
+.dlg-body { padding: 14px; display: grid; gap: 10px; min-width: 320px; }
+.dlg-body h2 { margin: 0; font-size: 15px; }
+.check { display: flex; align-items: center; gap: 8px; }
+.field { display: grid; gap: 4px; }
+.field input, .field select {
+  font: inherit; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--sunken); color: var(--text);
+}
+.dlg-foot { display: flex; justify-content: flex-end; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  padding: 8px 14px; border-radius: 8px; background: var(--surface);
+  border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--border); max-height: 34vh; }
+}

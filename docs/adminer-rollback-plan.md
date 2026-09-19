@@ -3,7 +3,8 @@
 Tài liệu thiết kế cho nhóm chức năng hỗ trợ người dùng khi thao tác dữ liệu qua **Adminer**, tập trung
 vào bài toán: *sửa dữ liệu bảng master để test, xong rollback nhanh về nguyên trạng.*
 
-Trạng thái: **bản thiết kế, chưa hiện thực.** Chưa có dòng code nào trong tài liệu này được viết vào extension.
+Trạng thái: **Giai đoạn 1–3 đã hiện thực** (xem §8). Code nằm ở `dbtools/`, trang quản lý là `dbtools.html`.
+Kiểm thử: `node dbtools/selftest.mjs` và `dbtools/e2e/` (chạy trên Adminer thật).
 
 ---
 
@@ -61,6 +62,20 @@ Người dùng gõ `UPDATE` / `DELETE` tay. Không có before-value nào trong D
 
 > Mọi chi tiết DOM ở trên **phải được verify lại** trên đúng phiên bản Adminer người dùng chạy;
 > adapter phải tự kiểm tra và **tắt êm** nếu không khớp, tuyệt đối không làm vỡ trang.
+
+### 2.5 Ba điều kiểm chứng trên Adminer 4.8.1 thật (khác hẳn phỏng đoán ban đầu)
+
+Bản thiết kế ban đầu sai ở cả ba chỗ dưới đây; đều được phát hiện khi chạy extension trên Adminer thật
+(`dbtools/e2e/`), không phải qua đọc code.
+
+| Phỏng đoán ban đầu | Thực tế |
+|---|---|
+| Có `<meta name="generator" content="Adminer …">` để nhận diện | **Không có.** Phải nhận diện qua khối tiêu đề trong `#menu` (`a#h1[href*=adminer.org]` + `span.version`) |
+| Driver nằm ở tham số `driver=` | Driver là **tên** tham số: `?server=host` (MySQL), `?pgsql=host`, `?sqlite=`. Đọc sai thì mọi request rơi về trang login — mà trang login vẫn parse ra "không có dòng nào" |
+| Câu lệnh nằm trong `textarea[name=query]` | Textarea bị **ẩn** và chứa câu lệnh của **lần chạy trước**; câu đang gõ nằm trong `<pre contenteditable>` bên cạnh. Adminer chỉ copy sang textarea trong `onsubmit` của chính nó, nên khi giữ submit rồi bắn lại thì phải tự ghi vào textarea |
+
+Ngoài ra: `<option>NULL` trong `select[name="function[<cột>]"]` không có thuộc tính `value`, nên `select.value`
+vẫn ra đúng `'NULL'`; nút Save **không có `name`**, nút xoá là `input[name=delete]`.
 
 ---
 
@@ -217,21 +232,27 @@ Ràng buộc kỹ thuật cần tôn trọng:
 
 | GĐ | Nội dung | Ghi chú |
 |---|---|---|
-| **1** | MVP: chỉ trang `?edit=`. Chụp before lúc load → hook submit → ghi changeset → thanh nổi → trang xem → rollback bằng cách **copy SQL vào ô SQL command** (người dùng tự bấm Execute) | Rủi ro thấp nhất, extension chưa tự ghi vào DB |
-| **2** | Tự thực thi rollback: POST tuần tự vào trang SQL của Adminer, có drift check, báo cáo từng câu, dừng khi lỗi | |
-| **3** | Mở rộng nguồn thay đổi: inline edit, xoá hàng loạt (prefetch), `UPDATE`/`DELETE` gõ tay ở trang SQL | |
-| **4** | Tầng 2 (snapshot + restore-diff) và tầng 3 (nút sinh bảng backup) | |
-| **5** | Nối với phần có sẵn: bật/tắt phiên test từ popup; chạy kịch bản Record/Playback **trong** phiên test rồi rollback tự động sau khi chạy xong | Khép kín vòng cho QA |
+| **1** | ✅ **Xong.** Trang `?edit=`: chụp before lúc load, hook submit, ghi changeset, thanh nổi, trang xem, xuất SQL | Bắt cả nút Delete → hoàn tác bằng `INSERT` |
+| **2** | ✅ **Xong.** Tự thực thi rollback: POST tuần tự vào trang SQL của Adminer, drift check từng dòng, dừng ở câu lỗi đầu tiên | Luôn có preview trước khi chạy |
+| **3** | 🟡 **Một phần.** Đã có `UPDATE`/`DELETE` gõ tay ở trang SQL (prefetch trước khi chạy). **Chưa có** inline edit trong lưới và xoá hàng loạt từ lưới | Hai cái còn lại vẫn đi qua đúng lớp adapter đã có |
+| **4** | ⬜ Tầng 2 (snapshot + restore-diff) và tầng 3 (nút sinh bảng backup) | |
+| **5** | ⬜ Nối với phần có sẵn: chạy kịch bản Record/Playback **trong** phiên test rồi rollback tự động sau khi chạy xong | Nút mở trang quản lý đã có sẵn ở tab Data |
 
-### Kiểm thử
+### Kiểm thử (đã có)
 
-Theo đúng mẫu `sqlcases/selftest.mjs` (Node thuần, không dependency):
+```bash
+node dbtools/selftest.mjs     # 186 check, Node thuần, không dependency
+bash dbtools/e2e/setup.sh     # Adminer 4.8.1 thật trên SQLite
+node dbtools/e2e/run.mjs      # extension thật, trình duyệt thật, DB thật
+```
 
-- Sinh SQL hoàn tác đúng cho từng kiểu cột và từng ca biên ở §5.3 — đặc biệt `NULL` vs `''`, đổi PK, không PK.
-- Quote định danh/literal đúng cho MySQL và PostgreSQL.
-- Changeset round-trip: ghi → export JSON → nạp lại → sinh lại đúng câu cũ.
-- Drift check: phát hiện đúng khi giá trị hiện tại khác "after".
-- Adapter self-check: gặp DOM lạ thì trả về "không hỗ trợ" chứ không throw.
+`selftest.mjs` phủ phần số học: sinh SQL hoàn tác cho từng ca biên ở §5.3 (`NULL` vs `''`, đổi PK, bảng không
+khoá, capture không có "after"), quote đúng theo từng engine, bóc mệnh đề `WHERE` nguyên văn kể cả có subquery,
+và hai catalog dịch không thiếu key.
+
+`e2e/run.mjs` phủ phần *không* kiểm chứng được bằng unit test — tức là mọi giả định về HTML của Adminer: sửa dòng,
+xoá dòng, `UPDATE` hàng loạt gõ tay, rollback khôi phục đúng từng giá trị (kể cả `NULL` và chuỗi rỗng), drift do
+người khác sửa, và trang quản lý.
 
 ---
 

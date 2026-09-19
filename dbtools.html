@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<!-- dbtools.html — Test sessions & rollback.
+
+     Two columns: the sessions recorded against every connection on the left,
+     one session's changes on the right. The panel inside Adminer deliberately
+     shows almost nothing — it is 300px wide and sits on top of somebody's work —
+     so everything that needs reading lives here: the per-column before/after of
+     each change, which changes cannot be undone and why, and the settings.
+
+     Rollback is *driven* from here but does not *run* here. A fetch from an
+     extension page to the Adminer host is cross-site, and the PHP session cookie
+     would not be sent with it, so this page asks an open Adminer tab to do the
+     work and shows what comes back. -->
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Test Sessions &amp; Rollback</title>
+  <link rel="stylesheet" href="css/dbtools.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <span class="topbar-title">↺ <span data-i18n="mgr.title"></span></span>
+    <div class="spacer"></div>
+    <button id="btnLang" class="btn">🌐 <span id="langLabel">VI</span></button>
+    <button id="btnSettings" class="btn" data-i18n="mgr.settings"></button>
+  </header>
+
+  <main class="shell">
+    <aside class="rail">
+      <h2 data-i18n="mgr.sessions"></h2>
+      <div id="sessionList" class="session-list"></div>
+    </aside>
+
+    <section class="detail">
+      <div id="detailHead" class="detail-head" hidden>
+        <div class="detail-title">
+          <span id="sessName" class="sess-name"></span>
+          <span id="sessState" class="pill"></span>
+        </div>
+        <div id="sessMeta" class="meta"></div>
+        <div class="row">
+          <button id="btnRollback" class="btn danger" data-i18n="mgr.rollbackSelected"></button>
+          <button id="btnExportSql"  class="btn" data-i18n="mgr.exportSql"></button>
+          <button id="btnExportJson" class="btn" data-i18n="mgr.exportJson"></button>
+          <button id="btnRename"     class="btn" data-i18n="mgr.rename"></button>
+          <button id="btnToggleOpen" class="btn"></button>
+          <button id="btnDelete"     class="btn danger-outline" data-i18n="mgr.delete"></button>
+        </div>
+        <div id="report" class="report" hidden></div>
+      </div>
+
+      <div id="changeHead" class="change-head" hidden>
+        <label><input type="checkbox" id="chkAll" /> <span data-i18n="mgr.selectAll"></span></label>
+        <span id="changeCount" class="meta"></span>
+      </div>
+
+      <div id="changeList" class="change-list">
+        <p class="empty" data-i18n="mgr.noPreview"></p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settingsDlg" class="dlg">
+    <form method="dialog" class="dlg-body">
+      <h2 data-i18n="mgr.settings"></h2>
+      <label class="check"><input type="checkbox" id="setEnabled" /> <span data-i18n="mgr.enabled"></span></label>
+      <label class="check"><input type="checkbox" id="setAutoExecute" /> <span data-i18n="mgr.autoExecute"></span></label>
+      <label class="check"><input type="checkbox" id="setDrift" /> <span data-i18n="mgr.driftCheck"></span></label>
+      <label class="check"><input type="checkbox" id="setSqlPage" /> <span data-i18n="mgr.captureSqlPage"></span></label>
+      <label class="field"><span data-i18n="mgr.prefetchLimit"></span><input type="number" id="setLimit" min="1" max="5000" /></label>
+      <label class="field"><span data-i18n="mgr.engineOverride"></span>
+        <select id="setEngine">
+          <option value=""></option>
+          <option value="mysql">mysql</option>
+          <option value="pgsql">pgsql</option>
+          <option value="mssql">mssql</option>
+          <option value="sqlite">sqlite</option>
+          <option value="oracle">oracle</option>
+        </select>
+      </label>
+      <div class="dlg-foot"><button class="btn primary" value="close">OK</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="dbtools/manager.js"></script>
+</body>
+</html>

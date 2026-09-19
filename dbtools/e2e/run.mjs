@@ -1,0 +1,229 @@
+/**
+ * run.mjs — the Adminer rollback feature, driven end to end.
+ *
+ * Loads the unpacked extension into Chromium, points it at a real Adminer over a
+ * real SQLite database (see setup.sh), and asserts against the database itself
+ * rather than against the UI: the only claim that matters is that the data came
+ * back, byte for byte, including the difference between NULL and ''.
+ *
+ * Usage:  node dbtools/e2e/run.mjs [baseUrl] [dbPath]
+ */
+
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(HERE, '..', '..');
+const BASE = process.argv[2] || 'http://127.0.0.1:8123/index.php';
+const DB = process.argv[3] || '/tmp/adminer-e2e/test.db';
+const CONN = 'sqlite=&username=&db=test.db';
+
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  console.error('playwright is not installed here — `npm install playwright`, or run with');
+  console.error('NODE_PATH pointing at an install and import it by path.');
+  process.exit(2);
+}
+
+/* === The database, read and written behind the browser's back ═════════════ */
+
+const php = (code) => execFileSync('php', ['-r', code]).toString();
+const rows = () => JSON.parse(php(
+  `$db=new SQLite3("${DB}");$r=$db->query("SELECT id,code,value,note FROM m_generic ORDER BY id");`
+  + '$o=[];while($x=$r->fetchArray(SQLITE3_ASSOC))$o[]=$x;echo json_encode($o);'));
+
+function reseed() {
+  php(`$db=new SQLite3("${DB}");$db->exec("DELETE FROM m_generic");`
+    + '$seed=[[1,"TAX","10","thue"],[2,"CUR","VND",null],[3,"MST","0101","ma so thue"],[4,"LIM","100",""],[5,"FLG","Y","co"]];'
+    + 'foreach($seed as $r){$s=$db->prepare("INSERT INTO m_generic (id,code,value,note,updated_at) VALUES (?,?,?,?,?)");'
+    + '$s->bindValue(1,$r[0]);$s->bindValue(2,$r[1]);$s->bindValue(3,$r[2]);'
+    + 'if($r[3]===null)$s->bindValue(4,null,SQLITE3_NULL);else $s->bindValue(4,$r[3]);'
+    + '$s->bindValue(5,"2026-01-01 00:00:00");$s->execute();}');
+}
+
+let failures = 0;
+function check(name, ok, detail) {
+  console.log(`${ok ? '  ✓' : '  ✗'} ${name}${ok || !detail ? '' : ' — ' + detail}`);
+  if (!ok) failures++;
+}
+
+/* === Driving Adminer ═════════════════════════════════════════════════════ */
+
+async function login(page) {
+  await page.goto(BASE);
+  await page.selectOption('select[name="auth[driver]"]', 'sqlite');
+  await page.fill('input[name="auth[db]"]', 'test.db');
+  await page.click('input[type="submit"]');
+  await page.waitForLoadState('load');
+}
+
+async function startSession(page) {
+  await page.waitForSelector('#frp-dbtools-panel', { state: 'attached' });
+  // The panel remembers whether it was collapsed, so expand it only if it is.
+  if (await page.locator('#frp-dbtools-panel .wrap.collapsed').count()) {
+    await page.click('#frp-dbtools-panel .head');
+  }
+  // The panel offers "end" instead of "start" while a session is recording, and
+  // the second half of this run reuses the same browser profile.
+  const stop = page.locator('#frp-dbtools-panel button:has-text("Kết thúc")');
+  if (await stop.count()) {
+    await stop.click();
+    await page.waitForTimeout(300);
+  }
+  await page.click('#frp-dbtools-panel button:has-text("Bắt đầu")');
+  await page.waitForTimeout(400);
+  return page.locator('#frp-dbtools-panel .title').textContent();
+}
+
+/** Adminer hides its textarea behind a highlighter; type where a person types. */
+async function typeQuery(page, sql) {
+  await page.waitForSelector('textarea[name="query"]', { state: 'attached' });
+  await page.evaluate((text) => {
+    const ta = document.querySelector('textarea[name="query"]');
+    const editor = ta.previousElementSibling;
+    editor.focus();
+    editor.textContent = text;
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }, sql);
+}
+
+const panelTitle = (page) => page.locator('#frp-dbtools-panel .title').textContent();
+
+/* === Run ═════════════════════════════════════════════════════════════════ */
+
+reseed();
+
+const ctx = await chromium.launchPersistentContext('', {
+  headless: true,
+  channel: 'chromium',
+  args: [`--disable-extensions-except=${REPO}`, `--load-extension=${REPO}`],
+});
+
+try {
+  const page = await ctx.newPage();
+  page.on('dialog', (d) => d.accept('E2E'));
+
+  console.log('\nRecording and rolling back');
+  await login(page);
+  check('logged into Adminer', (await page.title()).includes('test.db'), await page.title());
+  check('the panel mounts', (await page.locator('#frp-dbtools-panel').count()) === 1);
+  check('a session starts', (await startSession(page)).includes('E2E'), await panelTitle(page));
+
+  // 1. Edit one row: a value changes and a NULL becomes text.
+  await page.goto(`${BASE}?${CONN}&edit=m_generic&where%5Bid%5D=2`);
+  await page.waitForSelector('textarea[name="fields[value]"]');
+  await page.fill('textarea[name="fields[value]"]', 'XXX');
+  await page.selectOption('select[name="function[note]"]', '');
+  await page.fill('textarea[name="fields[note]"]', 'ghi chu moi');
+  await page.click('input[type="submit"][value="Save"]');
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(600);
+
+  let now = rows();
+  check('the edit reached the database', now[1].value === 'XXX' && now[1].note === 'ghi chu moi',
+    JSON.stringify(now[1]));
+  check('the edit was recorded', (await panelTitle(page)).includes('· 1'), await panelTitle(page));
+
+  // 2. A hand-written bulk update on the SQL page.
+  await page.goto(`${BASE}?${CONN}&sql=`);
+  await typeQuery(page, "UPDATE m_generic SET value='Z' WHERE id <= 3");
+  await page.click('input[type="submit"][value="Execute"]');
+  await page.waitForLoadState('load');
+  await page.waitForTimeout(1500);
+
+  now = rows();
+  check('the bulk update ran', now.slice(0, 3).every((r) => r.value === 'Z'),
+    JSON.stringify(now.map((r) => r.value)));
+  check('the bulk update was recorded', (await panelTitle(page)).includes('· 2'), await panelTitle(page));
+
+  // 3. Roll the whole session back.
+  await page.click('#frp-dbtools-panel button:has-text("Rollback")');
+  await page.waitForSelector('#frp-dbtools-panel .sheet pre');
+  await page.click('#frp-dbtools-panel .sheet button.primary');
+  await page.waitForTimeout(3000);
+
+  now = rows();
+  check('row 1 is back', now[0].value === '10', JSON.stringify(now[0]));
+  check('row 2 value is back', now[1].value === 'VND', JSON.stringify(now[1]));
+  check('row 2 note is NULL again, not an empty string', now[1].note === null,
+    JSON.stringify(now[1].note));
+  check('row 3 is back', now[2].value === '0101', JSON.stringify(now[2]));
+  check('rows nobody touched are untouched', now[3].value === '100' && now[4].value === 'Y',
+    JSON.stringify(now.slice(3)));
+
+  /* ── Delete, drift, and the manager page ───────────────────────────────── */
+
+  console.log('\nDelete, drift and the manager page');
+  reseed();
+  const page2 = await ctx.newPage();
+  page2.on('dialog', (d) => d.accept('E2E drift'));
+  await login(page2);
+  await startSession(page2);
+
+  // 4. Delete a row through the edit form.
+  await page2.goto(`${BASE}?${CONN}&edit=m_generic&where%5Bid%5D=4`);
+  await page2.waitForSelector('input[name="delete"]');
+  await page2.click('input[name="delete"]');
+  await page2.waitForLoadState('load');
+  await page2.waitForTimeout(700);
+  now = rows();
+  check('the delete reached the database', now.length === 4 && !now.some((r) => r.id === 4),
+    JSON.stringify(now.map((r) => r.id)));
+  check('the delete was recorded', (await panelTitle(page2)).includes('· 1'), await panelTitle(page2));
+
+  // 5. Edit another row, then change it from outside — that is drift.
+  await page2.goto(`${BASE}?${CONN}&edit=m_generic&where%5Bid%5D=5`);
+  await page2.waitForSelector('textarea[name="fields[value]"]');
+  await page2.fill('textarea[name="fields[value]"]', 'N');
+  await page2.click('input[type="submit"][value="Save"]');
+  await page2.waitForLoadState('load');
+  await page2.waitForTimeout(700);
+  check('two changes are recorded', (await panelTitle(page2)).includes('· 2'), await panelTitle(page2));
+
+  php(`$db=new SQLite3("${DB}");$db->exec("UPDATE m_generic SET value='SOMEONE_ELSE' WHERE id=5");`);
+
+  await page2.click('#frp-dbtools-panel button:has-text("Rollback")');
+  await page2.waitForSelector('#frp-dbtools-panel .sheet pre');
+  await page2.click('#frp-dbtools-panel .sheet button.primary');
+  const driftSheet = await page2
+    .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("đã bị đổi")', { timeout: 8000 })
+    .then(() => true).catch(() => false);
+  check('drift is reported before anything is overwritten', driftSheet);
+  const driftText = await page2.locator('#frp-dbtools-panel .sheet pre').textContent().catch(() => '');
+  check('the drift names the value that is actually there', driftText.includes('SOMEONE_ELSE'), driftText);
+
+  await page2.click('#frp-dbtools-panel .sheet button:has-text("Huỷ")');   // cancel = skip
+  await page2.waitForTimeout(3000);
+  now = rows();
+  check('the drifted row was left alone', now.find((r) => r.id === 5).value === 'SOMEONE_ELSE',
+    JSON.stringify(now.find((r) => r.id === 5)));
+  check('the deleted row came back', now.some((r) => r.id === 4 && r.value === '100'),
+    JSON.stringify(now.map((r) => r.id)));
+  check('and its empty-string note did not come back as NULL',
+    now.find((r) => r.id === 4).note === '', JSON.stringify(now.find((r) => r.id === 4)));
+
+  // 6. The manager page.
+  const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker', { timeout: 10000 });
+  const extId = new URL(worker.url()).host;
+  const mgr = await ctx.newPage();
+  await mgr.goto(`chrome-extension://${extId}/dbtools.html`);
+  await mgr.waitForSelector('.sess', { timeout: 8000 });
+  check('the manager lists the sessions', (await mgr.locator('.sess').count()) >= 1);
+  await mgr.locator('.sess').first().click();
+  await mgr.waitForTimeout(300);
+  check('it renders the changes', (await mgr.locator('.change').count()) >= 2,
+    String(await mgr.locator('.change').count()));
+  await mgr.locator('.change').first().click();
+  await mgr.waitForTimeout(200);
+  check('it renders a before/after table',
+    /value|note/i.test(await mgr.locator('.change table.diff').first().textContent()));
+  check('an undone change is marked as such', (await mgr.locator('.change.undone').count()) >= 1);
+} finally {
+  await ctx.close();
+}
+
+console.log(failures ? `\n${failures} FAILED` : '\nAll end-to-end checks passed.');
+process.exit(failures ? 1 : 0);

@@ -17,6 +17,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
 | **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
 | **SQL Test Cases** | Vietnamese/English. Parse a SELECT/INSERT/UPDATE/DELETE statement and derive a test case list — EP + BVA, decision table / MC-DC, NULL & 3-valued logic, JOIN cardinality, grouping and paging — with one panel for editing the sample values every case draws on, exported as CSV or JSON |
+| **DB Test Session** | Records every row changed through **Adminer** — edit form, delete, and hand-written `UPDATE`/`DELETE` on the SQL page — and rolls a whole test run back, with a preview of the exact SQL and a drift check per row |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
 | **UI** | Dark/light theme, 5 drag-to-reorder tabs, collapsible cards, hotkeys |
 
@@ -65,6 +66,7 @@ The popup has five tabs, reorderable by drag-and-drop. The last active tab is re
 - Scheduled playback at a set time — one-off, or **Repeat daily**
 - CSV data-driven runs (one scenario execution per CSV row)
 - **SQL Test Case Designer** — opens `sqlcases.html` in its own tab (see below)
+- **DB Test Session** — opens `dbtools.html`: the changes recorded in Adminer and the SQL to undo them
 
 ### Capture
 - Screenshot: Visible, Full Page, Scroll V/H, Segment V/H, Element, Window
@@ -368,6 +370,83 @@ that each per-table CSV comes out square.
 
 ---
 
+## DB Test Session & Rollback (Adminer)
+
+Testing against master data means changing it: a flag here, a rate there, twenty rows of a lookup table. Putting
+it back afterwards is the part nobody enjoys, and the part that goes wrong quietly.
+
+This records every write made through **Adminer** into a *session*, and rolls the session back on request. It is
+not a transaction — Adminer opens a new connection per request, so `BEGIN` cannot span two page loads — it is a
+changeset kept by the extension, replayed backwards as ordinary SQL you read before it runs.
+
+Design notes and the phases beyond what is built: [`docs/adminer-rollback-plan.md`](docs/adminer-rollback-plan.md).
+
+### Using it
+
+1. Open Adminer. A small panel appears bottom-right; nothing is recorded until you start a session.
+2. **▶ Bắt đầu phiên** — name the run.
+3. Change data as you normally would.
+4. **↺ Rollback tất cả**, read the SQL it is about to run, confirm.
+
+**Data → DB Test Session** opens the full page: every change with its before/after per column, per-change
+rollback, and `.sql` / `.json` export of the changeset.
+
+### What it records
+
+| Where you changed it | What is captured | How it is undone |
+|---|---|---|
+| Row edit form (`?edit=`) | The values in the form **at load** — before you touched them | `UPDATE` back, only the columns that changed |
+| Delete button on that form | The whole row | `INSERT` it back |
+| `UPDATE` / `DELETE` typed on the SQL page | The affected rows, read **before** the statement runs | `UPDATE` / `INSERT` per row |
+| `INSERT` | The values, for the record | Not automatically — the new key is never observed |
+
+The old values on the edit form are free: they are already in the inputs when the page loads. A hand-written
+statement has no such luxury, so the rows it is about are found first — the key columns via a `SELECT`, then each
+row's real values through its own edit form, because Adminer abbreviates long text in a result grid and a
+shortened value restored as if it were the whole one would corrupt the row it was meant to protect.
+
+### What it refuses to do
+
+A refusal is shown on the change, not swallowed:
+
+- a table with no primary or unique key — the undo predicate would match every row;
+- a statement writing more than one table, or with no `WHERE`;
+- a column it could not read (BLOB, file input);
+- more affected rows than the configured cap (200 by default).
+
+Other things it cannot put back, and says so: a column with `ON UPDATE CURRENT_TIMESTAMP`, and rows removed by
+`ON DELETE CASCADE` behind a delete.
+
+### Drift
+
+Before undoing a change it re-reads the row. If a column it wrote now holds something else, someone changed it
+after you did — the row is named, with the value it expected and the value it found, and you decide whether to
+skip it or overwrite. Only the columns that change wrote are compared, so a colleague editing a different column
+of the same row is not a conflict, and drift is checked per change at the moment it is undone, so a session that
+edited a row and then bulk-updated it does not report itself.
+
+### Notes
+
+- Nothing leaves the browser. The changeset is `chrome.storage.local`, keyed by origin + driver + server +
+  database, and a changeset recorded against one database is never offered on another.
+- Rollback runs from the Adminer tab, never from the extension page: a request from the extension's own origin
+  is cross-site, and Adminer's PHP session cookie would not be sent with it.
+- Statements are re-run newest first, one change per submission, and stop at the first failure — so what is
+  marked undone is what actually was.
+
+### Tests
+
+```bash
+node dbtools/selftest.mjs      # undo generation, quoting, predicates, catalogs — no dependencies
+bash dbtools/e2e/setup.sh      # then, in another terminal:
+node dbtools/e2e/run.mjs       # the extension against a real Adminer over a real database
+```
+
+The second one exists because half of this feature is a claim about somebody else's HTML, and every one of those
+claims turned out to be different from the obvious guess — see [`dbtools/e2e/README.md`](dbtools/e2e/README.md).
+
+---
+
 ## Variable System
 
 ```
@@ -456,6 +535,21 @@ All hotkeys are configurable in the **Settings** tab and synced via `chrome.stor
 page that never messages the service worker or touches a tab. It is opened from the Data tab and uses
 `chrome.storage.local` only to remember the last query, the technique toggles and the shared theme.
 
+`dbtools/` sits outside it too, with its own content script:
+
+```
+dbtools/boot.js            registered for all http(s) pages; two DOM lookups, then
+                           dynamically imports the rest only on an Adminer page
+dbtools/content-main.js    capture (edit form, SQL page), panel, rollback driver
+dbtools/adapters/adminer.js  every assumption about Adminer's HTML, in one file
+dbtools/{params,sqlquote,undo,sqlcapture}.js   pure logic, shared with the Node selftest
+dbtools/{session,executor,rollback,panel,i18n}.js
+dbtools.html + dbtools/manager.js              the review-and-roll-back page
+```
+
+The service worker's only involvement is opening that page. Rollback is driven from the Adminer tab, because a
+request from the extension's own origin is cross-site and would not carry Adminer's session cookie.
+
 ### System States
 
 The service worker enforces mutual exclusion — only one primary state at a time:
@@ -485,6 +579,9 @@ chrome.storage.local (5 MB — device-local)
   updateStatus, updateAvailableSince, lastUpdateAt, remoteConfig (version check + lock)
   Pending context flags (pick, drag-drop, form draft)
   activatedTabs whitelist
+  dbtoolsSessions / dbtoolsActive / dbtoolsPending / dbtoolsKeyCols / dbtoolsSettings
+    (Adminer test sessions: the changeset, which session is recording per
+     connection, a capture awaiting confirmation, and the key columns per table)
 
 chrome.storage.sync (100 KB — synced across devices)
   hotkeys, screenshot save mode + filename prefix,
@@ -738,6 +835,12 @@ Because this file can disable the extension for everyone, the client treats it a
 | Permission | Purpose |
 |---|---|
 | `desktopCapture` | Window capture — lets Chrome show the window picker |
+
+**Web-accessible resources.** `dbtools/*.js` plus `sqlcases/tokenizer.js` and `sqlcases/parser.js` are exposed to
+pages, because the Adminer integration loads as ES modules through a dynamic `import()` from its content script
+and the SQL parser is shared with it. The cost of that is the usual one: a page can detect the extension by
+requesting one of those URLs. The alternative — a second, bundled copy of the same logic as globals — would have
+guaranteed the two copies drift apart.
 
 ---
 

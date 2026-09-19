@@ -59,17 +59,17 @@ function initCaptureTabs() {
 }
 
 /**
- * Open the SQL Test Case Designer in its own tab.
+ * Wire a button that opens one of the extension's full pages in its own tab.
  *
- * The generated case table is far too wide for a 480px popup, so this is a
- * full page rather than a sixth tab. An already-open instance is focused
- * instead of duplicated — the page keeps unsaved query text in storage, and a
- * second tab would silently compete with the first over that key.
+ * Both of these pages are tables too wide for a 480px popup. An already-open
+ * instance is focused instead of duplicated — each page keeps state in storage
+ * (the unsaved query text, the changeset being reviewed), and a second tab
+ * would silently compete with the first over the same key.
  */
-function initSqlCases() {
-  const btn = document.getElementById('openSqlCases');
+function initPageButton(buttonId, page) {
+  const btn = document.getElementById(buttonId);
   if (!btn) return;
-  const url = chrome.runtime.getURL('sqlcases.html');
+  const url = chrome.runtime.getURL(page);
   btn.addEventListener('click', () => {
     chrome.tabs.query({ url }, (tabs) => {
       const existing = tabs && tabs[0];
@@ -82,6 +82,11 @@ function initSqlCases() {
       window.close();
     });
   });
+}
+
+function initFullPages() {
+  initPageButton('openSqlCases', 'sqlcases.html');
+  initPageButton('openDbTools', 'dbtools.html');
 }
 
 function initTabs() {
@@ -181,7 +186,7 @@ function step(name, fn) {
 step('initHeaderSpacer',       initHeaderSpacer);
 step('initTabs',               initTabs);
 step('initCaptureTabs',        initCaptureTabs);
-step('initSqlCases',           initSqlCases);
+step('initFullPages',          initFullPages);
 step('initTheme',              initTheme);
 step('initScreenshots',        initScreenshots);
 step('initVariables',          initVariables);

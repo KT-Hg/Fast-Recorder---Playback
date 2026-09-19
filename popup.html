@@ -619,6 +619,21 @@
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Opens in a full tab — test case tables need the width.</p>
     </div>
 
+    <!-- DB TEST SESSION (ADMINER) -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <h3 style="margin:0;">DB Test Session</h3>
+      </div>
+      <button id="openDbTools" class="export-code-btn" style="width:100%;" title="Review and roll back data changed through Adminer">
+        <span class="export-code-icon">↺</span>
+        <div class="export-code-info">
+          <span class="export-code-name">Test sessions &amp; rollback</span>
+          <span class="export-code-desc">Changes made in Adminer, with the SQL to undo them</span>
+        </div>
+      </button>
+      <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Recording happens in the Adminer tab itself; this page reviews and rolls back.</p>
+    </div>
+
     <!-- The two cards below are the only ones on this tab that need a live,
          activated tab to do anything. Variables, Export Code and the SQL Test
          Case Designer read storage alone, so the lock overlay is scoped to this
