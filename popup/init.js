@@ -87,6 +87,58 @@ function initPageButton(buttonId, page) {
 function initFullPages() {
   initPageButton('openSqlCases', 'sqlcases.html');
   initPageButton('openDbTools', 'dbtools.html');
+  initDbGuardToggle();
+}
+
+/**
+ * The two switches on the DB Test Session card.
+ *
+ * The first is the master one: off, the panel disappears from the Adminer tabs
+ * that are already open and nothing is recorded — an Adminer tab watches this
+ * setting, so neither switch needs a page reload. The second is the Playback
+ * guard (bg/dbguard.js); which database and which tables it protects are chosen
+ * on the Test sessions page, so switching it on before that has been done opens
+ * those settings instead of pretending to work.
+ */
+function initDbGuardToggle() {
+  const enabled = document.getElementById('dbEnabledToggle');
+  const box = document.getElementById('dbGuardToggle');
+  if (!box || !enabled) return;
+  const KEY = 'dbtoolsSettings';
+
+  const write = (patch) => chrome.storage.local.get([KEY], (res) => {
+    chrome.storage.local.set({ [KEY]: { ...(res[KEY] || {}), ...patch } });
+  });
+
+  const paint = (settings) => {
+    const guard = settings.guard || {};
+    // Stored settings written before this switch existed have no `enabled` key,
+    // and the integration was on for them.
+    enabled.checked = settings.enabled !== false;
+    box.checked = Boolean(guard.enabled && guard.key);
+    box.disabled = !enabled.checked;
+  };
+
+  chrome.storage.local.get([KEY], (res) => paint(res[KEY] || {}));
+
+  enabled.addEventListener('change', () => {
+    write({ enabled: enabled.checked });
+    chrome.storage.local.get([KEY], (res) => paint({ ...(res[KEY] || {}), enabled: enabled.checked }));
+  });
+
+  box.addEventListener('change', () => {
+    chrome.storage.local.get([KEY], (res) => {
+      const settings = res[KEY] || {};
+      const guard = settings.guard || {};
+      if (box.checked && !guard.key) {
+        box.checked = false;
+        chrome.tabs.create({ url: chrome.runtime.getURL('dbtools.html?settings=1') });
+        window.close();
+        return;
+      }
+      write({ guard: { ...guard, enabled: box.checked } });
+    });
+  });
 }
 
 function initTabs() {

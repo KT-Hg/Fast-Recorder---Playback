@@ -33,7 +33,8 @@ The run loads the unpacked extension into Chromium, logs into Adminer, and
 checks that:
 
 1. the panel mounts and a session can be started;
-2. editing a row through `?edit=` records the values it had;
+2. editing a row through `?edit=` records the values it had — through Save, and
+   through "Save and continue edit", which saves over AJAX and never submits;
 3. a hand-written `UPDATE` on the SQL page snapshots the rows it is about to
    change, before it runs;
 4. rolling the session back restores every value exactly — including a NULL that
@@ -41,12 +42,16 @@ checks that:
 5. deleting a row records enough to re-insert it;
 6. a row changed by someone else in the meantime is reported as drift and left
    alone, while the rest of the session still rolls back;
-7. the manager page lists the session, its changes and their before/after.
+7. the manager page lists the session, its changes and their before/after;
+8. a cell edited in the grid, ticked rows deleted from the grid, and an `INSERT`
+   through the edit form are recorded — the insert with the key the database gave
+   it — and a change made behind Adminer's back is caught by a table snapshot, so
+   rolling back puts every row back as seeded.
 
 It reseeds the database itself, so it can be run repeatedly.
 
 ## When Adminer changes
 
-If a new Adminer version breaks something, this run says which of the seven
+If a new Adminer version breaks something, this run says which of the eight
 above stopped working, and `dbtools/adapters/adminer.js` is the only file that
 should need to change.

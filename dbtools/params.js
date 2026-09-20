@@ -37,13 +37,51 @@ export const DRIVER_KEYS = [
   'mongo', 'elastic', 'firebird', 'clickhouse', 'simpledb',
 ];
 
+/**
+ * Adminer's `bracket_escape`: a column name goes inside `where[…]`, so the
+ * characters that would end or confuse the brackets are replaced. Reversed here
+ * so a column called `a[b]` is not read back as `a:3b:2`.
+ */
+const BRACKET = [[':', ':1'], [']', ':2'], ['[', ':3'], ['"', ':4']];
+
+export function bracketEscape(name) {
+  let out = '';
+  for (const ch of String(name)) {
+    const hit = BRACKET.find(([raw]) => raw === ch);
+    out += hit ? hit[1] : ch;
+  }
+  return out;
+}
+
+export function unbracket(name) {
+  return String(name).replace(/:([1-4])/g, (_m, d) => BRACKET[Number(d) - 1][0]);
+}
+
 /** Pull `name[key]` style parameters out of a URLSearchParams into a plain map. */
 function bag(sp, prefix) {
   const out = {};
   for (const [rawKey, value] of sp.entries()) {
     if (!rawKey.startsWith(prefix + '[') || !rawKey.endsWith(']')) continue;
     const key = rawKey.slice(prefix.length + 1, -1);
-    if (key) out[key] = value;
+    if (key) out[unbracket(key)] = value;
+  }
+  return out;
+}
+
+/**
+ * The columns a URL says are NULL.
+ *
+ * Adminer sends them as a list — `null[]=col` — because a NULL has no value to
+ * put in `where[col]=`. `null[col]=` is accepted too, for identities written
+ * before this was read correctly.
+ */
+function nullCols(sp) {
+  const out = [];
+  for (const [rawKey, value] of sp.entries()) {
+    if (!rawKey.startsWith('null[') || !rawKey.endsWith(']')) continue;
+    const inner = rawKey.slice(5, -1);
+    if (inner === '' || /^\d+$/.test(inner)) { if (value !== '') out.push(value); }
+    else out.push(unbracket(inner));
   }
   return out;
 }
@@ -87,7 +125,7 @@ export function parseAdminerUrl(href) {
   else if (sp.has('table'))  { page = 'structure'; table = sp.get('table')  || ''; }
 
   const where = bag(sp, 'where');
-  for (const key of Object.keys(bag(sp, 'null'))) where[key] = null;
+  for (const col of nullCols(sp)) where[col] = null;
 
   return {
     base: url.origin + url.pathname,
@@ -126,10 +164,49 @@ export function editUrl(base, conn, table, where) {
   writeConn(sp, conn);
   sp.set('edit', table);
   for (const [col, value] of Object.entries(where || {})) {
-    if (value === null) sp.set(`null[${col}]`, '');
-    else sp.set(`where[${col}]`, String(value));
+    if (value === null) sp.append('null[]', col);
+    else sp.set(`where[${bracketEscape(col)}]`, String(value));
   }
   return `${base}?${sp.toString()}`;
+}
+
+/**
+ * The edit URL for a row named by Adminer's own identity string — the value of
+ * its `check[]` box in the grid. Used verbatim rather than rebuilt, because for
+ * a long text key it is not a value at all but a hash (see parseRowIdf).
+ */
+export function editUrlIdf(base, conn, table, idf) {
+  return `${buildUrl(base, conn, { edit: table })}&${String(idf).replace(/^&/, '')}`;
+}
+
+/**
+ * Read the identity Adminer gives a row in the grid.
+ *
+ * It is the query-string tail of the row's edit link: `where[id]=42`, plus
+ * `null[]=col` for a NULL key column. A text key longer than 64 characters is
+ * sent as a hash instead — `where[MD5(`col`)]=…` in 4.x, `fun[0]=md5&col[0]=col
+ * &val[0]=…` in 5.x — which can find the row but cannot be put in an undo
+ * statement. Those columns come back in `hashed`, and the caller fills them in
+ * from the row once it has read it.
+ */
+export function parseRowIdf(idf) {
+  const sp = new URLSearchParams(String(idf || '').replace(/^&/, ''));
+  const where = {};
+  const hashed = [];
+  for (const [col, value] of Object.entries(bag(sp, 'where'))) {
+    const inner = /^[A-Z_][A-Z0-9_]*\((.*)\)$/i.exec(col);
+    if (inner) {
+      const name = /[`"[]((?:[^`"\]]|``|"")+)[`"\]]/.exec(inner[1]);
+      hashed.push(name ? name[1].replace(/``/g, '`').replace(/""/g, '"') : inner[1]);
+    } else {
+      where[col] = value;
+    }
+  }
+  for (const col of nullCols(sp)) where[col] = null;
+  for (const [i, col] of Object.entries(bag(sp, 'col'))) {
+    if (sp.has(`fun[${i}]`)) hashed.push(col);
+  }
+  return { where, hashed, raw: String(idf || '').replace(/^&/, '') };
 }
 
 /**

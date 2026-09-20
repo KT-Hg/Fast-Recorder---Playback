@@ -68,12 +68,15 @@ async function startSession(page) {
   }
   // The panel offers "end" instead of "start" while a session is recording, and
   // the second half of this run reuses the same browser profile.
-  const stop = page.locator('#frp-dbtools-panel button:has-text("Kết thúc")');
+  const stop = page.locator('#frp-dbtools-panel button:has-text("End")');
   if (await stop.count()) {
     await stop.click();
     await page.waitForTimeout(300);
   }
-  await page.click('#frp-dbtools-panel button:has-text("Bắt đầu")');
+  await page.click('#frp-dbtools-panel button:has-text("Start session")');
+  // The name is asked for in the panel's own sheet, not in a browser dialog.
+  await page.fill('#frp-dbtools-panel .sheet input', 'E2E');
+  await page.click('#frp-dbtools-panel .sheet button.primary');
   await page.waitForTimeout(400);
   return page.locator('#frp-dbtools-panel .title').textContent();
 }
@@ -127,6 +130,22 @@ try {
     JSON.stringify(now[1]));
   check('the edit was recorded', (await panelTitle(page)).includes('· 1'), await panelTitle(page));
 
+  // 1b. "Save and continue edit" saves over AJAX and never submits the form. Twice
+  //     on the same page: the second save's "before" is the first one's "after".
+  await page.goto(`${BASE}?${CONN}&edit=m_generic&where%5Bid%5D=1`);
+  await page.waitForSelector('textarea[name="fields[note]"]');
+  await page.fill('textarea[name="fields[note]"]', 'tiep tuc');
+  await page.click('input[name="insert"]');
+  await page.waitForTimeout(1200);
+  await page.fill('textarea[name="fields[value]"]', 'T2');
+  await page.click('input[name="insert"]');
+  await page.waitForTimeout(1200);
+
+  now = rows();
+  check('both AJAX saves reached the database', now[0].note === 'tiep tuc' && now[0].value === 'T2',
+    JSON.stringify(now[0]));
+  check('both AJAX saves were recorded', (await panelTitle(page)).includes('· 3'), await panelTitle(page));
+
   // 2. A hand-written bulk update on the SQL page.
   await page.goto(`${BASE}?${CONN}&sql=`);
   await typeQuery(page, "UPDATE m_generic SET value='Z' WHERE id <= 3");
@@ -137,16 +156,17 @@ try {
   now = rows();
   check('the bulk update ran', now.slice(0, 3).every((r) => r.value === 'Z'),
     JSON.stringify(now.map((r) => r.value)));
-  check('the bulk update was recorded', (await panelTitle(page)).includes('· 2'), await panelTitle(page));
+  check('the bulk update was recorded', (await panelTitle(page)).includes('· 4'), await panelTitle(page));
 
   // 3. Roll the whole session back.
-  await page.click('#frp-dbtools-panel button:has-text("Rollback")');
+  await page.click('#frp-dbtools-panel button:has-text("Roll back all")');
   await page.waitForSelector('#frp-dbtools-panel .sheet pre');
   await page.click('#frp-dbtools-panel .sheet button.primary');
   await page.waitForTimeout(3000);
 
   now = rows();
   check('row 1 is back', now[0].value === '10', JSON.stringify(now[0]));
+  check('row 1 note is back, through both AJAX saves', now[0].note === 'thue', JSON.stringify(now[0]));
   check('row 2 value is back', now[1].value === 'VND', JSON.stringify(now[1]));
   check('row 2 note is NULL again, not an empty string', now[1].note === null,
     JSON.stringify(now[1].note));
@@ -185,17 +205,17 @@ try {
 
   php(`$db=new SQLite3("${DB}");$db->exec("UPDATE m_generic SET value='SOMEONE_ELSE' WHERE id=5");`);
 
-  await page2.click('#frp-dbtools-panel button:has-text("Rollback")');
+  await page2.click('#frp-dbtools-panel button:has-text("Roll back all")');
   await page2.waitForSelector('#frp-dbtools-panel .sheet pre');
   await page2.click('#frp-dbtools-panel .sheet button.primary');
   const driftSheet = await page2
-    .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("đã bị đổi")', { timeout: 8000 })
+    .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("changed after you edited")', { timeout: 8000 })
     .then(() => true).catch(() => false);
   check('drift is reported before anything is overwritten', driftSheet);
   const driftText = await page2.locator('#frp-dbtools-panel .sheet pre').textContent().catch(() => '');
   check('the drift names the value that is actually there', driftText.includes('SOMEONE_ELSE'), driftText);
 
-  await page2.click('#frp-dbtools-panel .sheet button:has-text("Huỷ")');   // cancel = skip
+  await page2.click('#frp-dbtools-panel .sheet button:has-text("Cancel")');   // cancel = skip
   await page2.waitForTimeout(3000);
   now = rows();
   check('the drifted row was left alone', now.find((r) => r.id === 5).value === 'SOMEONE_ELSE',
@@ -221,6 +241,72 @@ try {
   check('it renders a before/after table',
     /value|note/i.test(await mgr.locator('.change table.diff').first().textContent()));
   check('an undone change is marked as such', (await mgr.locator('.change.undone').count()) >= 1);
+
+  /* ── The grid, INSERT, and a snapshot ──────────────────────────────────── */
+
+  console.log('\nThe grid, INSERT and a table snapshot');
+  reseed();
+  const page3 = await ctx.newPage();
+  page3.on('dialog', (d) => d.accept());   // Adminer's own confirm() on Delete
+  await login(page3);
+  await startSession(page3);
+  await page3.click('#frp-dbtools-panel button:has-text("⋯")');
+  await page3.click('#frp-dbtools-panel button:has-text("Snapshot")');
+  await page3.fill('#frp-dbtools-panel .sheet input', 'm_generic');
+  await page3.click('#frp-dbtools-panel .sheet button.primary');
+  await page3.waitForTimeout(1500);
+  check('the table is snapshotted', /snapshot/i.test(await page3.locator('#frp-dbtools-panel .meta').textContent()),
+    await page3.locator('#frp-dbtools-panel .meta').textContent());
+
+  // 7. A cell edited in the grid, in Modify mode.
+  await page3.goto(`${BASE}?${CONN}&select=m_generic&modify=1`);
+  await page3.fill('tr:has(input[name="check[]"][value="where%5Bid%5D=2"]) [name$="[value]"]', 'GRID');
+  await page3.click('input[type="submit"][value="Save"]');
+  await page3.waitForLoadState('load');
+  await page3.waitForTimeout(1500);
+  now = rows();
+  check('the grid edit reached the database', now[1].value === 'GRID', JSON.stringify(now[1]));
+  check('only the row that changed was recorded', (await panelTitle(page3)).includes('· 1'), await panelTitle(page3));
+
+  // 8. Two ticked rows deleted from the grid.
+  await page3.goto(`${BASE}?${CONN}&select=m_generic`);
+  await page3.check('input[name="check[]"][value="where%5Bid%5D=4"]');
+  await page3.check('input[name="check[]"][value="where%5Bid%5D=5"]');
+  await page3.click('input[name="delete"]');
+  await page3.waitForLoadState('load');
+  await page3.waitForTimeout(1500);
+  check('the bulk delete reached the database', rows().length === 3, JSON.stringify(rows().map((r) => r.id)));
+  check('it was recorded', (await panelTitle(page3)).includes('· 2'), await panelTitle(page3));
+
+  // 9. An INSERT through the edit form, its key left to the database.
+  await page3.goto(`${BASE}?${CONN}&edit=m_generic`);
+  await page3.fill('textarea[name="fields[code]"]', 'NEW');
+  await page3.fill('textarea[name="fields[value]"]', 'N1');
+  await page3.click('input[type="submit"][value="Save"]');
+  await page3.waitForLoadState('load');
+  await page3.waitForTimeout(1500);
+  check('the insert reached the database', rows().some((r) => r.code === 'NEW'), JSON.stringify(rows()));
+  check('the insert was recorded with its new key', (await panelTitle(page3)).includes('· 3'), await panelTitle(page3));
+
+  // 10. A change made behind Adminer's back — only the snapshot knows about it.
+  php(`$db=new SQLite3("${DB}");$db->exec("UPDATE m_generic SET note='CHANGED BY THE APP' WHERE id=3");`);
+
+  await page3.click('#frp-dbtools-panel button:has-text("Roll back all")');
+  await page3.waitForSelector('#frp-dbtools-panel .sheet pre');
+  await page3.click('#frp-dbtools-panel .sheet button.primary');
+  const snapSheet = await page3
+    .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("snapshot")', { timeout: 10000 })
+    .then(() => true).catch(() => false);
+  check('the snapshot restore is offered after the change log', snapSheet);
+  if (snapSheet) await page3.click('#frp-dbtools-panel .sheet button.primary');
+  await page3.waitForTimeout(3000);
+
+  now = rows();
+  const seed = [['1', 'TAX', '10', 'thue'], ['2', 'CUR', 'VND', null], ['3', 'MST', '0101', 'ma so thue'],
+    ['4', 'LIM', '100', ''], ['5', 'FLG', 'Y', 'co']];
+  check('every row is back exactly as seeded — the inserted one gone, the deleted ones back, NULL and \'\' apart',
+    now.length === 5 && now.every((r, i) => String(r.id) === seed[i][0] && r.code === seed[i][1]
+      && String(r.value) === seed[i][2] && r.note === seed[i][3]), JSON.stringify(now));
 } finally {
   await ctx.close();
 }

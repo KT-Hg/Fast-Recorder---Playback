@@ -69,6 +69,11 @@ export async function checkDrift(ctx, change) {
  * by one code path and cannot disagree. `opts.onDrift(change, drifted)` is asked
  * what to do about a row that moved, and answers 'force' or 'skip'; without it,
  * drifted rows are skipped.
+ *
+ * `opts.includeUndone` runs changes that were already rolled back once. A session
+ * is not spent after one rollback: the same test can be run again, or the data put
+ * back a second time after someone changed it, and the undo statements are built
+ * from the recorded before/after either way.
  */
 export async function runRollback(ctx, session, opts = {}) {
   const onProgress = opts.onProgress || noop;
@@ -76,7 +81,7 @@ export async function runRollback(ctx, session, opts = {}) {
 
   const wanted = new Set(opts.changeIds || []);
   const changes = [...(session.changes || [])]
-    .filter((c) => !c.undone)
+    .filter((c) => opts.includeUndone || !c.undone)
     .filter((c) => !wanted.size || wanted.has(c.id))
     .sort((a, b) => b.seq - a.seq);
 

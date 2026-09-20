@@ -104,13 +104,57 @@ export function describeStatement(sql) {
     reason: '',
   };
 
+  if (kind === 'insert') {
+    desc.insertColumns = ast.columns || [];
+    desc.insertRows = (ast.rows || []).map((row) => row.map(literalOf));
+    desc.insertSelect = Boolean(ast.select);
+  }
+
   if (!desc.table)                     desc.reason = 'no-table';
   else if (desc.joins)                 desc.reason = 'multi-table';
-  else if (kind === 'insert')          desc.reason = 'insert-not-captured';
+  else if (kind === 'insert')          desc.capturable = true;
   else if (!desc.where)                desc.reason = 'no-where';
   else                                 desc.capturable = true;
 
   return desc;
+}
+
+/**
+ * A literal's value as the database will store it, or `undefined` when the
+ * expression is not a plain literal (a function call, DEFAULT, arithmetic).
+ * Numbers keep their source spelling, so `7.50` stays `7.50`.
+ */
+function literalOf(expr) {
+  if (!expr || expr.type !== 'literal') return undefined;
+  if (expr.kind === 'null') return null;
+  if (expr.kind === 'number') return String(expr.raw ?? expr.value);
+  if (expr.kind === 'string') return String(expr.value);
+  return undefined;
+}
+
+/**
+ * The keys an INSERT names outright: one `{ col: value }` per row, when the
+ * statement lists every key column and gives each a literal. Anything else — an
+ * auto-increment key left out, `INSERT … SELECT`, a key computed by an expression —
+ * returns null, and the caller finds the new rows by comparing the table's keys
+ * before and after instead.
+ */
+export function literalInsertKeys(desc, keyCols) {
+  if (!desc || desc.kind !== 'insert' || desc.insertSelect) return null;
+  if (!keyCols || !keyCols.length || !desc.insertColumns.length || !desc.insertRows.length) return null;
+  const index = keyCols.map((col) => desc.insertColumns.findIndex((c) => c.toLowerCase() === col.toLowerCase()));
+  if (index.some((i) => i < 0)) return null;
+  const out = [];
+  for (const row of desc.insertRows) {
+    const where = {};
+    for (let k = 0; k < keyCols.length; k++) {
+      const value = row[index[k]];
+      if (value === undefined || value === null) return null;
+      where[keyCols[k]] = value;
+    }
+    out.push(where);
+  }
+  return out;
 }
 
 /**

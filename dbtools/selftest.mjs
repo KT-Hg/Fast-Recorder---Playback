@@ -19,7 +19,13 @@
  * without a browser.
  */
 
-import { parseAdminerUrl, buildUrl, editUrl, connKey, connLabel } from './params.js';
+import {
+  parseAdminerUrl, buildUrl, editUrl, connKey, connLabel, parseRowIdf, bracketEscape, unbracket,
+} from './params.js';
+import {
+  snapshotSelect, keysSelect, keyOf, keyWhere, newRows, diffSnapshot, diffIsEmpty, restoreStatements,
+  backupName, backupCreateSql, backupRestoreSql, backupDropSql,
+} from './snapshot.js';
 import {
   quoteIdent, quoteValue, quoteTable, looksNumeric, whereClause,
   buildUpdate, buildInsert, buildDelete, engineOf, joinStatements,
@@ -28,7 +34,9 @@ import {
   undoStatements, undoWhere, blockingReason, changedColumns, columnsToRestore,
   driftOf, sameValue, sessionUndoScript,
 } from './undo.js';
-import { splitStatements, whereText, describeStatement, prefetchSelect, isDestructiveDdl } from './sqlcapture.js';
+import {
+  splitStatements, whereText, describeStatement, prefetchSelect, isDestructiveDdl, literalInsertKeys,
+} from './sqlcapture.js';
 import { keyColsFromDoc } from './adapters/adminer.js';
 import { CATALOGS, LANGUAGES, setLang, t, missingKeys, clearMissingKeys } from './i18n.js';
 
@@ -283,7 +291,8 @@ function eq(name, actual, expected) {
   eq('a WHERE-less delete is refused', describeStatement('DELETE FROM t').reason, 'no-where');
   eq('a multi-table update is refused',
     describeStatement('UPDATE a JOIN b ON a.id=b.id SET a.x=1 WHERE b.y=2').reason, 'multi-table');
-  eq('an insert is refused', describeStatement('INSERT INTO t (a) VALUES (1)').reason, 'insert-not-captured');
+  check('an insert is captured now — its key is found afterwards',
+    describeStatement('INSERT INTO t (a) VALUES (1)').capturable);
   eq('a select is not a write', describeStatement('SELECT 1').reason, 'not-a-write');
   eq('unparsable text is reported as such', describeStatement('NOT SQL AT ALL ((').reason, 'parse-error');
 
@@ -321,6 +330,158 @@ function eq(name, actual, expected) {
 }
 
 /* ---------------------------------------------------------------------
+ * 5b. Row identity as Adminer writes it — in the grid's `check[]` boxes and
+ *     in its edit links. NULL key columns come as a list, `null[]=col`;
+ *     a long text key comes as a hash that cannot go into an undo.
+ * ------------------------------------------------------------------- */
+{
+  const real = parseAdminerUrl('https://db.test/a.php?server=h&db=d&edit=t&where%5Bid%5D=1&null%5B%5D=note');
+  check('null[]=col — how Adminer actually sends a NULL key column — is read as that column',
+    real.where.id === '1' && real.where.note === null && !('' in real.where), JSON.stringify(real.where));
+
+  const url = editUrl('https://db.test/a.php', { driver: 'server', server: 'h', username: null, db: 'd', ns: '' },
+    't', { id: '1', note: null, other: null });
+  check('and it is written back as a list, one entry per column',
+    url.includes('null%5B%5D=note') && url.includes('null%5B%5D=other') && !url.includes('null%5Bnote%5D'), url);
+
+  eq('a column name with brackets is escaped the way Adminer does', bracketEscape('a[b]:c'), 'a:3b:2:1c');
+  eq('and read back', unbracket(bracketEscape('a[b]:"c"')), 'a[b]:"c"');
+  const odd = parseAdminerUrl(editUrl('https://db.test/a.php', { driver: 'sqlite', server: '', username: '', db: 'x', ns: '' },
+    't', { 'a[1]': '5' }));
+  eq('a bracketed column name round-trips through an edit URL', odd.where['a[1]'], '5');
+
+  const v4 = parseRowIdf('where%5Bid%5D=42&where%5Bcode%5D=A%26B');
+  check('a 4.x grid identity (URL-encoded) gives the predicate',
+    v4.where.id === '42' && v4.where.code === 'A&B' && !v4.hashed.length, JSON.stringify(v4));
+  const v5 = parseRowIdf('where[id]=42&null[]=note');
+  check('a 5.x grid identity (brackets left bare) gives the same, NULL included',
+    v5.where.id === '42' && v5.where.note === null, JSON.stringify(v5));
+  const md5v4 = parseRowIdf('where%5BMD5%28%60body%60%29%5D=abc123&where%5Bid%5D=1');
+  check('a 4.x hashed long-text key is flagged, not used as a column',
+    md5v4.hashed.join() === 'body' && !Object.keys(md5v4.where).some((k) => k.includes('(')),
+    JSON.stringify(md5v4));
+  const md5v5 = parseRowIdf('fun[0]=md5&col[0]=body&val[0]=abc123&where[id]=1');
+  check('a 5.x hashed key (fun/col/val) is flagged too',
+    md5v5.hashed.join() === 'body' && md5v5.where.id === '1' && !('body' in md5v5.where), JSON.stringify(md5v5));
+  eq('the identity is kept verbatim for fetching the row', parseRowIdf('&where[id]=1').raw, 'where[id]=1');
+}
+
+/* ---------------------------------------------------------------------
+ * 5c. INSERT: undone by deleting the new row, which needs its key.
+ * ------------------------------------------------------------------- */
+{
+  const desc = describeStatement("INSERT INTO m_generic (id, code, value) VALUES (7, 'X', NULL), (8, 'Y''s', 'z')");
+  const keys = literalInsertKeys(desc, ['id']);
+  check('keys spelled out as literals are read straight off the statement',
+    keys && keys.length === 2 && keys[0].id === '7' && keys[1].id === '8', JSON.stringify(keys));
+  check('a key column left out means the key is not known from the text',
+    literalInsertKeys(describeStatement("INSERT INTO t (code) VALUES ('a')"), ['id']) === null);
+  check('INSERT … SELECT names no rows',
+    literalInsertKeys(describeStatement('INSERT INTO t SELECT * FROM u'), ['id']) === null);
+  check('a key computed by an expression is not a literal',
+    literalInsertKeys(describeStatement("INSERT INTO t (id, a) VALUES (1+1, 'x')"), ['id']) === null);
+  check('a NULL key is not a key',
+    literalInsertKeys(describeStatement("INSERT INTO t (id) VALUES (NULL)"), ['id']) === null);
+  eq('column names match whatever their case',
+    (literalInsertKeys(describeStatement('INSERT INTO t (ID, a) VALUES (3, 4)'), ['id']) || [])[0]?.id, '3');
+
+  const ins = { op: 'insert', table: 'm_generic', keyCols: ['id'],
+    rows: [{ where: { id: '7' }, before: null, after: { id: '7', code: 'X', value: null } }] };
+  eq('an insert with its key is undone by deleting exactly that row',
+    undoStatements(ins, 'mysql')[0], 'DELETE FROM `m_generic` WHERE `id` = 7');
+  eq('and nothing blocks it', blockingReason(ins), '');
+  eq('an insert whose key was never found says so, in its own words',
+    blockingReason({ op: 'insert', table: 't', keyCols: [], rows: [{ where: {}, before: null, after: { a: '1' } }] }),
+    'insert-key-unknown');
+}
+
+/* ---------------------------------------------------------------------
+ * 5d. Whole-table snapshots and backup tables.
+ * ------------------------------------------------------------------- */
+{
+  eq('snapshot select, mysql', snapshotSelect('m_generic', 'mysql', '', 5001, ['id']),
+    'SELECT * FROM `m_generic` ORDER BY `id` LIMIT 5001');
+  eq('snapshot select, mssql uses TOP', snapshotSelect('t', 'mssql', '', 10, ['id']),
+    'SELECT TOP 10 * FROM [t] ORDER BY [id]');
+  eq('snapshot select, oracle uses FETCH FIRST', snapshotSelect('t', 'oracle', '', 10, []),
+    'SELECT * FROM "t" FETCH FIRST 10 ROWS ONLY');
+  eq('key select asks for the key only', keysSelect('t', ['a', 'b'], 'pgsql', '', 3),
+    'SELECT "a", "b" FROM "t" ORDER BY "a", "b" LIMIT 3');
+
+  const snap = {
+    keyCols: ['id'],
+    columns: ['id', 'code', 'note', 'blob'],
+    unreadable: ['blob'],
+    rows: [
+      { id: '1', code: 'A', note: null, blob: null },
+      { id: '2', code: 'B', note: '', blob: null },
+      { id: '3', code: 'C', note: 'x', blob: null },
+    ],
+  };
+  const now = {
+    columns: ['id', 'code', 'note', 'blob'],
+    unreadable: ['blob'],
+    rows: [
+      { id: '1', code: 'A', note: '', blob: null },      // NULL became ''
+      { id: '2', code: 'B', note: '', blob: null },      // untouched
+      { id: '4', code: 'D', note: null, blob: null },    // inserted since
+    ],                                                   // 3 deleted since
+  };
+  const diff = diffSnapshot(snap, now);
+  eq('a row added since the snapshot is deleted', diff.deletes.map((d) => d.where.id).join(), '4');
+  eq('a row removed since is inserted back', diff.inserts.map((i) => i.row.id).join(), '3');
+  check('a NULL that became an empty string is a change, and is put back as NULL',
+    diff.updates.length === 1 && diff.updates[0].where.id === '1' && diff.updates[0].set.note === null
+      && Object.keys(diff.updates[0].set).join() === 'note', JSON.stringify(diff.updates));
+  check('an unreadable column is not compared, and is listed as skipped',
+    diff.skippedCols.includes('blob') && !diff.inserts[0].row.hasOwnProperty('blob'), JSON.stringify(diff));
+  const sql = restoreStatements(diff, 'm_generic', 'mysql');
+  check('deletes run first, then updates, then inserts — so unique values are free when needed',
+    sql[0].startsWith('DELETE') && sql[1].startsWith('UPDATE') && sql[2].startsWith('INSERT'), sql.join(' | '));
+  eq('the restored row keeps its NULL', sql[1], 'UPDATE `m_generic` SET `note` = NULL WHERE `id` = 1');
+  check('an unchanged table needs nothing', diffIsEmpty(diffSnapshot(snap, { ...snap })));
+
+  eq('no key, no diff', diffSnapshot({ ...snap, keyCols: [] }, now).reason, 'no-key');
+  eq('duplicate keys are refused rather than guessed',
+    diffSnapshot(snap, { ...now, rows: [...now.rows, { id: '4', code: 'E', note: null }] }).reason, 'duplicate-key');
+  eq('a key column that cannot be read is refused',
+    diffSnapshot({ ...snap, unreadable: ['id'] }, now).reason, 'key-not-compared');
+  check('a column dropped since the snapshot is skipped, not written',
+    diffSnapshot(snap, { ...now, columns: ['id', 'code', 'blob'] }).skippedCols.includes('note'));
+
+  // An empty table reads back as "No rows." — no header, so no column list.
+  const wasEmpty = diffSnapshot({ keyCols: ['id'], columns: [], rows: [], unreadable: [] },
+    { columns: ['id', 'name'], rows: [{ id: '2', name: 'from app' }], unreadable: [] });
+  check('a table that was empty when snapshotted is emptied again',
+    !wasEmpty.reason && wasEmpty.deletes.length === 1 && wasEmpty.deletes[0].where.id === '2', JSON.stringify(wasEmpty));
+  const nowEmpty = diffSnapshot({ keyCols: ['id'], columns: ['id', 'name'], rows: [{ id: '1', name: 'a' }], unreadable: [] },
+    { columns: [], rows: [], unreadable: [] });
+  check('a table emptied since the snapshot gets its rows back',
+    !nowEmpty.reason && nowEmpty.inserts.length === 1 && nowEmpty.inserts[0].row.name === 'a', JSON.stringify(nowEmpty));
+
+  const before = [keyOf({ id: '1' }, ['id']), keyOf({ id: '2' }, ['id'])];
+  eq('new rows are the ones whose key was not there before',
+    newRows(before, [{ id: '1' }, { id: '2' }, { id: '9' }], ['id']).map((r) => r.id).join(), '9');
+  eq('key comparison keeps NULL apart from the text "null"',
+    newRows([keyOf({ id: null }, ['id'])], [{ id: 'null' }], ['id']).length, 1);
+  eq('a key predicate from a row', JSON.stringify(keyWhere({ a: '1', b: null, c: 'x' }, ['a', 'b'])), '{"a":"1","b":null}');
+
+  const when = new Date(2026, 8, 19, 14, 5, 9);
+  eq('a backup is named after the table and the moment', backupName('m_generic', when, 'mysql'),
+    'm_generic_bak_20260919_140509');
+  const long = backupName('x'.repeat(80), when, 'pgsql');
+  check('a long name is cut from the table end, never the timestamp',
+    long.length === 63 && long.endsWith('_bak_20260919_140509'), long);
+  check('oracle keeps within 30', backupName('a_long_master_table', when, 'oracle').length <= 30);
+  eq('backup is CREATE TABLE AS', backupCreateSql('t', 't_bak', 'mysql'), 'CREATE TABLE `t_bak` AS SELECT * FROM `t`');
+  eq('except in SQL Server, which uses SELECT INTO', backupCreateSql('t', 't_bak', 'mssql'),
+    'SELECT * INTO [t_bak] FROM [t]');
+  eq('wholesale restore empties then copies back', backupRestoreSql('t', 't_bak', 'pgsql').join('; '),
+    'DELETE FROM "t"; INSERT INTO "t" SELECT * FROM "t_bak"');
+  eq('drop', backupDropSql('t_bak', 'sqlite'), 'DROP TABLE "t_bak"');
+}
+
+/* ---------------------------------------------------------------------
  * 6. Translation catalogs. A missing key degrades to the key itself, which
  *    is how `reason.no-key` ends up on screen instead of a sentence.
  * ------------------------------------------------------------------- */
@@ -340,6 +501,7 @@ function eq(name, actual, expected) {
   const REASONS = [
     'no-key', 'no-before', 'nothing-to-restore', 'no-rows', 'no-table', 'unsupported-op',
     'unreadable-columns', 'multi-table', 'no-where', 'insert-not-captured', 'parse-error', 'not-a-write',
+    'insert-key-unknown', 'too-many-rows', 'import-not-captured',
   ];
   for (const lang of LANGUAGES) {
     setLang(lang);
@@ -353,7 +515,7 @@ function eq(name, actual, expected) {
   setLang('vi');
   eq('placeholders are filled', t('panel.changes', { n: 3 }), '3 thay đổi');
   setLang('en');
-  eq('and in English too', t('panel.changes', { n: 3 }), '3 changes');
+  eq('and in English too', t('panel.changes', { n: 3 }), '3 change(s)');
   eq('an unknown key degrades to itself', t('nope.nope'), 'nope.nope');
 }
 

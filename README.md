@@ -17,7 +17,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
 | **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
 | **SQL Test Cases** | Vietnamese/English. Parse a SELECT/INSERT/UPDATE/DELETE statement and derive a test case list — EP + BVA, decision table / MC-DC, NULL & 3-valued logic, JOIN cardinality, grouping and paging — with one panel for editing the sample values every case draws on, exported as CSV or JSON |
-| **DB Test Session** | Records every row changed through **Adminer** — edit form, delete, and hand-written `UPDATE`/`DELETE` on the SQL page — and rolls a whole test run back, with a preview of the exact SQL and a drift check per row |
+| **DB Test Session** | Records every row changed through **Adminer** — edit form, grid edits, bulk delete, `INSERT`, and hand-written SQL — snapshots whole tables for changes made by the application, and rolls a whole test run back (also automatically after Playback), with a preview of the exact SQL and a drift check per row |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
 | **UI** | Dark/light theme, 5 drag-to-reorder tabs, collapsible cards, hotkeys |
 
@@ -383,27 +383,60 @@ Design notes and the phases beyond what is built: [`docs/adminer-rollback-plan.m
 
 ### Using it
 
-1. Open Adminer. A small panel appears bottom-right; nothing is recorded until you start a session.
-2. **▶ Bắt đầu phiên** — name the run.
+1. Open Adminer. A small panel appears bottom-right; nothing is recorded until you start a session. The
+   **Adminer panel** switch on the DB Test Session card turns the whole thing off and on — off, no panel appears
+   and nothing is recorded, and the Adminer tabs already open follow along without a reload.
+2. **▶ Start session** — name the run. If the test goes through the application rather than Adminer, open **⋯**
+   on the panel and press **📸 Snapshot** too, naming the tables it touches. Snapshot and Backup live behind that
+   **⋯** because they are occasional, heavier decisions than the buttons next to them.
 3. Change data as you normally would.
-4. **↺ Rollback tất cả**, read the SQL it is about to run, confirm.
+4. **↺ Roll back all**, read the SQL it is about to run, confirm. The recorded changes are undone first, then the
+   snapshotted tables are put back. A session is not spent by one rollback: press it again — after another run of
+   the same test, or after the data moved — and it offers the same undo a second time, saying that is what it is.
 
 **Data → DB Test Session** opens the full page: every change with its before/after per column, per-change
-rollback, and `.sql` / `.json` export of the changeset.
+rollback, the session's snapshots and backup tables, and `.sql` / `.json` export of the changeset. The **?** on
+that card is the in-popup guide. The panel and the page are in English; 🌐 on the page switches to Vietnamese.
 
 ### What it records
 
 | Where you changed it | What is captured | How it is undone |
 |---|---|---|
 | Row edit form (`?edit=`) | The values in the form **at load** — before you touched them | `UPDATE` back, only the columns that changed |
+| "Save and continue editing" on that form | The row as the previous save left it, and as the database holds it afterwards (read back, so `now()` / `md5()` are the real values) | `UPDATE` back, one change per save |
 | Delete button on that form | The whole row | `INSERT` it back |
+| A cell edited in the grid (Ctrl+click, or `Modify`) | Each edited row, read through its edit form before the save; read again after | `UPDATE` back, only the columns that actually changed |
+| Ticked rows → **Delete**, or **Whole result** → **Delete** | Every row it is about to delete — for *whole result*, all rows the search matches, not just the page | `INSERT` them back |
+| Ticked rows → **Edit** (mass edit) | Each row before; the columns moved off *original* | `UPDATE` back |
 | `UPDATE` / `DELETE` typed on the SQL page | The affected rows, read **before** the statement runs | `UPDATE` / `INSERT` per row |
-| `INSERT` | The values, for the record | Not automatically — the new key is never observed |
+| `INSERT` — edit form, **Clone**, or typed on the SQL page | The new row's key: typed into the form, from Adminer's *"Item 42 has been inserted"*, spelled out as literals in the statement, or found by comparing the table's keys before and after | `DELETE` of exactly those rows |
 
-The old values on the edit form are free: they are already in the inputs when the page loads. A hand-written
-statement has no such luxury, so the rows it is about are found first — the key columns via a `SELECT`, then each
-row's real values through its own edit form, because Adminer abbreviates long text in a result grid and a
-shortened value restored as if it were the whole one would corrupt the row it was meant to protect.
+The old values on the edit form are free: they are already in the inputs when the page loads. Everywhere else the
+rows are found first and each one is read through its own edit form, because Adminer abbreviates long text in a
+grid and a shortened value restored as if it were the whole one would corrupt the row it was meant to protect. A
+text key longer than 64 characters reaches the grid as an MD5 hash; the row is found by the hash and the undo uses
+the real value read from it.
+
+### Snapshots and backup tables
+
+The change log only sees writes made through Adminer. For a test that drives the application:
+
+- **⋯ → 📸 Snapshot** copies whole tables into the session (`SELECT *` through the SQL page, which does not shorten
+  values; 5,000 rows per table by default). On rollback each table is compared with its snapshot on the key and
+  put back with `DELETE` for rows added since, `UPDATE` for rows that moved (only the columns that moved), and
+  `INSERT` for rows removed — whoever made the change.
+- **⋯ → 🗄 Backup** creates `<table>_bak_<yyyymmdd_hhmmss>` in the database with `CREATE TABLE … AS SELECT`
+  (`SELECT … INTO` on SQL Server). It survives a lost laptop and removing the extension. Restoring diffs it
+  against the table the same way; a table too large to diff is emptied and copied back, and the preview says so.
+
+### Rolling back after Playback
+
+Tick **Roll the database back after each Playback run** on the DB Test Session card, and choose the database and
+the tables to snapshot under **Settings** on the manager page. Every Playback run — a scenario, a sequence, or a
+CSV run — then opens a session and snapshots those tables before it starts, and rolls the session back when it
+ends, without a preview (the person asked for it up front; rows someone else changed meanwhile are skipped, never
+overwritten). An Adminer tab on that database has to be open: without one the run is refused, because changing
+the data with no way back is the thing the setting exists to prevent.
 
 ### What it refuses to do
 
@@ -412,7 +445,12 @@ A refusal is shown on the change, not swallowed:
 - a table with no primary or unique key — the undo predicate would match every row;
 - a statement writing more than one table, or with no `WHERE`;
 - a column it could not read (BLOB, file input);
-- more affected rows than the configured cap (200 by default).
+- more affected rows than the configured cap (200 by default);
+- a CSV import in the grid;
+- an `INSERT` whose new rows could not be told apart (a table larger than the key-scan cap, 10,000 rows).
+
+Finding an `INSERT`'s rows by comparing keys also catches a row someone else inserted in the same second; the
+change is marked *found by difference* so you can see which ones those are.
 
 Other things it cannot put back, and says so: a column with `ON UPDATE CURRENT_TIMESTAMP`, and rows removed by
 `ON DELETE CASCADE` behind a delete.

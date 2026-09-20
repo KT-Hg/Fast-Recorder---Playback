@@ -11,7 +11,7 @@
      extension page to the Adminer host is cross-site, and the PHP session cookie
      would not be sent with it, so this page asks an open Adminer tab to do the
      work and shows what comes back. -->
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -51,6 +51,8 @@
         <div id="report" class="report" hidden></div>
       </div>
 
+      <div id="extras" class="extras" hidden></div>
+
       <div id="changeHead" class="change-head" hidden>
         <label><input type="checkbox" id="chkAll" /> <span data-i18n="mgr.selectAll"></span></label>
         <span id="changeCount" class="meta"></span>
@@ -70,6 +72,8 @@
       <label class="check"><input type="checkbox" id="setDrift" /> <span data-i18n="mgr.driftCheck"></span></label>
       <label class="check"><input type="checkbox" id="setSqlPage" /> <span data-i18n="mgr.captureSqlPage"></span></label>
       <label class="field"><span data-i18n="mgr.prefetchLimit"></span><input type="number" id="setLimit" min="1" max="5000" /></label>
+      <label class="field"><span data-i18n="mgr.snapshotLimit"></span><input type="number" id="setSnapLimit" min="1" max="100000" /></label>
+      <label class="field"><span data-i18n="mgr.keyScanLimit"></span><input type="number" id="setKeyLimit" min="1" max="200000" /></label>
       <label class="field"><span data-i18n="mgr.engineOverride"></span>
         <select id="setEngine">
           <option value=""></option>
@@ -80,7 +84,15 @@
           <option value="oracle">oracle</option>
         </select>
       </label>
-      <div class="dlg-foot"><button class="btn primary" value="close">OK</button></div>
+      <p id="storageUsed" class="meta"></p>
+      <fieldset class="guard">
+        <legend data-i18n="mgr.guard"></legend>
+        <label class="check"><input type="checkbox" id="setGuard" /> <span data-i18n="mgr.guardEnabled"></span></label>
+        <label class="field"><span data-i18n="mgr.guardConn"></span><select id="setGuardConn"></select></label>
+        <label class="field"><span data-i18n="mgr.guardTables"></span><input type="text" id="setGuardTables" placeholder="m_generic, m_config" /></label>
+        <label class="check"><input type="checkbox" id="setGuardAuto" /> <span data-i18n="mgr.guardAuto"></span></label>
+      </fieldset>
+      <div class="dlg-foot"><button id="setOk" class="btn primary" value="close">OK</button></div>
     </form>
   </dialog>
 

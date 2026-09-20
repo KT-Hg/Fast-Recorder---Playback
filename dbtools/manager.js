@@ -14,6 +14,7 @@
 
 import * as store from './session.js';
 import { sessionUndoScript, blockingReason, columnsToRestore } from './undo.js';
+import { backupRestoreSql } from './snapshot.js';
 import { joinStatements, engineOf } from './sqlquote.js';
 import { connLabel } from './params.js';
 import { t, setLang, getLang } from './i18n.js';
@@ -35,7 +36,7 @@ async function init() {
   for (const id of [
     'sessionList', 'detailHead', 'sessName', 'sessMeta', 'sessState', 'changeList', 'changeHead',
     'changeCount', 'chkAll', 'report', 'btnRollback', 'btnExportSql', 'btnExportJson', 'btnRename',
-    'btnToggleOpen', 'btnDelete', 'btnSettings', 'btnLang', 'langLabel', 'settingsDlg', 'toast',
+    'btnToggleOpen', 'btnDelete', 'btnSettings', 'btnLang', 'langLabel', 'settingsDlg', 'toast', 'extras',
   ]) ui[id] = el(id);
 
   settings = await store.getSettings();
@@ -47,6 +48,7 @@ async function init() {
   await reload();
   const wanted = new URLSearchParams(location.search).get('session');
   select(wanted && sessions[wanted] ? wanted : Object.keys(sessions)[0] || '');
+  if (new URLSearchParams(location.search).has('settings')) openSettings();
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.dbtoolsSessions) reload().then(() => render());
@@ -74,7 +76,7 @@ function wire() {
   ui.btnLang.addEventListener('click', async () => {
     const next = getLang() === 'vi' ? 'en' : 'vi';
     setLang(next);
-    settings = await store.setSettings({ lang: next });
+    settings = await store.setSettings({ lang: next, langChosen: true });
     paintStatic();
     render();
   });
@@ -83,9 +85,7 @@ function wire() {
   ui.chkAll.addEventListener('change', () => {
     const session = sessions[currentId];
     if (!session) return;
-    selected = ui.chkAll.checked
-      ? new Set(session.changes.filter((c) => !c.undone).map((c) => c.id))
-      : new Set();
+    selected = ui.chkAll.checked ? new Set(session.changes.map((c) => c.id)) : new Set();
     render();
   });
 
@@ -105,6 +105,8 @@ async function reload() {
 function select(id) {
   currentId = id;
   selected = new Set();
+  // A report belongs to the session it was about.
+  ui.report.hidden = true;
   render();
 }
 
@@ -116,21 +118,24 @@ function render() {
 
   ui.detailHead.hidden = !session;
   ui.changeHead.hidden = !session;
+  renderExtras(session);
   if (!session) {
     ui.changeList.replaceChildren(para(t('mgr.noPreview')));
     return;
   }
 
-  const live = session.changes.filter((c) => !c.undone);
   ui.sessName.textContent = session.name;
   ui.sessState.textContent = session.closedAt ? t('mgr.closed') : t('mgr.open');
   ui.sessState.className = `pill${session.closedAt ? '' : ' open'}`;
+  // The whole changeset, undone or not — it can be rolled back again.
   ui.sessMeta.textContent =
-    `${connLabel(session.conn)} · ${new Date(session.startedAt).toLocaleString()} · ` +
-    `${t('panel.changes', { n: live.length })}`;
+    `${connLabel(session.conn)} · ${new Date(session.startedAt).toLocaleString()} · `
+    + `${t('panel.changes', { n: session.changes.length })}`;
   ui.btnToggleOpen.textContent = session.closedAt ? t('mgr.reopen') : t('mgr.close');
-  ui.changeCount.textContent = `${live.length} / ${session.changes.length}`;
-  ui.btnRollback.disabled = !live.length;
+  ui.changeCount.textContent = `${session.changes.filter((c) => !c.undone).length} / ${session.changes.length}`;
+  // A session can be rolled back more than once, so the button stays available
+  // while it holds anything at all.
+  ui.btnRollback.disabled = !session.changes.length && !(session.snapshots || []).length;
 
   const list = [...session.changes].sort((a, b) => b.seq - a.seq);
   ui.changeList.replaceChildren(...(list.length ? list.map(renderChange) : [para(t('mgr.empty'))]));
@@ -144,17 +149,106 @@ function renderRail() {
     return;
   }
   ui.sessionList.replaceChildren(...entries.map((session) => {
-    const live = session.changes.filter((c) => !c.undone).length;
     const button = document.createElement('button');
     button.className = `sess${session.id === currentId ? ' active' : ''}`;
     button.innerHTML = '<span class="t"></span><span class="s"></span>';
     button.querySelector('.t').textContent = session.name;
     button.querySelector('.s').textContent =
-      `${connLabel(session.conn)} · ${t('panel.changes', { n: live })}` +
-      (session.closedAt ? ` · ${t('mgr.closed')}` : '');
+      `${connLabel(session.conn)} · ${t('panel.changes', { n: session.changes.length })}`
+      + (session.closedAt ? ` · ${t('mgr.closed')}` : '');
     button.addEventListener('click', () => select(session.id));
     return button;
   }));
+}
+
+/**
+ * Snapshots and backup tables of the selected session. Both are acted on by an
+ * Adminer tab, like the rollback — this page only shows them and asks.
+ */
+function renderExtras(session) {
+  const snaps = (session && session.snapshots) || [];
+  const backups = (session && session.backups) || [];
+  ui.extras.hidden = !session || (!snaps.length && !backups.length);
+  if (ui.extras.hidden) {
+    ui.extras.replaceChildren();
+    return;
+  }
+  const blocks = [];
+  if (snaps.length) {
+    blocks.push(extraBlock(t('mgr.snapshots'), snaps.map((snap) => extraRow(
+      snap.table,
+      `${t('mgr.rows', { n: snap.rowCount })} · ${new Date(snap.takenAt).toLocaleString()}`
+        + (snap.restoredAt ? ` · ${t('mgr.restored')}` : ''),
+      [
+        smallButton(t('mgr.restore'), () => askTab(session,
+          { type: 'dbtools-snapshot-restore', sessionId: session.id, snapIds: [snap.id] })),
+        smallButton(t('mgr.remove'), async () => {
+          await store.removeSnapshot(session.id, snap.id);
+          await reload();
+          render();
+        }),
+      ],
+    ))));
+  }
+  if (backups.length) {
+    const engine = engineOf(session.conn && session.conn.driver);
+    blocks.push(extraBlock(t('mgr.backups'), backups.map((bk) => extraRow(
+      `${bk.table} → ${bk.backup}`,
+      new Date(bk.createdAt).toLocaleString()
+        + (bk.restoredAt ? ` · ${t('mgr.restored')}` : '')
+        + (bk.droppedAt ? ` · ${t('mgr.dropped')}` : ''),
+      bk.droppedAt ? [] : [
+        smallButton(t('mgr.restore'), () => askTab(session,
+          { type: 'dbtools-backup-restore', sessionId: session.id, backupId: bk.id })),
+        smallButton(t('mgr.copySql'), async () => {
+          const sql = joinStatements(backupRestoreSql(bk.table, bk.backup, bk.engine || engine));
+          try {
+            await navigator.clipboard.writeText(sql);
+            toast(t('rollback.copied'));
+          } catch {
+            toast(sql);
+          }
+        }),
+        smallButton(t('mgr.drop'), () => askTab(session,
+          { type: 'dbtools-backup-drop', sessionId: session.id, backupId: bk.id }), 'danger-outline'),
+      ],
+    ))));
+  }
+  ui.extras.replaceChildren(...blocks);
+}
+
+function extraBlock(title, rows) {
+  const box = document.createElement('section');
+  box.className = 'extra';
+  const h = document.createElement('h3');
+  h.textContent = title;
+  box.append(h, ...rows);
+  return box;
+}
+
+function extraRow(name, meta, actions) {
+  const row = document.createElement('div');
+  row.className = 'extra-row';
+  const n = document.createElement('span');
+  n.className = 'tbl';
+  n.textContent = name;
+  const m = document.createElement('span');
+  m.className = 'meta grow';
+  m.textContent = meta;
+  row.append(n, m, ...actions.filter(Boolean));
+  return row;
+}
+
+function smallButton(label, onClick, cls = '') {
+  return makeButton(label, onClick, `small ${cls}`.trim());
+}
+
+function makeButton(label, onClick, cls = '') {
+  const b = document.createElement('button');
+  b.className = `btn ${cls}`.trim();
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  return b;
 }
 
 function renderChange(change) {
@@ -165,7 +259,6 @@ function renderChange(change) {
   const box = document.createElement('input');
   box.type = 'checkbox';
   box.checked = selected.has(change.id);
-  box.disabled = Boolean(change.undone);
   box.addEventListener('click', (e) => e.stopPropagation());
   box.addEventListener('change', () => {
     if (box.checked) selected.add(change.id); else selected.delete(change.id);
@@ -271,51 +364,95 @@ function para(text) {
 
 /* === Actions ═════════════════════════════════════════════════════════════ */
 
-function targetChangeIds(session) {
-  if (selected.size) return [...selected];
-  return session.changes.filter((c) => !c.undone).map((c) => c.id);
-}
-
 /**
- * Hand the rollback to an Adminer tab on the session's origin.
- * Without one there is nothing that can run it, and saying so beats a request
- * that quietly comes back as the login page.
+ * Hand work to an Adminer tab on the session's origin — the one connected to the
+ * session's database; a tab on another database of the same host answers
+ * `wrongConn` and is passed over. Without one there is nothing that can run it,
+ * and saying so beats a request that quietly comes back as the login page.
+ *
+ * The tab is brought to the front first: it shows the preview, and a preview in
+ * a tab nobody is looking at would simply wait.
  */
-async function rollbackSelected() {
-  const session = sessions[currentId];
-  if (!session) return;
+async function askTab(session, message) {
   if (!settings.autoExecute) {
     showReport(t('mgr.autoExecuteOff'), 'err');
-    return;
+    return null;
   }
-
   const tabs = await chrome.tabs.query({ url: `${session.origin}/*` });
   if (!tabs.length) {
     showReport(t('mgr.needTab', { origin: session.origin }), 'err');
-    return;
+    return null;
   }
-
-  ui.btnRollback.disabled = true;
+  let wrong = false;
+  let off = false;
   try {
-    const answer = await chrome.tabs.sendMessage(tabs[0].id, {
-      type: 'dbtools-run-rollback',
-      sessionId: session.id,
-      changeIds: targetChangeIds(session),
-    });
-    await chrome.tabs.update(tabs[0].id, { active: true });
-    if (!answer || !answer.ok) {
-      showReport(String(answer && answer.error || 'failed'), 'err');
-    } else {
-      const r = answer.report;
-      showReport(t('rollback.done', { ok: r.ok, fail: r.failed }), r.failed ? 'err' : 'ok');
+    for (const tab of tabs) {
+      const ping = await chrome.tabs.sendMessage(tab.id, { type: 'dbtools-ping', key: session.key }, { frameId: 0 })
+        .catch(() => null);
+      if (!ping) continue;
+      if (ping.wrongConn) {
+        wrong = true;
+        continue;
+      }
+      // Switched off, the tab has no panel to show the preview in and will refuse.
+      if (ping.on === false) {
+        off = true;
+        continue;
+      }
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      const answer = await chrome.tabs.sendMessage(tab.id, message, { frameId: 0 });
+      reportAnswer(answer);
+      return answer;
     }
+    const why = off ? 'mgr.integrationOff' : (wrong ? 'mgr.wrongConn' : 'mgr.needTab');
+    showReport(t(why, { origin: session.origin }), 'err');
+    return null;
   } catch (err) {
     showReport(String(err && err.message || err), 'err');
+    return null;
   } finally {
     await reload();
-    selected = new Set();
     render();
   }
+}
+
+/** Say how it went, whichever kind of report came back. */
+function reportAnswer(answer) {
+  if (!answer || !answer.ok) {
+    showReport(String((answer && answer.error) || 'failed'), 'err');
+    return;
+  }
+  const r = answer.report || {};
+  if (r.cancelled) return;
+  // A backup restore or drop answers with a plain ok flag.
+  if (typeof r.ok === 'boolean') {
+    showReport(r.ok ? t('rollback.done', { ok: 1, fail: 0 }) : String(r.error || 'failed'), r.ok ? 'ok' : 'err');
+    return;
+  }
+  // A rollback carries its snapshot restore inside; a snapshot restore is one.
+  const snaps = 'tables' in r ? r : (r.snapshots || { ok: 0, failed: 0 });
+  const main = 'tables' in r ? { ok: 0, failed: 0 } : r;
+  const ok = (main.ok || 0) + (snaps.ok || 0);
+  const fail = (main.failed || 0) + (snaps.failed || 0);
+  showReport(t('rollback.done', { ok, fail }), fail ? 'err' : 'ok');
+}
+
+async function rollbackSelected() {
+  const session = sessions[currentId];
+  if (!session) return;
+  ui.btnRollback.disabled = true;
+  const ticked = session.changes.filter((c) => selected.has(c.id));
+  await askTab(session, {
+    type: 'dbtools-run-rollback',
+    sessionId: session.id,
+    // Nothing ticked means everything: the change log and the snapshots.
+    changeIds: selected.size ? [...selected] : undefined,
+    // Ticking a change that was already undone is a request to run it again.
+    includeUndone: ticked.some((c) => c.undone),
+  });
+  selected = new Set();
+  render();
 }
 
 function exportSql() {
@@ -337,7 +474,9 @@ function exportJson() {
 async function rename() {
   const session = sessions[currentId];
   if (!session) return;
-  const name = prompt(t('mgr.rename'), session.name);
+  const name = await askDialog({
+    title: t('mgr.rename'), label: t('mgr.sessionName'), value: session.name, confirmLabel: t('mgr.rename'),
+  });
   if (name === null) return;
   await store.renameSession(session.id, name.trim() || session.name);
   await reload();
@@ -356,32 +495,180 @@ async function toggleOpen() {
 async function removeSession() {
   const session = sessions[currentId];
   if (!session) return;
-  const live = session.changes.filter((c) => !c.undone).length;
-  if (!confirm(`${t('mgr.delete')}: ${session.name}\n${t('panel.changes', { n: live })}`)) return;
+  const ok = await confirmDialog({
+    title: t('mgr.delete'),
+    text: `${session.name}\n${t('panel.changes', { n: session.changes.length })}`,
+    confirmLabel: t('mgr.delete'),
+  });
+  if (!ok) return;
   await store.deleteSession(session.id);
   await reload();
   select(Object.keys(sessions)[0] || '');
 }
 
-function openSettings() {
+async function openSettings() {
   el('setEnabled').checked = settings.enabled;
   el('setAutoExecute').checked = settings.autoExecute;
   el('setDrift').checked = settings.driftCheck;
   el('setSqlPage').checked = settings.captureSqlPage;
   el('setLimit').value = settings.prefetchLimit;
+  el('setSnapLimit').value = settings.snapshotLimit;
+  el('setKeyLimit').value = settings.keyScanLimit;
   el('setEngine').value = settings.engineOverride;
 
-  ui.settingsDlg.addEventListener('close', async () => {
+  // How much the changesets and snapshots take up. Worth seeing: when this storage
+  // fills, every write fails — recording, ending a session, everything — and the
+  // panel's buttons stop having any effect.
+  el('storageUsed').textContent = '';
+  if (chrome.storage.local.getBytesInUse) {
+    chrome.storage.local.getBytesInUse(null, (bytes) => {
+      void chrome.runtime.lastError;
+      el('storageUsed').textContent = t('mgr.storageUsed', { mb: (bytes / 1048576).toFixed(2) });
+    });
+  }
+
+  // The databases this browser has opened in Adminer: the guard works through a
+  // tab on one of them, so it can only be pointed at one of them.
+  const guard = { ...store.DEFAULT_SETTINGS.guard, ...(settings.guard || {}) };
+  const res = await chrome.storage.local.get('dbtoolsConns');
+  const conns = Object.values(res.dbtoolsConns || {});
+  const pick = el('setGuardConn');
+  pick.replaceChildren();
+  if (!conns.length) pick.append(new Option(t('mgr.guardConnNone'), ''));
+  for (const conn of conns) pick.append(new Option(conn.label, conn.key, false, conn.key === guard.key));
+  el('setGuard').checked = guard.enabled;
+  el('setGuardTables').value = (guard.tables || []).join(', ');
+  el('setGuardAuto').checked = guard.autoRollback !== false;
+
+  // Saved from the button, not from the dialog's `close` event: Chrome does not
+  // fire that event for every way a dialog goes away, and settings that quietly
+  // did not save are worse than none. `once` keeps Escape from saving twice.
+  let saved = false;
+  const save = async () => {
+    if (saved) return;
+    saved = true;
+    const chosen = conns.find((c) => c.key === pick.value) || null;
     settings = await store.setSettings({
       enabled: el('setEnabled').checked,
       autoExecute: el('setAutoExecute').checked,
       driftCheck: el('setDrift').checked,
       captureSqlPage: el('setSqlPage').checked,
       prefetchLimit: Math.max(1, Number(el('setLimit').value) || 200),
+      snapshotLimit: Math.max(1, Number(el('setSnapLimit').value) || 5000),
+      keyScanLimit: Math.max(1, Number(el('setKeyLimit').value) || 10000),
       engineOverride: el('setEngine').value,
+      guard: {
+        enabled: el('setGuard').checked && Boolean(chosen),
+        key: chosen ? chosen.key : '',
+        origin: chosen ? chosen.origin : '',
+        label: chosen ? chosen.label : '',
+        tables: el('setGuardTables').value.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean),
+        autoRollback: el('setGuardAuto').checked,
+      },
     });
-  }, { once: true });
+  };
+
+  el('setOk').addEventListener('click', save, { once: true });
+  ui.settingsDlg.addEventListener('close', save, { once: true });
+  ui.settingsDlg.addEventListener('cancel', save, { once: true });
   ui.settingsDlg.showModal();
+}
+
+/* === Asking ══════════════════════════════════════════════════════════════
+ * Renaming a session and deleting one used to go through `prompt` and `confirm`.
+ * Those belong to the browser: a bar at the top of the window, in the browser's
+ * own styling, disowned from the page that asked. They are asked here instead, in
+ * the same dialog the settings use — and the panel inside Adminer asks its own
+ * questions in the sheet its previews use, so nothing is answered in a box that
+ * looks like it came from somewhere else.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Show a modal and hand back the one answer it is for.
+ *
+ * The dialog's own `close` event is not what settles it. Chrome does not fire
+ * that event for a `close()` called from script — the dialog simply closes and
+ * nothing hears about it — so every way out of this one (a button, Enter, Escape,
+ * the backdrop) goes through `finish`, which closes it, takes it off the page and
+ * answers exactly once.
+ */
+function openDialog({ title, body, answer, buttons }) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'dlg';
+  const wrap = document.createElement('div');
+  wrap.className = 'dlg-body';
+  const heading = document.createElement('h2');
+  heading.textContent = title;
+  const foot = document.createElement('div');
+  foot.className = 'dlg-foot';
+  wrap.append(heading, body, foot);
+  dlg.append(wrap);
+  document.body.append(dlg);
+
+  let done = false;
+  const finish = (value) => {
+    if (done) return;
+    done = true;
+    dlg.close();
+    dlg.remove();
+    answer(value);
+  };
+
+  foot.append(...buttons(finish));
+  dlg.addEventListener('cancel', (e) => { e.preventDefault(); finish(undefined); });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) finish(undefined); });
+  dlg.showModal();
+  return { dlg, finish };
+}
+
+/** One line of text, or null when dismissed. */
+function askDialog({ title, label, value = '', confirmLabel }) {
+  return new Promise((resolve) => {
+    const field = document.createElement('label');
+    field.className = 'field';
+    const caption = document.createElement('span');
+    caption.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = value;
+    field.append(caption, input);
+
+    const { finish } = openDialog({
+      title,
+      body: field,
+      answer: (text) => resolve(text === undefined ? null : text),
+      buttons: (close) => [
+        makeButton(t('rollback.cancel'), () => close(undefined)),
+        makeButton(confirmLabel, () => close(input.value), 'primary'),
+      ],
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      finish(input.value);
+    });
+    input.focus();
+    input.select();
+  });
+}
+
+/** Yes or no. */
+function confirmDialog({ title, text, confirmLabel }) {
+  return new Promise((resolve) => {
+    const line = document.createElement('p');
+    line.className = 'meta';
+    line.style.whiteSpace = 'pre-wrap';
+    line.textContent = text;
+    openDialog({
+      title,
+      body: line,
+      answer: (value) => resolve(value === true),
+      buttons: (close) => [
+        makeButton(t('rollback.cancel'), () => close(false)),
+        makeButton(confirmLabel, () => close(true), 'danger'),
+      ],
+    });
+  });
 }
 
 /* === Small helpers ═══════════════════════════════════════════════════════ */

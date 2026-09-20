@@ -583,6 +583,39 @@ const CARD_HELP_DATA = {
         • There is <b>no real schema</b>, so column types are inferred from comparison literals first and column names second; when neither settles it, the case says the value is a placeholder.<br>
         • Expected results describe what <b>SQL semantics require</b>, not what your current data happens to contain.</p></div>`
   },
+  dbtools: {
+    title: { vi: 'Hướng dẫn Phiên test DB (Adminer)', en: 'DB Test Session Guide (Adminer)' },
+    vi: `
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">Dùng để làm gì</span><span class="ch-title">Sửa dữ liệu để test, xong trả về như cũ</span></div><p class="ch-desc">Ghi lại mọi thay đổi bạn làm qua <b>Adminer</b> vào một <b>phiên test</b>, rồi hoàn tác tất cả bằng một nút — luôn có <b>xem trước SQL</b> trước khi chạy. Không cần cài gì thêm vào Adminer: mở bất kỳ trang Adminer nào là panel <b>"DB test session"</b> hiện ở góc dưới bên phải.<br><br>Ô <b>Adminer panel</b> ngay trên thẻ này để bật/tắt: tắt thì không hiện panel và không ghi gì, áp dụng ngay cho cả những tab Adminer đang mở.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">1 · Bắt đầu</span><span class="ch-title">▶ Start session trên panel</span></div><p class="ch-desc">Mở rộng panel, bấm <b>▶ Start session</b> và đặt tên. <b>Chỉ những thay đổi sau lúc này mới được ghi</b> — sửa trước khi bắt đầu phiên thì không rollback được.<br><br>Nếu test chạy qua <i>ứng dụng</i> (không qua Adminer), mở <b>⋯</b> trên panel rồi bấm <b>📸 Snapshot</b> để chụp cả bảng trước khi test — khi rollback, bảng được đưa về đúng như lúc chụp.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">2 · Sửa dữ liệu</span><span class="ch-title">Những gì được ghi lại</span></div><p class="ch-desc">
+        • Form sửa một dòng — <b>Save</b>, <b>Save and continue editing</b>, <b>Delete</b><br>
+        • Lưới dữ liệu — sửa trực tiếp trong ô (Ctrl+click hoặc <i>Modify</i>), tick nhiều dòng rồi <b>Delete</b> / <b>Edit</b> / <b>Clone</b><br>
+        • Trang SQL — <code>UPDATE</code>, <code>DELETE</code>, <code>INSERT</code> gõ tay (dòng bị đụng được đọc trước khi câu lệnh chạy)<br>
+        • <code>INSERT</code> — khoá của dòng mới được xác định sau khi lưu, nên rollback xoá đúng dòng đó</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">3 · Rollback</span><span class="ch-title">↺ Roll back all</span></div><p class="ch-desc">Hoàn tác các thay đổi <b>từ mới nhất tới cũ nhất</b>, rồi khôi phục các bảng đã snapshot. Bấm lại lần nữa thì chạy lại đúng bộ hoàn tác đó — một phiên không phải chỉ rollback được một lần. Trước khi ghi đè, mỗi dòng được đọc lại: dòng nào đã bị <b>người khác sửa sau bạn</b> thì được báo ra để bạn chọn bỏ qua hay ghi đè. <b>Export SQL</b> cho bạn câu hoàn tác để tự chạy.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">🗄 Backup</span><span class="ch-title">Bảng backup ngay trong database</span></div><p class="ch-desc">Tạo <code>&lt;bảng&gt;_bak_&lt;thời gian&gt;</code> bằng <code>CREATE TABLE … AS SELECT</code> — vẫn còn kể cả khi mất máy hay gỡ extension (cần quyền CREATE). Khôi phục và xoá bảng backup ở trang <b>Test sessions &amp; rollback</b>.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">▶ Playback</span><span class="ch-title">Tự rollback sau mỗi lần chạy kịch bản</span></div><p class="ch-desc">Bật ô <b>Roll the database back after each Playback run</b> ở thẻ này, chọn database và các bảng trong <b>Settings</b> của trang quản lý. Mỗi lần Playback (một kịch bản, chuỗi, hay CSV) sẽ chụp snapshot các bảng đó trước khi chạy và tự khôi phục khi chạy xong. Cần mở sẵn một tab Adminer của database đó — nếu không, Playback sẽ không chạy để tránh sửa DB mà không đường lui.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-red">⚠ Không ghi lại được</span><span class="ch-title">Những gì nên biết trước</span></div><p class="ch-desc">
+        • Câu lệnh sửa nhiều bảng, <code>UPDATE</code>/<code>DELETE</code> không có <code>WHERE</code>, và DDL (<code>ALTER</code>, <code>DROP</code>…)<br>
+        • Nhập CSV trong Adminer, bảng không có khoá, cột BLOB/file<br>
+        • Những gì không được ghi đều hiện cảnh báo trên panel — dùng Snapshot hoặc Backup cho các trường hợp này.</p></div>`,
+    en: `
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">What it is for</span><span class="ch-title">Change data to test, then put it back</span></div><p class="ch-desc">Records every change you make through <b>Adminer</b> into a <b>test session</b>, and undoes all of it with one button — always showing you the <b>SQL first</b>. Nothing to install in Adminer: open any Adminer page and the <b>"DB test session"</b> panel appears in the bottom-right corner.<br><br>The <b>Adminer panel</b> switch on this card turns it off and on: off, no panel and nothing recorded, on the Adminer tabs that are already open too.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-blue">1 · Start</span><span class="ch-title">▶ Start session on the panel</span></div><p class="ch-desc">Expand the panel, press <b>▶ Start session</b> and name it. <b>Only changes made after this are recorded</b> — an edit made before the session started cannot be rolled back.<br><br>If the test goes through the <i>application</i> rather than Adminer, open <b>⋯</b> on the panel and press <b>📸 Snapshot</b> to copy whole tables first — rolling back then puts each table back exactly as it was.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">2 · Change data</span><span class="ch-title">What gets recorded</span></div><p class="ch-desc">
+        • The row edit form — <b>Save</b>, <b>Save and continue editing</b>, <b>Delete</b><br>
+        • The data grid — editing a cell in place (Ctrl+click or <i>Modify</i>), and ticked rows with <b>Delete</b> / <b>Edit</b> / <b>Clone</b><br>
+        • The SQL page — hand-written <code>UPDATE</code>, <code>DELETE</code> and <code>INSERT</code> (affected rows are read before the statement runs)<br>
+        • <code>INSERT</code> — the new row's key is found after the save, so the rollback deletes exactly that row</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-purple">3 · Roll back</span><span class="ch-title">↺ Roll back all</span></div><p class="ch-desc">Undoes the changes <b>newest first</b>, then restores the snapshotted tables. Press it again and it runs the same undo once more — a session is not spent by one rollback. Each row is read back before it is overwritten: a row <b>someone else changed after you</b> is reported, and you choose to skip it or overwrite it. <b>Export SQL</b> gives you the undo statements to run yourself.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">🗄 Backup</span><span class="ch-title">A backup table inside the database</span></div><p class="ch-desc">Creates <code>&lt;table&gt;_bak_&lt;timestamp&gt;</code> with <code>CREATE TABLE … AS SELECT</code> — it survives a lost laptop or removing the extension (needs CREATE privilege). Restore or drop it from the <b>Test sessions &amp; rollback</b> page.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-gray">▶ Playback</span><span class="ch-title">Roll back automatically after every run</span></div><p class="ch-desc">Tick <b>Roll the database back after each Playback run</b> on this card and pick the database and tables under <b>Settings</b> on the manager page. Every Playback run — single scenario, sequence or CSV — then snapshots those tables before it starts and restores them when it ends. An Adminer tab on that database has to be open; without one the run is not started, so the database is never changed with no way back.</p></div>
+      <div class="ch-item"><div class="ch-name"><span class="ch-badge badge-red">⚠ Not recorded</span><span class="ch-title">Worth knowing up front</span></div><p class="ch-desc">
+        • Multi-table statements, <code>UPDATE</code>/<code>DELETE</code> without <code>WHERE</code>, and DDL (<code>ALTER</code>, <code>DROP</code>…)<br>
+        • CSV import in Adminer, tables with no key, BLOB/file columns<br>
+        • Anything that is not recorded is flagged on the panel — use a Snapshot or a Backup for those.</p></div>`
+  },
   capture: {
     title: { vi: 'Hướng dẫn Capture', en: 'Capture Guide' },
     vi: `
@@ -765,6 +798,7 @@ const CARD_HELP_LABELS = {
   variables: 'Open Variables guide',
   exportCode: 'Open Export Code guide',
   sqlcases: 'Open SQL Test Case Designer guide',
+  dbtools: 'Open DB Test Session guide',
   capture: 'Open Capture guide',
   highlight: 'Open Highlight guide',
   hotkeys: 'Open Hotkeys guide',

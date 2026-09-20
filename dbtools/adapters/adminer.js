@@ -25,7 +25,7 @@
  * against pages fetched in the background through DOMParser.
  */
 
-import { parseAdminerUrl } from '../params.js';
+import { parseAdminerUrl, unbracket, bracketEscape } from '../params.js';
 
 /* === Detection ═══════════════════════════════════════════════════════════ */
 
@@ -77,7 +77,7 @@ function fieldControls(form) {
   for (const el of form.querySelectorAll('[name^="fields["]')) {
     const match = FIELD_RE.exec(el.getAttribute('name') || '');
     if (!match) continue;
-    const col = match[1];
+    const col = unbracket(match[1]);
     if (!byCol.has(col)) byCol.set(col, []);
     byCol.get(col).push(el);
   }
@@ -114,16 +114,16 @@ function readControls(form, col, controls) {
 
 /** Is this column currently NULL, according to the form? */
 function readNull(form, col) {
-  const fn = form.querySelector(`[name="function[${cssEscape(col)}]"]`);
+  const fn = form.querySelector(`[name="function[${cssEscape(bracketEscape(col))}]"]`);
   if (fn && String(fn.value).toUpperCase() === 'NULL') return true;
-  const box = form.querySelector(`input[type="checkbox"][name="null[${cssEscape(col)}]"]`);
+  const box = form.querySelector(`input[type="checkbox"][name="null[${cssEscape(bracketEscape(col))}]"]`);
   if (box && box.checked) return true;
   return false;
 }
 
 /** The function Adminer will apply on save (`now`, `md5`, …), or ''. */
 function readFunction(form, col) {
-  const fn = form.querySelector(`[name="function[${cssEscape(col)}]"]`);
+  const fn = form.querySelector(`[name="function[${cssEscape(bracketEscape(col))}]"]`);
   if (!fn) return '';
   const value = String(fn.value || '');
   return value.toUpperCase() === 'NULL' ? '' : value;
@@ -264,6 +264,126 @@ export function parseResultTable(doc) {
     if (rows.length) return { ok: true, columns, rows };
   }
   return { ok: false, reason: 'no-result-table' };
+}
+
+/**
+ * A result grid read for keeps — every value whole, NULL as null — for a table
+ * snapshot. Adminer shows binary data as an italic byte count; such a column is
+ * reported in `unreadable` instead of being stored as that text, because
+ * restoring "12 byte(s)" into a BLOB would be worse than not restoring it.
+ */
+export function readResultGrid(doc) {
+  const scope = doc.getElementById('content') || doc.body || doc;
+  if (!scope) return { ok: false, reason: 'no-content' };
+
+  for (const table of scope.querySelectorAll('table')) {
+    const headCells = table.querySelectorAll('thead th, tr:first-child th');
+    if (!headCells.length) continue;
+    const columns = [...headCells].map(headerName);
+    const bodyRows = [...table.querySelectorAll('tr')].filter((tr) => tr.querySelector('td'));
+    const unreadable = new Set();
+    const rows = [];
+    for (const tr of bodyRows) {
+      const cells = [...tr.querySelectorAll('td')];
+      if (cells.length !== columns.length) continue;
+      const row = {};
+      columns.forEach((col, i) => {
+        const td = cells[i];
+        const italic = td.children.length === 1 && td.firstElementChild.tagName === 'I'
+          && td.textContent.trim() === td.firstElementChild.textContent.trim();
+        if (italic && td.textContent.trim() === 'NULL') row[col] = null;
+        else if (italic) { row[col] = null; unreadable.add(col); }
+        else row[col] = td.textContent;
+      });
+      rows.push(row);
+    }
+    return { ok: true, columns, rows, unreadable: [...unreadable] };
+  }
+  return { ok: false, reason: 'no-result-table' };
+}
+
+/* === The select page's grid ══════════════════════════════════════════════ */
+
+/** The form around the data grid on a `?select=` page. */
+export function findGridForm(doc = document) {
+  const grid = doc.getElementById('table');
+  const form = grid && grid.closest('form');
+  if (form) return form;
+  const box = doc.querySelector('input[name="check[]"]');
+  return box ? box.closest('form') : null;
+}
+
+/** The row identity (`check[]` value) of the grid row an element sits in. */
+function rowIdfOf(el) {
+  const tr = el.closest('tr');
+  const box = tr && tr.querySelector('input[name="check[]"]');
+  return box ? box.value : '';
+}
+
+/**
+ * Cells being edited in place: `val[<row>][<col>]` controls, whether created by a
+ * Ctrl+click / double-click or rendered by `&modify=1`. The column is the last
+ * bracket of the name; the row is taken from the row's own checkbox rather than
+ * decoded from the name, because 4.x and 5.x escape that part differently.
+ */
+export function readGridEdits(form) {
+  const out = [];
+  for (const el of form.querySelectorAll('[name^="val["]')) {
+    const name = el.getAttribute('name') || '';
+    const col = /\[([^\]]*)\]$/.exec(name);
+    const idf = rowIdfOf(el);
+    if (!col || !idf) continue;
+    out.push({ idf, col: unbracket(col[1]), value: el.value });
+  }
+  return out;
+}
+
+/** Rows ticked in the grid, and whether "whole result" is ticked. */
+export function readGridSelection(form) {
+  const checked = [...form.querySelectorAll('input[name="check[]"]')]
+    .filter((box) => box.checked).map((box) => box.value);
+  const all = form.querySelector('input[name="all"]');
+  return { checked, all: Boolean(all && all.checked) };
+}
+
+/**
+ * The rows a mass-edit form (the edit form Adminer shows on a `?select=` page
+ * after "Edit" on ticked rows) is about: its hidden `check[]` fields, and `all`.
+ */
+export function readMassEditTarget(form) {
+  const checked = [...form.querySelectorAll('input[type="hidden"][name="check[]"]')].map((el) => el.value);
+  const all = form.querySelector('input[type="hidden"][name="all"]');
+  const clone = form.querySelector('input[type="hidden"][name="clone"]');
+  return { checked, all: Boolean(all && all.value), clone: Boolean(clone && clone.value) };
+}
+
+/**
+ * Columns a mass edit will write. Every field starts on the function "original",
+ * which leaves the column alone; only the ones moved off it are written.
+ */
+export function massEditColumns(form) {
+  const out = [];
+  for (const [col] of fieldControls(form)) {
+    const fn = form.querySelector(`[name="function[${cssEscape(bracketEscape(col))}]"]`);
+    if (fn && String(fn.value) === 'orig') continue;
+    out.push(col);
+  }
+  return out;
+}
+
+/**
+ * The key Adminer reports for a row it just inserted — "Item 42 has been
+ * inserted." — or '' when there is none. Only the message's own text is read:
+ * the element also carries the executed INSERT in a hidden block, and its
+ * numbers are not the new key.
+ */
+export function insertedId(doc = document) {
+  for (const el of doc.querySelectorAll('.message')) {
+    const own = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ');
+    const match = /(?:^|\s)(-?\d+)(?=\s|$|[.,;:!])/.exec(own);
+    if (match) return match[1];
+  }
+  return '';
 }
 
 /* === Messages ════════════════════════════════════════════════════════════ */

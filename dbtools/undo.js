@@ -87,7 +87,7 @@ export function blockingReason(change) {
   if (!change.rows || !change.rows.length) return 'no-rows';
   for (const row of change.rows) {
     const where = undoWhere(row, change.keyCols);
-    if (!Object.keys(where).length) return 'no-key';
+    if (!Object.keys(where).length) return change.op === 'insert' ? 'insert-key-unknown' : 'no-key';
     if (change.op === 'update' && !columnsToRestore(change, row).length) return 'nothing-to-restore';
     if (change.op === 'delete' && !Object.keys(row.before || {}).length) return 'no-before';
   }

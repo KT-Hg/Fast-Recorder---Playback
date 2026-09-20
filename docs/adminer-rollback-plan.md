@@ -3,7 +3,7 @@
 Tài liệu thiết kế cho nhóm chức năng hỗ trợ người dùng khi thao tác dữ liệu qua **Adminer**, tập trung
 vào bài toán: *sửa dữ liệu bảng master để test, xong rollback nhanh về nguyên trạng.*
 
-Trạng thái: **Giai đoạn 1–3 đã hiện thực** (xem §8). Code nằm ở `dbtools/`, trang quản lý là `dbtools.html`.
+Trạng thái: **Giai đoạn 1–5 đã hiện thực** (xem §8). Code nằm ở `dbtools/`, trang quản lý là `dbtools.html`.
 Kiểm thử: `node dbtools/selftest.mjs` và `dbtools/e2e/` (chạy trên Adminer thật).
 
 ---
@@ -76,6 +76,19 @@ Bản thiết kế ban đầu sai ở cả ba chỗ dưới đây; đều đư�
 
 Ngoài ra: `<option>NULL` trong `select[name="function[<cột>]"]` không có thuộc tính `value`, nên `select.value`
 vẫn ra đúng `'NULL'`; nút Save **không có `name`**, nút xoá là `input[name=delete]`.
+
+Những điều đọc từ mã nguồn Adminer 4.8.1 và 5.x khi làm GĐ 3–5 (đã kiểm trên bản giả lập chạy JS thật của Adminer,
+chưa chạy lại trên Adminer thật):
+
+| Chỗ | Thực tế |
+|---|---|
+| **Save and continue editing** | Gửi bằng **AJAX** (`ajaxForm`) và huỷ submit — không có sự kiện `submit`. Kết quả được ghi vào `#ajaxstatus`: lần đầu là dòng "Saving…", lần sau là thông báo của server |
+| Cột khoá `NULL` trong URL | Là **danh sách tên cột** `null[]=col`, không phải `null[col]=` |
+| Khoá text dài hơn 64 ký tự | Lưới gửi **hash**: `where[MD5(`col`)]=…` (4.x) hoặc `fun[0]=md5&col[0]=col&val[0]=…` (5.x). Dùng nguyên chuỗi để đọc dòng, lấy giá trị thật từ form để viết câu hoàn tác |
+| Định danh dòng trong lưới | Giá trị của `check[]`; 4.x URL-encode (`where%5Bid%5D=2`), 5.x để nguyên ngoặc. Tên ô sửa `val[…][col]` escape khác nhau giữa hai bản, nên dòng được lấy từ `check[]` cùng hàng |
+| **Whole result** | Áp dụng cho **mọi dòng khớp bộ lọc**, không chỉ trang đang xem |
+| Kết quả trang SQL | **Không rút gọn** chữ dài (khác lưới `?select=`); NULL là `<i>NULL</i>`, nhị phân là `<i>N byte(s)</i>`; bảng rỗng in "No rows." không có tiêu đề cột |
+| INSERT qua form | Thông báo *"Item 42 has been inserted."* mang khoá tự tăng |
 
 ---
 
@@ -234,14 +247,15 @@ Ràng buộc kỹ thuật cần tôn trọng:
 |---|---|---|
 | **1** | ✅ **Xong.** Trang `?edit=`: chụp before lúc load, hook submit, ghi changeset, thanh nổi, trang xem, xuất SQL | Bắt cả nút Delete → hoàn tác bằng `INSERT` |
 | **2** | ✅ **Xong.** Tự thực thi rollback: POST tuần tự vào trang SQL của Adminer, drift check từng dòng, dừng ở câu lỗi đầu tiên | Luôn có preview trước khi chạy |
-| **3** | 🟡 **Một phần.** Đã có `UPDATE`/`DELETE` gõ tay ở trang SQL (prefetch trước khi chạy). **Chưa có** inline edit trong lưới và xoá hàng loạt từ lưới | Hai cái còn lại vẫn đi qua đúng lớp adapter đã có |
-| **4** | ⬜ Tầng 2 (snapshot + restore-diff) và tầng 3 (nút sinh bảng backup) | |
-| **5** | ⬜ Nối với phần có sẵn: chạy kịch bản Record/Playback **trong** phiên test rồi rollback tự động sau khi chạy xong | Nút mở trang quản lý đã có sẵn ở tab Data |
+| **3** | ✅ **Xong.** `UPDATE`/`DELETE`/`INSERT` gõ tay ở trang SQL; sửa inline trong lưới (Ctrl+click và `Modify`); xoá hàng loạt (kể cả *Whole result*); Edit và Clone hàng loạt; *Save and continue editing* (AJAX) | Mọi dòng được đọc qua form edit trước khi ghi và đọc lại sau khi ghi |
+| **3b** | ✅ **Xong.** `INSERT` hoàn tác được: khoá lấy từ giá trị gõ vào form, từ thông báo *"Item N has been inserted"*, từ literal trong câu lệnh, hoặc so tập khoá trước/sau | Cách so tập khoá có thể tính cả dòng người khác chèn cùng lúc — change được đánh dấu `insert-found-by-difference` |
+| **4** | ✅ **Xong.** Tầng 2: `dbtools/snapshot.js` — chụp cả bảng, rollback bằng diff (DELETE → UPDATE → INSERT). Tầng 3: nút tạo bảng backup, khôi phục bằng diff hoặc chép lại toàn bộ khi bảng quá lớn, xoá bảng backup | Snapshot lưu dưới key riêng trong `chrome.storage.local` (`unlimitedStorage`) |
+| **5** | ✅ **Xong.** `bg/dbguard.js`: mỗi lần Playback (kịch bản, chuỗi, CSV) mở phiên + chụp các bảng đã chọn trước khi chạy, tự rollback khi chạy xong. Không có tab Adminer của database đó thì **từ chối chạy** | Bật ở thẻ DB Test Session trong popup; chọn database/bảng trong Settings của trang quản lý |
 
 ### Kiểm thử (đã có)
 
 ```bash
-node dbtools/selftest.mjs     # 186 check, Node thuần, không dependency
+node dbtools/selftest.mjs     # 290 check, Node thuần, không dependency
 bash dbtools/e2e/setup.sh     # Adminer 4.8.1 thật trên SQLite
 node dbtools/e2e/run.mjs      # extension thật, trình duyệt thật, DB thật
 ```

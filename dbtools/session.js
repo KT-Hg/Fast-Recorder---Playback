@@ -29,8 +29,13 @@ export const DEFAULT_SETTINGS = {
   driftCheck: true,       // read each row back before undoing it
   captureSqlPage: true,   // prefetch rows before a hand-written UPDATE/DELETE
   prefetchLimit: 200,     // refuse to snapshot more rows than this in one statement
+  snapshotLimit: 5000,    // largest table a whole-table snapshot will copy
+  keyScanLimit: 10000,    // largest table whose keys are compared to find inserted rows
   engineOverride: '',     // '' = infer from Adminer's driver parameter
-  lang: 'vi',
+  lang: 'en',
+  // Wrap every Record & Playback run in a test session on this connection:
+  // snapshot `tables` first, and roll the session back once the run ends.
+  guard: { enabled: false, key: '', origin: '', label: '', tables: [], autoRollback: true },
 };
 
 /* === Raw storage helpers ══════════════════════════════════════════════════ */
@@ -49,6 +54,13 @@ function set(obj) {
   });
 }
 
+function remove(keys) {
+  return new Promise((resolve) => chrome.storage.local.remove(keys, () => {
+    void chrome.runtime.lastError;
+    resolve();
+  }));
+}
+
 /** One writer at a time within this page. */
 let chain = Promise.resolve();
 function serialize(fn) {
@@ -63,7 +75,13 @@ function serialize(fn) {
 
 export async function getSettings() {
   const res = await get([K_SETTINGS]);
-  return { ...DEFAULT_SETTINGS, ...(res[K_SETTINGS] || {}) };
+  const stored = res[K_SETTINGS] || {};
+  const settings = { ...DEFAULT_SETTINGS, ...stored };
+  // The language used to be saved along with every other setting, Vietnamese by
+  // default, so a stored `lang` does not mean anyone chose it. Only a language
+  // picked with the 🌐 switch (`langChosen`) overrides the English default.
+  if (!stored.langChosen) settings.lang = DEFAULT_SETTINGS.lang;
+  return settings;
 }
 
 export async function setSettings(patch) {
@@ -97,7 +115,7 @@ export async function activeSession(key) {
   return getSession(await activeSessionId(key));
 }
 
-export async function startSession({ name, conn, origin, base, key }) {
+export async function startSession({ name, conn, origin, base, key, guard = false, resumeId = '' }) {
   return serialize(async () => {
     const res = await get([K_SESSIONS, K_ACTIVE]);
     const sessions = res[K_SESSIONS] || {};
@@ -110,6 +128,8 @@ export async function startSession({ name, conn, origin, base, key }) {
       origin,
       base,
       key,
+      guard,
+      resumeId,
       startedAt: new Date().toISOString(),
       closedAt: null,
       nextSeq: 1,
@@ -158,6 +178,8 @@ export async function deleteSession(id) {
     delete sessions[id];
     if (session && active[session.key] === id) delete active[session.key];
     await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active });
+    const snaps = (session && session.snapshots) || [];
+    if (snaps.length) await remove(snaps.map((s) => SNAP_PREFIX + s.id));
   });
 }
 
@@ -222,6 +244,96 @@ export async function removeChange(sessionId, changeId) {
     await set({ [K_SESSIONS]: sessions });
     return session;
   });
+}
+
+/* === Snapshots and backup tables ═════════════════════════════════════════
+ * A snapshot's rows are stored under a key of their own, not inside the session:
+ * every append rewrites the whole sessions map, and dragging a few thousand rows
+ * through each of those writes would make an ordinary edit slow. The session
+ * keeps only the description — table, key, row count, when.
+ *
+ * A backup table lives in the database; the session records its name and how to
+ * restore or drop it.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+const SNAP_PREFIX = 'dbtoolsSnap_';
+
+function sessionList(session, field) {
+  if (!Array.isArray(session[field])) session[field] = [];
+  return session[field];
+}
+
+export async function addSnapshot(sessionId, meta, data) {
+  await set({ [SNAP_PREFIX + meta.id]: data });
+  return serialize(async () => {
+    const res = await get([K_SESSIONS]);
+    const sessions = res[K_SESSIONS] || {};
+    const session = sessions[sessionId];
+    if (!session) return null;
+    sessionList(session, 'snapshots').push(meta);
+    await set({ [K_SESSIONS]: sessions });
+    return meta;
+  });
+}
+
+export async function getSnapshotData(snapId) {
+  const res = await get([SNAP_PREFIX + snapId]);
+  return res[SNAP_PREFIX + snapId] || null;
+}
+
+async function patchListItem(sessionId, field, itemId, patch) {
+  return serialize(async () => {
+    const res = await get([K_SESSIONS]);
+    const sessions = res[K_SESSIONS] || {};
+    const session = sessions[sessionId];
+    if (!session) return null;
+    const item = sessionList(session, field).find((x) => x.id === itemId);
+    if (!item) return null;
+    Object.assign(item, patch);
+    await set({ [K_SESSIONS]: sessions });
+    return item;
+  });
+}
+
+async function dropListItem(sessionId, field, itemId) {
+  return serialize(async () => {
+    const res = await get([K_SESSIONS]);
+    const sessions = res[K_SESSIONS] || {};
+    const session = sessions[sessionId];
+    if (!session) return null;
+    session[field] = sessionList(session, field).filter((x) => x.id !== itemId);
+    await set({ [K_SESSIONS]: sessions });
+    return session;
+  });
+}
+
+export function updateSnapshot(sessionId, snapId, patch) {
+  return patchListItem(sessionId, 'snapshots', snapId, patch);
+}
+
+export async function removeSnapshot(sessionId, snapId) {
+  await remove([SNAP_PREFIX + snapId]);
+  return dropListItem(sessionId, 'snapshots', snapId);
+}
+
+export async function addBackup(sessionId, meta) {
+  return serialize(async () => {
+    const res = await get([K_SESSIONS]);
+    const sessions = res[K_SESSIONS] || {};
+    const session = sessions[sessionId];
+    if (!session) return null;
+    sessionList(session, 'backups').push(meta);
+    await set({ [K_SESSIONS]: sessions });
+    return meta;
+  });
+}
+
+export function updateBackup(sessionId, backupId, patch) {
+  return patchListItem(sessionId, 'backups', backupId, patch);
+}
+
+export function removeBackup(sessionId, backupId) {
+  return dropListItem(sessionId, 'backups', backupId);
 }
 
 /* === Pending change ══════════════════════════════════════════════════════

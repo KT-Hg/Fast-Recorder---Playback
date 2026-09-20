@@ -9,6 +9,7 @@ import {
   takeVisibleScreenshot, takeFullPageScreenshot, takeElementScreenshot,
 } from './screenshot.js';
 import { ssWrite, ssClear, csvResultWrite, csvResultClear } from './idb-screenshots.js';
+import { beginDbGuard, endDbGuard } from './dbguard.js';
 
 /* ── SW keep-alive ──────────────────────────────────────────────────────────── */
 
@@ -561,6 +562,10 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
     return;
   }
 
+  // Wrapped in a DB test session when that is switched on — see bg/dbguard.js.
+  const dbGuard = await beginDbGuard(scenario.name || scenarioId);
+  if (dbGuard && dbGuard.refused) return;
+
   const actions = scenario.actions || [];
   const loops   = Math.max(1, Math.floor(loopCount));
   state.playback = {
@@ -596,6 +601,7 @@ export async function startPlayback(scenarioId, loopCount = 1, loopDelay = 0) {
       'Playback complete',
       `"${scenario.name}" finished${loops > 1 ? ` (${loops} loops)` : ''}${_failSuffix(failedActions)}`,
     );
+    await endDbGuard(dbGuard);
   }
 }
 
@@ -618,6 +624,13 @@ export async function startSequence(runList) {
   }
 
   const scenarios = await getScenarios();
+
+  const dbGuard = await beginDbGuard(`Sequence · ${runList.length}`);
+  if (dbGuard && dbGuard.refused) {
+    state.sequencePlayback.active = false;
+    updateBadge();
+    return;
+  }
 
   let _seqTabClosed = false;
   const _onSeqTabRemoved = (removedId) => {
@@ -675,6 +688,7 @@ export async function startSequence(runList) {
     state.sequencePlayback.active = false;
     state.playback.active = false;
     updateBadge();
+    await endDbGuard(dbGuard);
   }
 }
 
@@ -741,6 +755,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
   let failedRows    = 0;
   let runError      = null;
   let keepaliveOn   = false;
+  let dbGuard       = null;
 
   // The whole run lives inside try/catch/finally, matching startPlayback and
   // startSequence. A throw anywhere — an IndexedDB quota error while writing a
@@ -764,6 +779,9 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
       sendAlertNotification('⚠ No Active Tab', 'No active tab found — open a tab and try again', 'no_tab');
       return;
     }
+
+    dbGuard = await beginDbGuard(`${scenario.name || scenarioId} · CSV`);
+    if (dbGuard && dbGuard.refused) return;
 
     const actions      = scenario.actions || [];
     const relevantKeys = collectRelevantKeys(actions);
@@ -892,6 +910,7 @@ export async function startCsvPlayback(scenarioId, rows, delayBetween, exportFor
       new Promise(r => chrome.storage.local.remove('playbackCheckpoint', r)),
     ]).catch(() => {});
     updateBadge();
+    await endDbGuard(dbGuard);
   }
 
   // Report the crash rather than letting the run end in silence. Results written

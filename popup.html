@@ -623,6 +623,7 @@
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
         <h3 style="margin:0;">DB Test Session</h3>
+        <button class="card-help-btn" data-card="dbtools" title="DB Test Session guide">?</button>
       </div>
       <button id="openDbTools" class="export-code-btn" style="width:100%;" title="Review and roll back data changed through Adminer">
         <span class="export-code-icon">↺</span>
@@ -632,6 +633,14 @@
         </div>
       </button>
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Recording happens in the Adminer tab itself; this page reviews and rolls back.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:8px;" title="Off: no panel on Adminer pages and nothing is recorded. Takes effect on open Adminer tabs straight away.">
+        <input type="checkbox" id="dbEnabledToggle" style="width:auto; margin:0; cursor:pointer; flex:none;" />
+        <span><b>Adminer panel</b> — show it and record changes</span>
+      </label>
+      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:6px;" title="Snapshot the chosen tables before every Playback run and roll the database back when it ends">
+        <input type="checkbox" id="dbGuardToggle" style="width:auto; margin:0; cursor:pointer; flex:none;" />
+        <span>Roll the database back after each Playback run</span>
+      </label>
     </div>
 
     <!-- The two cards below are the only ones on this tab that need a live,
