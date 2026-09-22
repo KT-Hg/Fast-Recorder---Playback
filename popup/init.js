@@ -18,6 +18,7 @@ import { initExportBookmarklet } from './export-bookmarklet.js';
 import { initExportSelenium } from './export-selenium.js';
 import { initImageEditor } from './image-editor.js';
 import { initHighlight } from './highlight.js';
+import { TABLE_COPIES } from '../dbtools/features.js';
 import { initUpdateBanner } from './update-banner.js';
 
 /**
@@ -171,6 +172,9 @@ function initDbGuardToggle() {
   const enabled = document.getElementById('dbEnabledToggle');
   const box = document.getElementById('dbGuardToggle');
   if (!box || !enabled) return;
+  // The guard is held back with the table snapshots it runs on (features.js).
+  // The label carries an inline display, which the `hidden` attribute loses to.
+  if (!TABLE_COPIES) box.closest('label').style.display = 'none';
   const KEY = 'dbtoolsSettings';
 
   const write = (patch) => chrome.storage.local.get([KEY], (res) => {

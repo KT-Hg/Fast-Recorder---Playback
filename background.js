@@ -26,12 +26,17 @@ import {
 import { ssReadAll, ssClear, csvResultReadAll, csvResultClear } from './bg/idb-screenshots.js';
 // Side-effect import: registers the window-capture listener.
 import './bg/screenshot-window.js';
+import { serveSnapshots } from './dbtools/snapstore.js';
 import {
   UPDATE_ALARM, AUTO_APPLY_ALARM, runUpdateCheck, ensureUpdateAlarm, scheduleCatchUpCheck,
   initUpdateAvailableListener, applyUpdate, markInstalledVersion,
   reconcileUpdateState, initLockWatcher, ensureLockState, notifyLocked,
   setBusyProbe, maybeAutoApply,
 } from './bg/update-check.js';
+
+// DB Test Session snapshots live in this origin's IndexedDB; the Adminer panel is
+// a content script and reads and writes them through here.
+serveSnapshots();
 
 /* === SCHEDULING (per-schedule chrome.alarms) === */
 

@@ -17,6 +17,7 @@
  */
 
 import { t } from './i18n.js';
+import { TABLE_COPIES } from './features.js';
 
 const HOST_ID = 'frp-dbtools-panel';
 // How long a notice stays before it fades: long enough to read twice.
@@ -392,7 +393,7 @@ export function mountPanel(handlers = {}, { theme = '' } = {}) {
     // and can be rolled back again.
     const changes = session.changes || [];
     const tables = new Set(changes.map((c) => c.table)).size;
-    const snaps = (session.snapshots || []).length;
+    const snaps = TABLE_COPIES ? (session.snapshots || []).length : 0;
     els.title.textContent = `${session.name} · ${changes.length}`;
 
     const pick = document.createElement('button');

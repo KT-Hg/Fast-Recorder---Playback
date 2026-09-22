@@ -17,7 +17,7 @@ A Chrome Manifest V3 extension that records browser interactions and replays the
 | **Highlight** | Select text on any page to highlight it in 5 colours with notes; auto-restored on revisit, scoped by URL patterns |
 | **CSV Run** | Run a scenario once per row; export results to XLSX / HTML / ZIP with screenshots |
 | **SQL Test Cases** | Vietnamese/English. Parse a SELECT/INSERT/UPDATE/DELETE statement and derive a test case list — EP + BVA, decision table / MC-DC, NULL & 3-valued logic, JOIN cardinality, grouping and paging — with one panel for editing the sample values every case draws on, exported as CSV or JSON |
-| **DB Test Session** | Records every row changed through **Adminer** — edit form, grid edits, bulk delete, `INSERT`, and hand-written SQL — snapshots whole tables for changes made by the application, and rolls a whole test run back (also automatically after Playback), with a preview of the exact SQL and a drift check per row |
+| **DB Test Session** | Records every row changed through **Adminer** — edit form, grid edits, bulk delete, `INSERT`, and hand-written SQL — and rolls a whole test run back, with a preview of the exact SQL and a drift check per row. (Whole-table snapshots, backup tables and rollback after Playback are built but temporarily hidden.) |
 | **Export** | Scenario JSON, folder JSON, full backup/restore, JS Bookmarklet, Selenium Python |
 | **UI** | Dark/light theme, 5 drag-to-reorder tabs, collapsible cards, hotkeys |
 
@@ -444,6 +444,10 @@ the real value read from it.
 
 ### Snapshots and backup tables
 
+> **Temporarily hidden.** Snapshots, backup tables and the Playback guard are switched off by
+> `TABLE_COPIES` in [`dbtools/features.js`](dbtools/features.js): nothing below is offered or run, including
+> for sessions that already hold one. Rollback covers the change log only. Set the flag to `true` to bring it back.
+
 The change log only sees writes made through Adminer. For a test that drives the application:
 
 - **⋯ → 📸 Snapshot** copies whole tables into the session (`SELECT *` through the SQL page, which does not shorten
@@ -455,6 +459,8 @@ The change log only sees writes made through Adminer. For a test that drives the
   against the table the same way; a table too large to diff is emptied and copied back, and the preview says so.
 
 ### Rolling back after Playback
+
+> **Temporarily hidden** with snapshots (see above) — it works by snapshotting tables before the run.
 
 Tick **Roll the database back after each Playback run** on the DB Test Session card, and choose the database and
 the tables to snapshot under **Settings** on the manager page. Every Playback run — a scenario, a sequence, or a
@@ -634,7 +640,7 @@ Orthogonal states (can overlay IDLE): **PICK_MODE**, **SEGMENT_CAPTURING**
 ## Storage
 
 ```
-chrome.storage.local (5 MB — device-local)
+chrome.storage.local (10 MB, 5 MB before Chrome 114 — device-local)
   scenarios, folders, variables, schedules
   settings (watermark, screenshot config, theme, tab order)
   highlights (hl_v1) and highlight URL patterns (hl_patterns_v1)
@@ -657,6 +663,11 @@ chrome.storage.session (1 MB — survives SW restart, lost on browser close)
 IndexedDB — FastRecorder_CsvScreenshots (disk, no hard quota)
   CSV screenshot results: key = "rowIndex:varName", value = base64 PNG
   No extra permissions needed — safe for Web Store publication
+
+IndexedDB — FastRecorder_DbtoolsSnapshots (disk, no hard quota)
+  DB Test Session table snapshots: key = snapshot id, value = { columns, rows }
+  Opened only in the extension origin; the Adminer panel (a content script)
+  reads and writes through the service worker (message "dbtools-snap")
 ```
 
 ### Key Settings Stored in `chrome.storage.local`

@@ -17,6 +17,8 @@
  * comment on `appendChange` says what is still possible.
  */
 
+import { putSnapshotRows, getSnapshotRows, removeSnapshotRows } from './snapstore.js';
+
 const K_SESSIONS = 'dbtoolsSessions';
 const K_ACTIVE   = 'dbtoolsActive';
 // The session the panel shows for a connection when none is recording: the one
@@ -233,7 +235,7 @@ export async function deleteSession(id) {
     if (session && focus[session.key] === id) delete focus[session.key];
     await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active, [K_FOCUS]: focus });
     const snaps = (session && session.snapshots) || [];
-    if (snaps.length) await remove(snaps.map((s) => SNAP_PREFIX + s.id));
+    if (snaps.length) await dropSnapshotRows(snaps.map((s) => s.id));
   });
 }
 
@@ -301,16 +303,25 @@ export async function removeChange(sessionId, changeId) {
 }
 
 /* === Snapshots and backup tables ═════════════════════════════════════════
- * A snapshot's rows are stored under a key of their own, not inside the session:
- * every append rewrites the whole sessions map, and dragging a few thousand rows
- * through each of those writes would make an ordinary edit slow. The session
- * keeps only the description — table, key, row count, when.
+ * A snapshot's rows are not stored inside the session: every append rewrites the
+ * whole sessions map, and dragging a few thousand rows through each of those
+ * writes would make an ordinary edit slow. The session keeps only the
+ * description — table, key, row count, when — and the rows go to IndexedDB
+ * (snapstore.js), out of the 10 MB that `chrome.storage.local` shares with the
+ * scenarios.
  *
  * A backup table lives in the database; the session records its name and how to
  * restore or drop it.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
+// Where snapshot rows were kept before they moved to IndexedDB. Still read, and
+// cleared on delete, so a session from before the move can be restored.
 const SNAP_PREFIX = 'dbtoolsSnap_';
+
+async function dropSnapshotRows(snapIds) {
+  await removeSnapshotRows(snapIds).catch((err) => console.warn('[dbtools] snapshot rows not removed:', err));
+  await remove(snapIds.map((id) => SNAP_PREFIX + id));
+}
 
 function sessionList(session, field) {
   if (!Array.isArray(session[field])) session[field] = [];
@@ -318,7 +329,7 @@ function sessionList(session, field) {
 }
 
 export async function addSnapshot(sessionId, meta, data) {
-  await set({ [SNAP_PREFIX + meta.id]: data });
+  await putSnapshotRows(meta.id, data);
   return serialize(async () => {
     const res = await get([K_SESSIONS]);
     const sessions = res[K_SESSIONS] || {};
@@ -331,6 +342,8 @@ export async function addSnapshot(sessionId, meta, data) {
 }
 
 export async function getSnapshotData(snapId) {
+  const data = await getSnapshotRows(snapId);
+  if (data) return data;
   const res = await get([SNAP_PREFIX + snapId]);
   return res[SNAP_PREFIX + snapId] || null;
 }
@@ -366,7 +379,7 @@ export function updateSnapshot(sessionId, snapId, patch) {
 }
 
 export async function removeSnapshot(sessionId, snapId) {
-  await remove([SNAP_PREFIX + snapId]);
+  await dropSnapshotRows([snapId]);
   return dropListItem(sessionId, 'snapshots', snapId);
 }
 

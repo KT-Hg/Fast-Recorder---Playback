@@ -19,6 +19,7 @@ import { joinStatements, engineOf } from './sqlquote.js';
 import { connLabel, buildUrl } from './params.js';
 import { rowKeyLabel, cleanupCandidates } from './summary.js';
 import { t, setLang, getLang } from './i18n.js';
+import { TABLE_COPIES } from './features.js';
 
 const THEME_KEY = 'popupTheme';
 
@@ -210,7 +211,7 @@ function paintRollbackButton() {
     : t('mgr.rollbackAllN', { n: session.changes.length });
   // A session can be rolled back more than once, so the button stays available
   // while it holds anything at all.
-  ui.btnRollback.disabled = !session.changes.length && !(session.snapshots || []).length;
+  ui.btnRollback.disabled = !session.changes.length && !(TABLE_COPIES && (session.snapshots || []).length);
   ui.chkAll.checked = Boolean(session.changes.length) && ticked.length === session.changes.length;
 }
 
@@ -277,7 +278,7 @@ function shortDate(iso) {
 function renderExtras(session) {
   const snaps = (session && session.snapshots) || [];
   const backups = (session && session.backups) || [];
-  ui.extras.hidden = !session || (!snaps.length && !backups.length);
+  ui.extras.hidden = !TABLE_COPIES || !session || (!snaps.length && !backups.length);
   if (ui.extras.hidden) {
     ui.extras.replaceChildren();
     return;
@@ -820,17 +821,26 @@ async function openSettings() {
   el('setSqlPage').checked = settings.captureSqlPage;
   el('setLimit').value = settings.prefetchLimit;
   el('setSnapLimit').value = settings.snapshotLimit;
+  // Held back (features.js): the fields stay in the form, so saving keeps the
+  // stored values, but they are not offered.
+  el('setSnapLimit').closest('label').hidden = !TABLE_COPIES;
+  document.querySelector('fieldset.guard').hidden = !TABLE_COPIES;
   el('setKeyLimit').value = settings.keyScanLimit;
   el('setEngine').value = settings.engineOverride;
 
-  // How much the changesets and snapshots take up. Worth seeing: when this storage
-  // fills, every write fails — recording, ending a session, everything — and the
-  // panel's buttons stop having any effect.
+  // How much of chrome.storage.local the changesets take up, next to its cap.
+  // Worth seeing: when this storage fills, every write fails — recording, ending
+  // a session, everything — and the panel's buttons stop having any effect.
+  // Snapshot rows are not counted: they live in IndexedDB (snapstore.js).
   el('storageUsed').textContent = '';
   if (chrome.storage.local.getBytesInUse) {
     chrome.storage.local.getBytesInUse(null, (bytes) => {
       void chrome.runtime.lastError;
-      el('storageUsed').textContent = t('mgr.storageUsed', { mb: (bytes / 1048576).toFixed(2) });
+      const quota = chrome.storage.local.QUOTA_BYTES || 5242880;
+      el('storageUsed').textContent = t('mgr.storageUsed', {
+        mb: (bytes / 1048576).toFixed(2),
+        max: Math.round(quota / 1048576),
+      });
     });
   }
 

@@ -46,6 +46,7 @@ const VI = {
   'panel.captureFailed': 'Không chụp được dữ liệu cũ: {reason}',
   'panel.saveFailed': 'Adminer báo lỗi nên thay đổi không được ghi: {reason}',
   'panel.tooManyRows': 'Câu lệnh đụng quá {n} dòng — không chụp. Hãy dùng backup bảng.',
+  'panel.tooManyRowsNoCopy': 'Câu lệnh đụng quá {n} dòng — không chụp, nên không rollback được.',
   'panel.unsaved': 'Còn phiên "{name}" với {n} thay đổi chưa rollback.',
   'panel.engine': 'Engine: {engine}',
   'panel.collapse': 'Thu gọn',
@@ -175,7 +176,7 @@ const VI = {
   'mgr.autoExecuteOff': 'Tự chạy SQL đang tắt — dùng "Xuất .sql" rồi chạy tay trong Adminer.',
   'mgr.wrongConn': 'Tab Adminer đang mở ở {origin} không trỏ tới đúng database của phiên này.',
   'mgr.integrationOff': 'Tích hợp Adminer đang tắt — bật lại ở popup (thẻ DB Test Session) hoặc trong Settings.',
-  'mgr.storageUsed': 'Dung lượng đã dùng: {mb} MB',
+  'mgr.storageUsed': 'Dung lượng đã dùng: {mb} / {max} MB',
 
   'reason.insert-key-unknown': 'INSERT không xác định được khoá của dòng mới',
   'reason.all-rows-drifted': 'mọi dòng đều đã bị đổi từ bên ngoài',
@@ -280,6 +281,7 @@ const EN = {
   'panel.captureFailed': 'Could not snapshot the old rows: {reason}',
   'panel.saveFailed': 'Adminer reported an error, so the change was not recorded: {reason}',
   'panel.tooManyRows': 'The statement touches more than {n} rows — not snapshotted. Use a backup table.',
+  'panel.tooManyRowsNoCopy': 'The statement touches more than {n} rows — not snapshotted, so it cannot be rolled back.',
   'panel.unsaved': 'Session "{name}" still has {n} change(s) not rolled back.',
   'panel.engine': 'Engine: {engine}',
   'panel.collapse': 'Collapse',
@@ -409,7 +411,7 @@ const EN = {
   'mgr.autoExecuteOff': 'Running SQL automatically is off — use "Export .sql" and run it in Adminer.',
   'mgr.wrongConn': 'The Adminer tab open on {origin} is not pointed at this session\'s database.',
   'mgr.integrationOff': 'The Adminer integration is switched off — turn it back on in the popup (DB Test Session card) or in Settings.',
-  'mgr.storageUsed': 'Storage in use: {mb} MB',
+  'mgr.storageUsed': 'Storage in use: {mb} of {max} MB',
 
   'reason.insert-key-unknown': 'the INSERT\'s new key could not be determined',
   'reason.all-rows-drifted': 'every row was changed from outside',

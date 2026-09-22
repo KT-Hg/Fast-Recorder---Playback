@@ -21,6 +21,7 @@
 
 import { t, setLang } from '../dbtools/i18n.js';
 import { sendAlertNotification, sendCompletionNotification } from './utils.js';
+import { TABLE_COPIES } from '../dbtools/features.js';
 
 const SETTINGS_KEY = 'dbtoolsSettings';
 
@@ -32,6 +33,9 @@ async function readGuard() {
   // so the guard is off too — the run goes ahead unprotected rather than being
   // refused for a session nothing could have opened.
   if (settings.enabled === false) return null;
+  // Held back with the table snapshots it is built on (features.js). A guard
+  // switched on before that must not go on wrapping runs no one can see it in.
+  if (!TABLE_COPIES) return null;
   const guard = settings.guard;
   return guard && guard.enabled && guard.key && guard.origin ? guard : null;
 }

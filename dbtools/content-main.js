@@ -43,6 +43,10 @@ import {
 import { mountPanel } from './panel.js';
 import { summaryLines, defaultSessionName } from './summary.js';
 import { t, setLang } from './i18n.js';
+import { TABLE_COPIES } from './features.js';
+
+// "Use a backup table" is only advice while there is a backup table to make.
+const TOO_MANY_ROWS = TABLE_COPIES ? 'panel.tooManyRows' : 'panel.tooManyRowsNoCopy';
 
 const SUBMIT_WATCHDOG_MS = 8000;
 const AJAX_SAVE_TIMEOUT_MS = 30 * 1000;
@@ -177,8 +181,8 @@ async function start() {
     onUndoLast: guarded(undoLast),
     onPick: guarded(pickSession),
     onResume: guarded(() => state.session && resumeSession(state.session.id)),
-    onSnapshot: guarded(promptSnapshot),
-    onBackup: guarded(promptBackup),
+    // No handler, no button: the panel leaves out ⋯ when there is nothing behind it.
+    ...(TABLE_COPIES ? { onSnapshot: guarded(promptSnapshot), onBackup: guarded(promptBackup) } : {}),
   }, { theme: (themed && themed.popupTheme) || '' });
 
   await refresh();
@@ -259,16 +263,19 @@ const MESSAGES = {
       sessionId: msg.sessionId, changeIds: msg.changeIds, includeUndone: msg.includeUndone,
     }),
   }),
-  'dbtools-snapshot-restore': async (msg) => {
-    const session = await store.getSession(msg.sessionId);
-    return { ok: true, report: await restoreSnapshots(session, { snapIds: msg.snapIds }) };
-  },
-  'dbtools-backup-restore': async (msg) =>
-    ({ ok: true, report: await restoreBackup(await store.getSession(msg.sessionId), msg.backupId) }),
-  'dbtools-backup-drop': async (msg) =>
-    ({ ok: true, report: await dropBackup(await store.getSession(msg.sessionId), msg.backupId) }),
-  'dbtools-guard-begin': guardBegin,
-  'dbtools-guard-end': guardEnd,
+  // Whole-table copies and the Playback guard built on them (features.js).
+  ...(TABLE_COPIES ? {
+    'dbtools-snapshot-restore': async (msg) => {
+      const session = await store.getSession(msg.sessionId);
+      return { ok: true, report: await restoreSnapshots(session, { snapIds: msg.snapIds }) };
+    },
+    'dbtools-backup-restore': async (msg) =>
+      ({ ok: true, report: await restoreBackup(await store.getSession(msg.sessionId), msg.backupId) }),
+    'dbtools-backup-drop': async (msg) =>
+      ({ ok: true, report: await dropBackup(await store.getSession(msg.sessionId), msg.backupId) }),
+    'dbtools-guard-begin': guardBegin,
+    'dbtools-guard-end': guardEnd,
+  } : {}),
 };
 
 /**
@@ -946,7 +953,7 @@ async function captureRowsDelete(table, checked, all, source) {
   const target = await targetIdfs(checked, all);
   if (target.tooMany) {
     change.warnings.push('too-many-rows');
-    state.panel.log(t('panel.tooManyRows', { n: state.settings.prefetchLimit }), 'err');
+    state.panel.log(t(TOO_MANY_ROWS, { n: state.settings.prefetchLimit }), 'err');
     return change;
   }
   if (!target.idfs.length) return null;
@@ -964,7 +971,7 @@ async function captureRowsUpdate(table, checked, all, cols, typed, source) {
   const target = await targetIdfs(checked, all);
   if (target.tooMany) {
     change.warnings.push('too-many-rows');
-    state.panel.log(t('panel.tooManyRows', { n: state.settings.prefetchLimit }), 'err');
+    state.panel.log(t(TOO_MANY_ROWS, { n: state.settings.prefetchLimit }), 'err');
     return change;
   }
   if (!target.idfs.length) return null;
@@ -1111,7 +1118,7 @@ async function captureStatement(desc) {
   }
   if (found.rows.length > limit) {
     base.warnings.push('too-many-rows');
-    state.panel.log(t('panel.tooManyRows', { n: limit }), 'err');
+    state.panel.log(t(TOO_MANY_ROWS, { n: limit }), 'err');
     return base;
   }
 
@@ -1270,7 +1277,9 @@ async function rollback({ sessionId, changeIds, auto = false, includeUndone = fa
   const report = { total: 0, ok: 0, failed: 0, skipped: 0, statements: [], details: [], snapshots: null };
   if (!session) return report;
 
-  const snaps = session.snapshots || [];
+  // With table copies switched off, a snapshot an older session holds is left
+  // alone: the rollback is the change log's and nothing else.
+  const snaps = TABLE_COPIES ? (session.snapshots || []) : [];
   const pending = (session.changes || []).some((c) => !c.undone) || snaps.some((s) => !s.restoredAt);
   const again = includeUndone || (!pending && Boolean((session.changes || []).length || snaps.length));
 
