@@ -59,6 +59,18 @@ body { display: flex; flex-direction: column; }
   display: flex; flex-direction: column; min-height: 0;
 }
 .rail h2 { margin: 0; padding: 12px 14px 8px; font-size: 12px; text-transform: uppercase; color: var(--muted); }
+.rail-head { display: flex; align-items: center; justify-content: space-between; padding-right: 8px; }
+.rail-head .btn { font-size: 11px; }
+.sess .tag {
+  font-size: 11px; font-weight: 500; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+}
+.change .key { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.change .undo-one { flex: none; }
+.change.flash { box-shadow: 0 0 0 2px var(--primary); transition: box-shadow .3s; }
+.report-action { margin-left: 10px; vertical-align: baseline; }
+.cleanup { display: grid; gap: 8px; max-width: 420px; }
+.cleanup p { margin: 0; }
 .session-list { overflow: auto; padding: 0 8px 12px; display: grid; gap: 6px; align-content: start; }
 
 .sess {
@@ -69,6 +81,11 @@ body { display: flex; flex-direction: column; }
 .sess.active { background: var(--sunken); border-color: var(--border); }
 .sess .t { font-weight: 600; display: block; word-break: break-word; }
 .sess .s { color: var(--muted); font-size: 12px; }
+.sess .rec { color: var(--danger); font-size: 12px; font-weight: 600; margin-left: 6px; white-space: nowrap; }
+.rail-filter {
+  margin: 0 8px 8px; font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--sunken); color: var(--text);
+}
 
 /* The page hides whole sections with the `hidden` attribute; the class rules below
    give them a display value, which would otherwise win and leave a deleted
@@ -158,6 +175,13 @@ fieldset.guard legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
 .report { padding: 8px 10px; border-radius: 6px; background: var(--sunken); font-size: 13px; white-space: pre-wrap; }
 .report.err { color: var(--danger); }
 .report.ok { color: var(--success); }
+.report.warn { color: var(--warning); }
+
+/* The first thing this page shows somebody who has never made a session. None of
+   the four steps happen here, so the page has to point at where they do. */
+.howto { max-width: 560px; }
+.howto h3 { margin: 4px 0 8px; font-size: 15px; }
+.howto ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
 
 .dlg { border: 1px solid var(--border); border-radius: 12px; padding: 0; background: var(--surface); color: var(--text); }
 .dlg::backdrop { background: rgba(8, 10, 16, .5); }

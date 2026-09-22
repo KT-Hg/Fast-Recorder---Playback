@@ -389,14 +389,39 @@ Design notes and the phases beyond what is built: [`docs/adminer-rollback-plan.m
 2. **▶ Start session** — name the run. If the test goes through the application rather than Adminer, open **⋯**
    on the panel and press **📸 Snapshot** too, naming the tables it touches. Snapshot and Backup live behind that
    **⋯** because they are occasional, heavier decisions than the buttons next to them.
-3. Change data as you normally would.
-4. **↺ Roll back all**, read the SQL it is about to run, confirm. The recorded changes are undone first, then the
-   snapshotted tables are put back. A session is not spent by one rollback: press it again — after another run of
-   the same test, or after the data moved — and it offers the same undo a second time, saying that is what it is.
+3. Change data as you normally would. A warning while the panel is shut — a row whose old values could not be
+   read, a change that cannot be undone — puts a **⚠ n** badge on the panel's header, because a warning written
+   to a log nobody can see is not a warning. Each log line carries its time; click a *Recorded* line to open that
+   change, diff open, on the manager page. Reminders and status lines ("copied", "still has 3 changes not rolled
+   back", "recording into … again") fade out after about eight seconds; what was recorded, what a rollback did and
+   what failed stay. If the panel covers something, **⇤** in its header moves it to the other corner.
+4. **↺ Roll back all**, or **↺ Undo last** (<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> outside a text field)
+   for just the change you made a moment ago. The preview opens with a line per change (grouped by table once
+   there are more than twelve) — what it is, and what undoing it does to how many rows, including the ones it
+   is going to skip and why — and then the exact SQL underneath. Confirm and the recorded changes are undone
+   first, then the snapshotted tables are put back. Afterwards the log says what was skipped and, if the
+   database refused a statement, what it said. A row someone else changed in the meantime is shown as a table
+   (column / recorded / now) with **Skip these rows** or **Overwrite anyway**. A session is not spent by one
+   rollback: press it again — after another run of the same test, or after the data moved — and it offers the
+   same undo a second time, saying that is what it is.
+5. **■ End** does not make the session disappear. It stays on the panel, marked *Ended*, still one click from
+   **↺ Roll back all**, with **↻ Resume** to record into it again and **▶ New session** for the next one. Click
+   the session's **name** on the panel for every session on this database, each with its own **↻ Resume**; past
+   six of them a filter appears, and Enter resumes the first match. One session records per database: resuming
+   or starting another ends whichever was recording, and says so first.
 
-**Data → DB Test Session** opens the full page: every change with its before/after per column, per-change
-rollback, the session's snapshots and backup tables, and `.sql` / `.json` export of the changeset. The **?** on
-that card is the in-popup guide. The panel and the page are in English; 🌐 on the page switches to Vietnamese.
+**Data → DB Test Session** opens the full page — and the card itself says which session is recording, one click
+from it. The page lists every change with the row it touched (`id=2`), a **↺** to undo just that one, its
+before/after per column (diffs stay open while new changes arrive), the session's snapshots and backup tables,
+and `.sql` / `.json` export. **Clean up…** deletes ended sessions with nothing left to undo (those still holding
+changes are one tick away; those that still own a backup table are kept). **View** on the panel reuses an open
+copy of the page rather than opening another. The panel follows the extension's light/dark setting. The rollback
+button there says what it is about to do rather than what it is called — **Roll back all 12** with nothing
+ticked, **Roll back 3 selected** with three, **Run 3 again** when a ticked change has already been undone. The
+run itself happens in the Adminer tab (the extension's own fetch would not carry Adminer's session cookie), so
+the page says to confirm it over there and reports what came back — and when no Adminer tab is open for that
+database, **Open Adminer** opens one and carries on once its panel answers. The **?** on that card is the in-popup guide.
+The panel and the page are in English; 🌐 on the page switches to Vietnamese.
 
 ### What it records
 

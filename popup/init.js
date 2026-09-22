@@ -71,8 +71,11 @@ function initPageButton(buttonId, page) {
   if (!btn) return;
   const url = chrome.runtime.getURL(page);
   btn.addEventListener('click', () => {
-    chrome.tabs.query({ url }, (tabs) => {
-      const existing = tabs && tabs[0];
+    // Matched without the query or hash: a page opened on one session
+    // (`dbtools.html?session=…`) is still the page, and a second copy of it is
+    // not what the button is for.
+    chrome.tabs.query({}, (tabs) => {
+      const existing = (tabs || []).find((t) => t.url && t.url.split(/[?#]/)[0] === url);
       if (existing) {
         chrome.tabs.update(existing.id, { active: true });
         chrome.windows.update(existing.windowId, { focused: true });
@@ -88,6 +91,7 @@ function initFullPages() {
   initPageButton('openSqlCases', 'sqlcases.html');
   initPageButton('openDbTools', 'dbtools.html');
   initDbGuardToggle();
+  initDbStatus();
 }
 
 /**
@@ -100,6 +104,69 @@ function initFullPages() {
  * on the Test sessions page, so switching it on before that has been done opens
  * those settings instead of pretending to work.
  */
+/**
+ * The DB Test Session card's status line: the session recording right now (or
+ * the one last used, when none is), with a click through to it on the manager
+ * page. Kept live while the popup is open — ending a session in the Adminer tab
+ * next to it shows up here straight away.
+ */
+function initDbStatus() {
+  const line = document.getElementById('dbStatus');
+  if (!line) return;
+  const KEYS = ['dbtoolsSessions', 'dbtoolsActive', 'dbtoolsSettings'];
+  let target = '';
+
+  const paint = (res) => {
+    const sessions = Object.values(res.dbtoolsSessions || {});
+    const active = res.dbtoolsActive || {};
+    const off = (res.dbtoolsSettings || {}).enabled === false;
+    const recording = sessions.filter((s) => !s.closedAt && active[s.key] === s.id)
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+    const latest = [...sessions].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
+    const shown = recording[0] || latest;
+    if (!shown || off) {
+      line.hidden = true;
+      target = '';
+      return;
+    }
+    target = shown.id;
+    const n = (shown.changes || []).length;
+    const rec = Boolean(recording[0]);
+    line.hidden = false;
+    line.classList.toggle('rec', rec);
+    line.replaceChildren();
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    const label = document.createElement('span');
+    label.className = 'label';
+    const lead = document.createElement('span');
+    lead.textContent = rec ? 'Recording: ' : 'Last session: ';
+    const name = document.createElement('b');
+    name.textContent = shown.name;
+    label.append(lead, name);
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = `${n} change${n === 1 ? '' : 's'}`
+      + (rec && recording.length > 1 ? ` · +${recording.length - 1} more` : '')
+      + (rec ? '' : ' · ended');
+    line.append(dot, label, sub);
+    line.title = 'Open this session on the Test sessions & rollback page';
+  };
+
+  chrome.storage.local.get(KEYS, paint);
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && KEYS.some((k) => changes[k])) chrome.storage.local.get(KEYS, paint);
+  });
+  line.addEventListener('click', () => {
+    if (!target) return;
+    // The background reuses an open manager tab rather than opening another.
+    chrome.runtime.sendMessage({ type: 'dbtools-open-manager', sessionId: target }, () => {
+      void chrome.runtime.lastError;
+      window.close();
+    });
+  });
+}
+
 function initDbGuardToggle() {
   const enabled = document.getElementById('dbEnabledToggle');
   const box = document.getElementById('dbGuardToggle');

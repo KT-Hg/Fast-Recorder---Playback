@@ -41,6 +41,7 @@ import {
   backupName, backupCreateSql, backupRestoreSql, backupDropSql,
 } from './snapshot.js';
 import { mountPanel } from './panel.js';
+import { summaryLines, defaultSessionName } from './summary.js';
 import { t, setLang } from './i18n.js';
 
 const SUBMIT_WATCHDOG_MS = 8000;
@@ -52,7 +53,9 @@ const state = {
   ctx: null,
   info: null,
   settings: null,
-  session: null,
+  session: null,  // the session the panel shows — recording, or the one last ended here
+  count: 0,       // how many sessions this connection has, for the switcher's hint
+  warnedUnsaved: '',
   panel: null,
   on: false,      // is the integration switched on right now?
   wired: false,   // have this page's forms been hooked?
@@ -98,7 +101,8 @@ export async function boot() {
   // registered whether it is on or not.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.dbtoolsSessions || changes.dbtoolsActive) refresh();
+    if (changes.dbtoolsSessions || changes.dbtoolsActive || changes.dbtoolsFocus) refresh();
+    if (changes.popupTheme && state.panel.setTheme) state.panel.setTheme(changes.popupTheme.newValue || '');
     // Settings are read once at boot; without this an Adminer tab left open would
     // keep the old row cap and drift setting until it is reloaded.
     if (changes.dbtoolsSettings) {
@@ -108,12 +112,26 @@ export async function boot() {
         setLang(next.lang);
         if (next.enabled && !was) start();
         else if (!next.enabled && was) stop();
-        else if (next.enabled) state.panel.render({ session: state.session, engine: state.ctx.engine });
+        else if (next.enabled) renderPanel();
       });
     }
   });
 
   if (settings.enabled) await start();
+
+  // Alt+Shift+Z: undo the last change. Adminer's own shortcuts are all Ctrl/⌘ ones
+  // and none of them uses Alt, so this one does not collide; it still only opens
+  // the preview, and does nothing while the cursor is in a field, where the keys
+  // belong to whatever is being typed.
+  const undoKey = guarded(undoLast);
+  document.addEventListener('keydown', (e) => {
+    if (!state.on || !e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.code !== 'KeyZ') return;
+    const origin = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (origin && (origin.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(origin.tagName || ''))) return;
+    if (!state.session) return;
+    e.preventDefault();
+    undoKey();
+  }, true);
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const handler = msg && MESSAGES[msg.type];
@@ -147,15 +165,21 @@ export async function boot() {
  */
 async function start() {
   state.on = true;
+  // The extension's own theme, the one the popup and the manager page use; unset,
+  // the panel follows the operating system.
+  const themed = await new Promise((resolve) => chrome.storage.local.get(['popupTheme'], resolve));
   state.panel = mountPanel({
     onStart: guarded(startSession),
     onStop: guarded(stopSession),
     onView: guarded(openManager),
     onExportSql: guarded(exportSql),
     onRollbackAll: guarded(() => rollback({})),
+    onUndoLast: guarded(undoLast),
+    onPick: guarded(pickSession),
+    onResume: guarded(() => state.session && resumeSession(state.session.id)),
     onSnapshot: guarded(promptSnapshot),
     onBackup: guarded(promptBackup),
-  });
+  }, { theme: (themed && themed.popupTheme) || '' });
 
   await refresh();
   await rememberConnection();
@@ -192,14 +216,26 @@ function stop() {
  * reason is put in the panel's own log, where the person pressing the button is
  * already looking.
  */
+let running = false;
 function guarded(fn) {
   return async (...args) => {
+    // One at a time. The sheet refuses a second preview, but a rollback that is
+    // already sending statements has no sheet open, and a second press would
+    // start a second run over the same rows.
+    if (running) {
+      state.panel.notice(t('panel.busy'), 'warn');
+      state.panel.expand();
+      return;
+    }
+    running = true;
     try {
       await fn(...args);
     } catch (err) {
       const reason = String((err && err.message) || err);
       state.panel.log(/quota/i.test(reason) ? t('panel.storageFull') : t('panel.actionFailed', { reason }), 'err');
       state.panel.expand();
+    } finally {
+      running = false;
     }
   };
 }
@@ -207,9 +243,10 @@ function guarded(fn) {
 /** Stand-in for the panel while the feature is off. */
 function silentPanel() {
   return {
-    render() {}, log() {}, expand() {}, destroy() {},
+    render() {}, log() {}, notice() {}, progress() {}, expand() {}, destroy() {}, setTheme() {},
     preview: async () => false,   // nothing may run without someone to confirm it
     ask: async () => null,
+    pick: async () => null,
   };
 }
 
@@ -250,24 +287,44 @@ async function rememberConnection() {
   await new Promise((resolve) => chrome.storage.local.set({ dbtoolsConns: conns }, resolve));
 }
 
+/**
+ * Re-read which session the panel shows and draw it.
+ *
+ * That is the recording one if there is one — and otherwise the one last ended
+ * or resumed here, not nothing: ending a session used to make it disappear from
+ * the panel, and with it the way to roll it back or carry on with it.
+ */
 async function refresh() {
-  state.session = await store.activeSession(state.ctx.key);
-  state.panel.render({ session: state.session, engine: state.ctx.engine });
+  state.session = await store.panelSession(state.ctx.key);
+  state.count = (await store.sessionsFor(state.ctx.key)).length;
+  renderPanel();
 
+  // Said once per session per page, not on every refresh: the panel refreshes on
+  // every write to storage, and an ended session now stays on it.
   const pendingCount = (state.session?.changes || []).filter((c) => !c.undone).length;
-  if (state.session && state.session.closedAt && pendingCount) {
-    state.panel.log(t('panel.unsaved', { name: state.session.name, n: pendingCount }), 'warn');
+  if (state.session && state.session.closedAt && pendingCount && state.warnedUnsaved !== state.session.id) {
+    state.warnedUnsaved = state.session.id;
+    state.panel.notice(t('panel.unsaved', { name: state.session.name, n: pendingCount }), 'warn');
   }
   return state.session;
+}
+
+function renderPanel() {
+  state.panel.render({ session: state.session, engine: state.ctx.engine, count: state.count || 0 });
 }
 
 /* === Session controls ════════════════════════════════════════════════════ */
 
 async function startSession() {
+  const recording = state.session && !state.session.closedAt ? state.session : null;
   const name = await state.panel.ask({
     title: t('panel.startTitle'),
     label: t('panel.promptName'),
-    value: `${t('panel.defaultName')} ${new Date().toLocaleString()}`,
+    // "Test session · orders · 14:05": the table on screen (or the database) and
+    // the time, instead of a locale date string three times as long.
+    value: defaultSessionName(t('panel.defaultName'), state.info.table || (state.ctx.conn && state.ctx.conn.db) || ''),
+    // Starting one ends the one recording; the question says so before, not after.
+    note: recording ? t('panel.pickNote', { name: recording.name }) : '',
     confirmLabel: t('panel.start'),
   });
   if (name === null) return;
@@ -284,8 +341,64 @@ async function startSession() {
 
 async function stopSession() {
   if (!state.session) return;
+  const { name } = state.session;
   await store.closeSession(state.session.id);
+  // The session does not go anywhere, and the first End after this change is the
+  // moment to say so — otherwise it reads as "End did nothing".
+  state.warnedUnsaved = state.session.id;
   await refresh();
+  state.panel.notice(t('panel.endedLog', { name }), 'ok');
+}
+
+/**
+ * Carry on recording into a session that was ended — the one on the panel, or
+ * one picked from the list. Whichever was recording is ended first: one
+ * recording session per database.
+ */
+async function resumeSession(id) {
+  const target = await store.getSession(id);
+  if (!target) return;
+  const was = state.session && !state.session.closedAt && state.session.id !== id ? state.session : null;
+  await store.reopenSession(id);
+  await refresh();
+  if (was) state.panel.notice(t('panel.endedPrev', { name: was.name }), 'warn');
+  state.panel.notice(t('panel.resumed', { name: target.name }), 'ok');
+  state.panel.expand();
+}
+
+/** The sessions on this database, one press away from the name on the panel. */
+async function pickSession() {
+  const list = await store.sessionsFor(state.ctx.key);
+  const recordingId = await store.activeSessionId(state.ctx.key);
+  const recording = list.find((s) => s.id === recordingId && !s.closedAt) || null;
+  const answer = await state.panel.pick({
+    items: list.map((s) => ({
+      id: s.id,
+      name: s.name,
+      meta: sessionLine(s),
+      recording: Boolean(recording && s.id === recording.id),
+      shown: Boolean(state.session && s.id === state.session.id),
+    })),
+    note: recording ? t('panel.pickNote', { name: recording.name }) : '',
+  });
+  if (!answer) return;
+  if (answer.action === 'new') await startSession();
+  else if (answer.action === 'manage') openManager();
+  else if (answer.action === 'resume') await resumeSession(answer.id);
+}
+
+/** "3 change(s) · 1 table(s) · 22 Sep, 09:14" — enough to tell two runs of one test apart. */
+function sessionLine(session) {
+  const changes = session.changes || [];
+  const tables = new Set(changes.map((c) => c.table)).size;
+  let when = '';
+  try {
+    when = new Date(session.startedAt).toLocaleString(undefined, {
+      day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    });
+  } catch { when = String(session.startedAt || ''); }
+  return `${t('panel.changes', { n: changes.length })} · ${t('panel.tables', { n: tables })} · ${when}`
+    + (session.guard ? ` · ${t('mgr.playback')}` : '');
 }
 
 function openManager() {
@@ -323,8 +436,10 @@ async function settlePending() {
     return;
   }
 
-  const session = state.session || (await store.activeSession(state.ctx.key));
-  if (!session) return;
+  // Only into a session that is recording. The panel can now show one that has
+  // ended, and a change parked while recording belongs to no ended session.
+  const session = await store.activeSession(state.ctx.key);
+  if (!session || session.closedAt) return;
   const verified = adminer.readMessages(document).length > 0;
 
   for (const parked of pending.changes) {
@@ -461,9 +576,16 @@ function logRecorded(change) {
   if (reason) {
     state.panel.log(t('panel.notUndoable', { reason: t(`reason.${reason}`) }), 'warn');
   } else {
+    // A click on the line opens that change on the manager page, diff open —
+    // "what exactly did that save record?" answered without hunting for it.
+    const sessionId = state.session && state.session.id;
     state.panel.log(
       t('panel.recorded', { op: t(`op.${change.op}`), table: change.table, n: change.rows.length }),
       'ok',
+      sessionId && change.id ? {
+        title: t('panel.openChange'),
+        onClick: () => chrome.runtime.sendMessage({ type: 'dbtools-open-manager', sessionId, changeId: change.id }),
+      } : null,
     );
   }
 }
@@ -828,7 +950,7 @@ async function captureRowsDelete(table, checked, all, source) {
     return change;
   }
   if (!target.idfs.length) return null;
-  state.panel.log(t('panel.capturing'));
+  state.panel.notice(t('panel.capturing'));
   const rows = await readRowsByIdf(table, target.idfs);
   change.keyCols = rows.length ? Object.keys(rows[0].where) : [];
   change.unreadableCols = [...new Set(rows.flatMap((r) => r.unreadable))];
@@ -846,7 +968,7 @@ async function captureRowsUpdate(table, checked, all, cols, typed, source) {
     return change;
   }
   if (!target.idfs.length) return null;
-  state.panel.log(t('panel.capturing'));
+  state.panel.notice(t('panel.capturing'));
   const rows = await readRowsByIdf(table, target.idfs);
   change.keyCols = rows.length ? Object.keys(rows[0].where) : [];
   change.restoreCols = cols;
@@ -871,7 +993,7 @@ async function captureGridEdits(table, edits) {
     change.warnings.push('too-many-rows');
     return change;
   }
-  state.panel.log(t('panel.capturing'));
+  state.panel.notice(t('panel.capturing'));
   const idfs = [...byRow.keys()];
   const rows = await readRowsByIdf(table, idfs);
   const cols = new Set();
@@ -926,7 +1048,7 @@ function wireSqlPage() {
 ${desc.sql}`;
         continue;
       }
-      state.panel.log(t('panel.capturing'));
+      state.panel.notice(t('panel.capturing'));
       const change = await captureStatement(desc);
       if (!change) continue;
       captures.push(change);
@@ -1104,22 +1226,25 @@ async function exportSql() {
   if (!session) return;
   const dry = await runRollback(state.ctx, session, { dryRun: true });
   if (!dry.statements.length) {
-    state.panel.log(t('rollback.nothing'), 'warn');
+    state.panel.notice(t('rollback.nothing'), 'warn');
     return;
   }
   const sql = joinStatements(dry.statements);
+  // Copying is the whole point of this sheet, so it is the one button that does
+  // it — the sheet's own spare "Copy" would sit next to it saying the same.
   const go = await state.panel.preview({
-    title: t('rollback.title'),
+    title: t('rollback.exportTitle'),
     sql,
     note: dry.skipped ? t('rollback.blocked', { n: dry.skipped }) : '',
-    confirmLabel: t('rollback.copy'),
+    confirmLabel: t('rollback.copyGo'),
+    copyButton: false,
   });
   if (!go) return;
   try {
     await navigator.clipboard.writeText(sql);
-    state.panel.log(t('rollback.copied'), 'ok');
+    state.panel.notice(t('rollback.copied'), 'ok');
   } catch {
-    state.panel.log(t('rollback.copied'), 'warn');
+    state.panel.notice(t('rollback.copied'), 'warn');
   }
 }
 
@@ -1152,9 +1277,12 @@ async function rollback({ sessionId, changeIds, auto = false, includeUndone = fa
   const dry = await runRollback(state.ctx, session, { dryRun: true, changeIds, includeUndone: again });
   const hasSnapshots = !changeIds && snaps.some((s) => again || !s.restoredAt);
   if (!dry.statements.length && !hasSnapshots) {
-    state.panel.log(t('rollback.nothing'), 'warn');
+    state.panel.notice(t('rollback.nothing'), 'warn');
     state.panel.expand();
-    return dry;
+    // A dry run counts every change it *could* undo as "ok". Handing that back
+    // unmarked made the manager page report a rollback that never ran as
+    // "3 succeeded, 0 failed".
+    return { ...dry, nothing: true };
   }
 
   if (dry.statements.length) {
@@ -1165,23 +1293,41 @@ async function rollback({ sessionId, changeIds, auto = false, includeUndone = fa
     const go = auto || await state.panel.preview({
       title: again ? t('rollback.againTitle') : t('rollback.title'),
       sql: joinStatements(dry.statements),
+      summary: summaryLines(session, {
+        changeIds,
+        includeUndone: again,
+        skipped: new Map((dry.details || []).filter((d) => d.skipped).map((d) => [d.change, d.skipped])),
+        statements: dry.statements.length,
+        hasSnapshots,
+      }),
       note: notes.join('\n'),
       confirmLabel: t('rollback.confirm', { n: dry.statements.length }),
+      // Blue is for "proceed"; this writes over rows that are in the database
+      // right now, and the button that does it should look like the one on the
+      // panel that opened it.
+      confirmKind: 'danger',
     });
-    if (!go) return dry;
+    if (!go) return { ...dry, cancelled: true };
 
-    Object.assign(report, await runRollback(state.ctx, session, {
-      changeIds,
-      includeUndone: again,
-      driftCheck: state.settings.driftCheck,
-      onDrift: auto ? async () => 'skip' : askAboutDrift,
-      // Only the run itself; the drift check reports the same position and would
-      // print every line twice.
-      onProgress: ({ phase, i, n }) => {
-        if (phase === 'run') state.panel.log(t('rollback.running', { i, n }));
-      },
-    }));
-    state.panel.log(t('rollback.done', { ok: report.ok, fail: report.failed }), report.failed ? 'err' : 'ok');
+    try {
+      Object.assign(report, await runRollback(state.ctx, session, {
+        changeIds,
+        includeUndone: again,
+        driftCheck: state.settings.driftCheck,
+        onDrift: auto ? async () => 'skip' : askAboutDrift,
+        // Only the run itself; the drift check reports the same position and would
+        // print every line twice. One line that rewrites itself, not one per
+        // statement: a forty-statement rollback used to bury everything the log
+        // had said before it.
+        onProgress: ({ phase, i, n }) => {
+          if (phase === 'run') state.panel.progress(t('rollback.running', { i, n }), i - 1, n);
+        },
+      }));
+    } finally {
+      state.panel.progress(null);
+    }
+
+    reportRollback(report);
     // A change that failed leaves the tables in between states; restoring the
     // snapshots over that would hide where it stopped.
     if (report.failed) {
@@ -1196,6 +1342,41 @@ async function rollback({ sessionId, changeIds, auto = false, includeUndone = fa
   }
   await refresh();
   return report;
+}
+
+/**
+ * Undo the most recent change on its own.
+ *
+ * The everyday correction — a value typed wrong, noticed one screen later — and
+ * the only alternative on the panel was rolling the whole session back.
+ */
+async function undoLast() {
+  const session = state.session || (await refresh());
+  const pending = ((session && session.changes) || [])
+    .filter((c) => !c.undone)
+    .sort((a, b) => b.seq - a.seq);
+  if (!pending.length) {
+    state.panel.notice(t('rollback.nothing'), 'warn');
+    state.panel.expand();
+    return;
+  }
+  await rollback({ changeIds: [pending[0].id] });
+}
+
+/**
+ * What the run came to, in the panel's own log.
+ *
+ * "Done: 2 succeeded, 0 failed" was all it said, and said it for a rollback that
+ * had quietly skipped three changes it could not undo and left those rows as the
+ * test made them. Skips and the database's own error message are the two things
+ * worth knowing afterwards, so both are said out loud.
+ */
+function reportRollback(report) {
+  state.panel.log(t('rollback.done', { ok: report.ok, fail: report.failed }), report.failed ? 'err' : 'ok');
+  if (report.skipped) state.panel.log(t('rollback.skippedDone', { n: report.skipped }), 'warn');
+  const bad = (report.details || []).find((d) => d.ok === false && (d.errors || []).length);
+  if (bad) state.panel.log(t('rollback.failedWith', { reason: bad.errors[0] }), 'err');
+  if (report.failed || report.skipped) state.panel.expand();
 }
 
 /* === Snapshots and backup tables ═════════════════════════════════════════ */
@@ -1313,7 +1494,8 @@ async function restoreSnapshots(session, { snapIds = null, auto = false, include
   }
   out.errors = plans.filter((p) => p.reason).map((p) => ({ table: p.snap.table, reason: p.reason }));
   if (!work.length) {
-    state.panel.log(notes.length ? notes.join(' · ') : t('snap.nothing'), notes.length ? 'warn' : 'ok');
+    if (notes.length) state.panel.log(notes.join(' · '), 'warn');
+    else state.panel.notice(t('snap.nothing'), 'ok');
     return out;
   }
 
@@ -1321,10 +1503,18 @@ async function restoreSnapshots(session, { snapIds = null, auto = false, include
   const go = auto || await state.panel.preview({
     title: t('snap.title'),
     sql: joinStatements(statements),
+    summary: work.map((p) => ({
+      table: p.snap.table,
+      say: t('snap.planLine', { n: p.statements.length }),
+    })),
     note: [t('snap.note'), ...notes].join('\n'),
     confirmLabel: t('snap.confirm', { n: statements.length }),
+    confirmKind: 'danger',
   });
-  if (!go) return out;
+  if (!go) {
+    out.cancelled = true;
+    return out;
+  }
 
   for (const plan of work) {
     out.tables++;
@@ -1422,7 +1612,7 @@ async function restoreBackup(session, backupId) {
     note = t('backup.wholesale');
   }
   if (!statements.length) {
-    state.panel.log(t('snap.nothing'), 'ok');
+    state.panel.notice(t('snap.nothing'), 'ok');
     await store.updateBackup(session.id, backup.id, { restoredAt: new Date().toISOString() });
     return { ok: true, statements: [] };
   }
@@ -1432,6 +1622,7 @@ async function restoreBackup(session, backupId) {
     sql: joinStatements(statements),
     note,
     confirmLabel: t('snap.confirm', { n: statements.length }),
+    confirmKind: 'danger',
   });
   if (!go) return { ok: false, cancelled: true };
   const result = await runSql(state.ctx, joinStatements(statements));
@@ -1453,6 +1644,7 @@ async function dropBackup(session, backupId) {
     sql,
     note: '',
     confirmLabel: t('mgr.drop'),
+    confirmKind: 'danger',
   });
   if (!go) return { ok: false, cancelled: true };
   const result = await runSql(state.ctx, joinStatements([sql]));
@@ -1499,7 +1691,7 @@ async function guardBegin(msg) {
   });
   const snaps = await takeSnapshots(session.id, msg.tables || []);
   await refresh();
-  state.panel.log(t('panel.guardStarted', { name: msg.name || '' }), 'ok');
+  state.panel.notice(t('panel.guardStarted', { name: msg.name || '' }), 'ok');
   return { ok: true, sessionId: session.id, taken: snaps.taken.length, errors: snaps.errors };
 }
 
@@ -1530,25 +1722,49 @@ async function guardEnd(msg) {
  */
 async function askAboutDrift(change, drifted) {
   const lines = [];
+  const rows = [];
   for (const entry of drifted) {
     const where = Object.entries(entry.row.where || {})
       .map(([col, value]) => `${col}=${value === null ? 'NULL' : value}`).join(', ');
     if (entry.missing || entry.present) {
       lines.push(t('rollback.driftMissing', { table: change.table, where }));
+      rows.push([where, '—', '', { text: entry.present ? t('rollback.driftBack') : t('rollback.driftGone'),
+        cls: entry.present ? 'now' : 'gone' }]);
     } else {
       for (const diff of entry.diffs) {
         lines.push(t('rollback.driftRow', {
           table: change.table, where, col: diff.col,
           actual: diff.actual, expected: diff.expected,
         }));
+        rows.push([where, diff.col, { text: showValue(diff.expected), cls: 'was' },
+          { text: showValue(diff.actual), cls: 'now' }]);
       }
     }
   }
   const force = await state.panel.preview({
     title: t('rollback.driftTitle'),
+    // What Copy puts on the clipboard: the same facts as sentences.
     sql: lines.join('\n'),
+    table: {
+      heading: `${t('rollback.driftHeading')} · ${change.table}`,
+      columns: [t('mgr.row'), t('mgr.column'), t('rollback.driftRecorded'), t('rollback.driftNow')],
+      rows,
+    },
+    summary: [{ total: true, say: t('rollback.driftCount', { n: drifted.length, table: change.table }) }],
     note: t('rollback.driftSkip'),
+    // "Cancel" here does not mean nothing happens — it means those rows are left
+    // as they are and the rest is still rolled back. A button that hides that
+    // behind the word "Cancel" is a button people press for the wrong reason.
+    cancelLabel: t('rollback.driftSkipBtn'),
     confirmLabel: t('rollback.driftForce'),
+    confirmKind: 'danger',
   });
   return force ? 'force' : 'skip';
+}
+
+/** A value as the drift table shows it: NULL as NULL, the empty string visibly empty. */
+function showValue(value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (value === '') return "''";
+  return String(value);
 }

@@ -19,6 +19,10 @@
 
 const K_SESSIONS = 'dbtoolsSessions';
 const K_ACTIVE   = 'dbtoolsActive';
+// The session the panel shows for a connection when none is recording: the one
+// last ended, resumed or started there. Without it, "End" made the session vanish
+// from the panel, and getting back to it meant the manager page.
+const K_FOCUS    = 'dbtoolsFocus';
 const K_PENDING  = 'dbtoolsPending';
 const K_KEYCOLS  = 'dbtoolsKeyCols';
 const K_SETTINGS = 'dbtoolsSettings';
@@ -115,12 +119,50 @@ export async function activeSession(key) {
   return getSession(await activeSessionId(key));
 }
 
+/** Every session recorded against one connection, newest first. */
+export async function sessionsFor(key) {
+  const all = await allSessions();
+  return Object.values(all)
+    .filter((s) => s.key === key)
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
+}
+
+/**
+ * The session the panel shows: the one recording, else the one last ended or
+ * resumed here, else the newest on this connection. The panel always has
+ * something to roll back and something to resume for as long as the database
+ * has any session at all.
+ */
+export async function panelSession(key) {
+  const res = await get([K_SESSIONS, K_ACTIVE, K_FOCUS]);
+  const sessions = res[K_SESSIONS] || {};
+  const id = (res[K_ACTIVE] || {})[key] || (res[K_FOCUS] || {})[key] || '';
+  if (id && sessions[id]) return sessions[id];
+  return Object.values(sessions)
+    .filter((s) => s.key === key)
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0] || null;
+}
+
+/**
+ * One recording session per connection. Starting or resuming another ends
+ * whichever was recording — it used to be left open and unpointed-at, recording
+ * nothing, yet listed as "Open" on the manager page from then on.
+ */
+function endRecording(sessions, active, key, except) {
+  const current = active[key];
+  if (current && current !== except && sessions[current] && !sessions[current].closedAt) {
+    sessions[current].closedAt = new Date().toISOString();
+  }
+}
+
 export async function startSession({ name, conn, origin, base, key, guard = false, resumeId = '' }) {
   return serialize(async () => {
-    const res = await get([K_SESSIONS, K_ACTIVE]);
+    const res = await get([K_SESSIONS, K_ACTIVE, K_FOCUS]);
     const sessions = res[K_SESSIONS] || {};
     const active = res[K_ACTIVE] || {};
+    const focus = res[K_FOCUS] || {};
     const id = `ts_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    endRecording(sessions, active, key, id);
     sessions[id] = {
       id,
       name: name || new Date().toLocaleString(),
@@ -136,48 +178,60 @@ export async function startSession({ name, conn, origin, base, key, guard = fals
       changes: [],
     };
     active[key] = id;
-    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active });
+    focus[key] = id;
+    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active, [K_FOCUS]: focus });
     return sessions[id];
   });
 }
 
 export async function closeSession(id) {
   return serialize(async () => {
-    const res = await get([K_SESSIONS, K_ACTIVE]);
+    const res = await get([K_SESSIONS, K_ACTIVE, K_FOCUS]);
     const sessions = res[K_SESSIONS] || {};
     const active = res[K_ACTIVE] || {};
     const session = sessions[id];
     if (!session) return null;
     session.closedAt = new Date().toISOString();
     if (active[session.key] === id) delete active[session.key];
-    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active });
+    // Ended, not gone: the panel keeps showing it, so rolling it back or picking
+    // it up again is one click away rather than a trip to the manager page.
+    // Only when nothing else is recording there — ending a session another tab
+    // has since replaced must not pull the panel off the one being recorded.
+    const focus = res[K_FOCUS] || {};
+    if (!active[session.key]) focus[session.key] = id;
+    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active, [K_FOCUS]: focus });
     return session;
   });
 }
 
 export async function reopenSession(id) {
   return serialize(async () => {
-    const res = await get([K_SESSIONS, K_ACTIVE]);
+    const res = await get([K_SESSIONS, K_ACTIVE, K_FOCUS]);
     const sessions = res[K_SESSIONS] || {};
     const active = res[K_ACTIVE] || {};
+    const focus = res[K_FOCUS] || {};
     const session = sessions[id];
     if (!session) return null;
+    endRecording(sessions, active, session.key, id);
     session.closedAt = null;
     active[session.key] = id;
-    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active });
+    focus[session.key] = id;
+    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active, [K_FOCUS]: focus });
     return session;
   });
 }
 
 export async function deleteSession(id) {
   return serialize(async () => {
-    const res = await get([K_SESSIONS, K_ACTIVE]);
+    const res = await get([K_SESSIONS, K_ACTIVE, K_FOCUS]);
     const sessions = res[K_SESSIONS] || {};
     const active = res[K_ACTIVE] || {};
+    const focus = res[K_FOCUS] || {};
     const session = sessions[id];
     delete sessions[id];
     if (session && active[session.key] === id) delete active[session.key];
-    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active });
+    if (session && focus[session.key] === id) delete focus[session.key];
+    await set({ [K_SESSIONS]: sessions, [K_ACTIVE]: active, [K_FOCUS]: focus });
     const snaps = (session && session.snapshots) || [];
     if (snaps.length) await remove(snaps.map((s) => SNAP_PREFIX + s.id));
   });

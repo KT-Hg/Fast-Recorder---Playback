@@ -16,7 +16,8 @@ import * as store from './session.js';
 import { sessionUndoScript, blockingReason, columnsToRestore } from './undo.js';
 import { backupRestoreSql } from './snapshot.js';
 import { joinStatements, engineOf } from './sqlquote.js';
-import { connLabel } from './params.js';
+import { connLabel, buildUrl } from './params.js';
+import { rowKeyLabel, cleanupCandidates } from './summary.js';
 import { t, setLang, getLang } from './i18n.js';
 
 const THEME_KEY = 'popupTheme';
@@ -26,6 +27,11 @@ const ui = {};
 let sessions = {};
 let currentId = '';
 let selected = new Set();
+// Which changes have their diff open. The page redraws on every write to storage
+// — which, with Adminer open beside it, is every recorded edit — and a redraw
+// that shut every diff somebody had opened to read made the page unusable while
+// the test was running.
+let openIds = new Set();
 let settings = null;
 
 /* === Boot ════════════════════════════════════════════════════════════════ */
@@ -37,6 +43,7 @@ async function init() {
     'sessionList', 'detailHead', 'sessName', 'sessMeta', 'sessState', 'changeList', 'changeHead',
     'changeCount', 'chkAll', 'report', 'btnRollback', 'btnExportSql', 'btnExportJson', 'btnRename',
     'btnToggleOpen', 'btnDelete', 'btnSettings', 'btnLang', 'langLabel', 'settingsDlg', 'toast', 'extras',
+    'railFilter', 'btnCleanup',
   ]) ui[id] = el(id);
 
   settings = await store.getSettings();
@@ -46,9 +53,17 @@ async function init() {
   wire();
 
   await reload();
-  const wanted = new URLSearchParams(location.search).get('session');
-  select(wanted && sessions[wanted] ? wanted : Object.keys(sessions)[0] || '');
+  const first = target();
+  select(first.session && sessions[first.session] ? first.session : newestId());
+  if (first.change) focusChange(first.change);
   if (new URLSearchParams(location.search).has('settings')) openSettings();
+
+  // "View" on the panel reuses this tab and says which session through the hash.
+  window.addEventListener('hashchange', () => {
+    const next = target();
+    if (next.session && sessions[next.session]) select(next.session);
+    if (next.change) focusChange(next.change);
+  });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.dbtoolsSessions) reload().then(() => render());
@@ -69,6 +84,8 @@ function paintStatic() {
     node.textContent = t(node.dataset.i18n);
   }
   ui.langLabel.textContent = getLang().toUpperCase();
+  ui.railFilter.placeholder = t('mgr.filter');
+  ui.btnCleanup.title = t('mgr.cleanupHint');
   document.title = t('mgr.title');
 }
 
@@ -82,6 +99,8 @@ function wire() {
   });
 
   ui.btnSettings.addEventListener('click', () => openSettings());
+  ui.railFilter.addEventListener('input', () => renderRail());
+  ui.btnCleanup.addEventListener('click', cleanup);
   ui.chkAll.addEventListener('change', () => {
     const session = sessions[currentId];
     if (!session) return;
@@ -97,6 +116,35 @@ function wire() {
   ui.btnDelete.addEventListener('click', removeSession);
 }
 
+/** The session (and change) asked for — in the hash when this tab was reused, else in the query. */
+function target() {
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const query = new URLSearchParams(location.search);
+  return {
+    session: hash.get('session') || query.get('session') || '',
+    change: hash.get('change') || query.get('change') || '',
+  };
+}
+
+function newestId() {
+  return Object.values(sessions)
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .map((s) => s.id)[0] || '';
+}
+
+/** Open one change's diff, bring it into view and flash it — a recorded line clicked in the panel's log. */
+function focusChange(changeId) {
+  const session = sessions[currentId];
+  if (!session || !session.changes.some((c) => c.id === changeId)) return;
+  openIds.add(changeId);
+  render();
+  const node = ui.changeList.querySelector(`details[data-id="${CSS.escape(changeId)}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: 'center' });
+  node.classList.add('flash');
+  setTimeout(() => node.classList.remove('flash'), 1600);
+}
+
 async function reload() {
   sessions = await store.allSessions();
   return sessions;
@@ -105,6 +153,7 @@ async function reload() {
 function select(id) {
   currentId = id;
   selected = new Set();
+  openIds = new Set();
   // A report belongs to the session it was about.
   ui.report.hidden = true;
   render();
@@ -120,45 +169,105 @@ function render() {
   ui.changeHead.hidden = !session;
   renderExtras(session);
   if (!session) {
-    ui.changeList.replaceChildren(para(t('mgr.noPreview')));
+    // "Pick a session on the left" is only useful when there is one. With none,
+    // this page is the first thing somebody opens from the popup, and what it
+    // owes them is the four steps — none of which happen on this page.
+    ui.changeList.replaceChildren(Object.keys(sessions).length ? para(t('mgr.noPreview')) : emptyHelp());
     return;
   }
 
   ui.sessName.textContent = session.name;
-  ui.sessState.textContent = session.closedAt ? t('mgr.closed') : t('mgr.open');
+  ui.sessState.textContent = (session.closedAt ? t('mgr.closed') : t('mgr.open'))
+    + (session.guard ? ` · ${t('mgr.playback')}` : '');
   ui.sessState.className = `pill${session.closedAt ? '' : ' open'}`;
   // The whole changeset, undone or not — it can be rolled back again.
   ui.sessMeta.textContent =
     `${connLabel(session.conn)} · ${new Date(session.startedAt).toLocaleString()} · `
     + `${t('panel.changes', { n: session.changes.length })}`;
   ui.btnToggleOpen.textContent = session.closedAt ? t('mgr.reopen') : t('mgr.close');
-  ui.changeCount.textContent = `${session.changes.filter((c) => !c.undone).length} / ${session.changes.length}`;
-  // A session can be rolled back more than once, so the button stays available
-  // while it holds anything at all.
-  ui.btnRollback.disabled = !session.changes.length && !(session.snapshots || []).length;
+  ui.changeCount.textContent = t('mgr.pendingOf', {
+    n: session.changes.filter((c) => !c.undone).length, total: session.changes.length,
+  });
+  paintRollbackButton();
 
   const list = [...session.changes].sort((a, b) => b.seq - a.seq);
   ui.changeList.replaceChildren(...(list.length ? list.map(renderChange) : [para(t('mgr.empty'))]));
 }
 
+/**
+ * Say what the button is about to do, not what it is called.
+ *
+ * With nothing ticked it rolls the whole session back — it was still labelled
+ * "Roll back selected", which reads as "nothing is selected, so this is safe".
+ * It is the opposite: that is the widest thing this page can do.
+ */
+function paintRollbackButton() {
+  const session = sessions[currentId];
+  if (!session) return;
+  const ticked = session.changes.filter((c) => selected.has(c.id));
+  ui.btnRollback.textContent = ticked.length
+    ? t(ticked.some((c) => c.undone) ? 'mgr.rollbackAgainN' : 'mgr.rollbackN', { n: ticked.length })
+    : t('mgr.rollbackAllN', { n: session.changes.length });
+  // A session can be rolled back more than once, so the button stays available
+  // while it holds anything at all.
+  ui.btnRollback.disabled = !session.changes.length && !(session.snapshots || []).length;
+  ui.chkAll.checked = Boolean(session.changes.length) && ticked.length === session.changes.length;
+}
+
 function renderRail() {
-  const entries = Object.values(sessions)
+  const all = Object.values(sessions)
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
-  if (!entries.length) {
+  if (!all.length) {
+    ui.railFilter.hidden = true;
     ui.sessionList.replaceChildren(para(t('mgr.empty')));
+    return;
+  }
+  // A filter once there are enough sessions to lose one in; below that it is a box
+  // in the way. Name or database, since two runs of one test share a name.
+  ui.railFilter.hidden = all.length < 6;
+  const q = ui.railFilter.hidden ? '' : ui.railFilter.value.trim().toLowerCase();
+  const entries = q
+    ? all.filter((s) => `${s.name} ${connLabel(s.conn)}`.toLowerCase().includes(q))
+    : all;
+  if (!entries.length) {
+    ui.sessionList.replaceChildren(para(t('panel.pickNone')));
     return;
   }
   ui.sessionList.replaceChildren(...entries.map((session) => {
     const button = document.createElement('button');
     button.className = `sess${session.id === currentId ? ' active' : ''}`;
     button.innerHTML = '<span class="t"></span><span class="s"></span>';
-    button.querySelector('.t').textContent = session.name;
+    const title = button.querySelector('.t');
+    title.textContent = session.name;
+    // The one recording is the one somebody is usually looking for; "Closed" on
+    // every other row said the same thing thirty times and marked nothing.
+    if (!session.closedAt) {
+      const rec = document.createElement('span');
+      rec.className = 'rec';
+      rec.textContent = t('mgr.recording');
+      title.append(rec);
+    }
+    // Opened by a Playback run rather than by hand — usually rolled back already,
+    // and not what someone scanning for their own test is looking for.
+    if (session.guard) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = t('mgr.playback');
+      title.append(tag);
+    }
     button.querySelector('.s').textContent =
-      `${connLabel(session.conn)} · ${t('panel.changes', { n: session.changes.length })}`
-      + (session.closedAt ? ` · ${t('mgr.closed')}` : '');
+      `${connLabel(session.conn)} · ${t('panel.changes', { n: session.changes.length })} · ${shortDate(session.startedAt)}`;
     button.addEventListener('click', () => select(session.id));
     return button;
   }));
+}
+
+function shortDate(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return String(iso || '');
+  }
 }
 
 /**
@@ -254,6 +363,11 @@ function makeButton(label, onClick, cls = '') {
 function renderChange(change) {
   const details = document.createElement('details');
   details.className = `change${change.undone ? ' undone' : ''}`;
+  details.dataset.id = change.id;
+  details.open = openIds.has(change.id);
+  details.addEventListener('toggle', () => {
+    if (details.open) openIds.add(change.id); else openIds.delete(change.id);
+  });
 
   const summary = document.createElement('summary');
   const box = document.createElement('input');
@@ -262,6 +376,9 @@ function renderChange(change) {
   box.addEventListener('click', (e) => e.stopPropagation());
   box.addEventListener('change', () => {
     if (box.checked) selected.add(change.id); else selected.delete(change.id);
+    // Only the button: a full re-render here would shut every diff the person has
+    // opened to decide what to tick.
+    paintRollbackButton();
   });
 
   const op = document.createElement('span');
@@ -272,14 +389,22 @@ function renderChange(change) {
   table.className = 'tbl';
   table.textContent = change.table || '?';
 
+  // Which row, before how many: two UPDATEs of one table were told apart only
+  // by their time until one was opened.
+  const key = document.createElement('span');
+  key.className = 'key';
+  key.textContent = rowKeyLabel(change);
+
   const meta = document.createElement('span');
   meta.className = 'meta grow';
   const rows = (change.rows || []).length;
-  meta.textContent = `${rows} ${t('mgr.row').toLowerCase()} · ${new Date(change.at).toLocaleTimeString()}` +
+  meta.textContent = `${t('mgr.rows', { n: rows })} · ${new Date(change.at).toLocaleTimeString()}` +
     (change.verified === false ? ` · ${t('mgr.unverified')}` : '') +
     (change.undone ? ` · ${t('mgr.undone')}` : '');
 
-  summary.append(box, op, table, meta);
+  summary.append(box, op, table);
+  if (key.textContent) summary.append(key);
+  summary.append(meta);
 
   const reason = blockingReason(change);
   if (reason) {
@@ -287,6 +412,22 @@ function renderChange(change) {
     warn.className = 'warn';
     warn.textContent = `⚠ ${t(`reason.${reason}`)}`;
     summary.append(warn);
+  }
+
+  // Undo just this one, without ticking it and reaching for the button at the
+  // top. A change that cannot be undone gets no button to press for nothing.
+  if (!reason) {
+    const undo = document.createElement('button');
+    undo.className = 'btn small undo-one';
+    undo.textContent = change.undone ? t('mgr.againOne') : t('mgr.undoOne');
+    undo.title = change.undone ? t('mgr.againOneHint') : t('mgr.undoOneHint');
+    undo.addEventListener('click', (e) => {
+      // Inside a <summary>: without this the click also opens or shuts the diff.
+      e.preventDefault();
+      e.stopPropagation();
+      rollbackOne(change);
+    });
+    summary.append(undo);
   }
   details.append(summary);
 
@@ -362,6 +503,22 @@ function para(text) {
   return p;
 }
 
+/** How to get a first session, for a page that has none. */
+function emptyHelp() {
+  const box = document.createElement('div');
+  box.className = 'howto';
+  const h = document.createElement('h3');
+  h.textContent = t('mgr.emptyTitle');
+  const steps = document.createElement('ol');
+  for (const key of ['mgr.emptyStep1', 'mgr.emptyStep2', 'mgr.emptyStep3', 'mgr.emptyStep4']) {
+    const li = document.createElement('li');
+    li.textContent = t(key);
+    steps.append(li);
+  }
+  box.append(h, steps);
+  return box;
+}
+
 /* === Actions ═════════════════════════════════════════════════════════════ */
 
 /**
@@ -375,12 +532,12 @@ function para(text) {
  */
 async function askTab(session, message) {
   if (!settings.autoExecute) {
-    showReport(t('mgr.autoExecuteOff'), 'err');
+    showReport(t('mgr.autoExecuteOff'), 'err', { label: t('mgr.exportSql'), onClick: exportSql });
     return null;
   }
   const tabs = await chrome.tabs.query({ url: `${session.origin}/*` });
   if (!tabs.length) {
-    showReport(t('mgr.needTab', { origin: session.origin }), 'err');
+    showReport(t('mgr.needTab', { origin: session.origin }), 'err', openAdminerAction(session, message));
     return null;
   }
   let wrong = false;
@@ -399,14 +556,31 @@ async function askTab(session, message) {
         off = true;
         continue;
       }
+      // The preview opens over there, and this page goes to the background
+      // mid-click. Saying so first means the tab switch is an answer to the
+      // button, not something that just happened.
+      showReport(t('mgr.handedOff'), '');
       await chrome.tabs.update(tab.id, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
       const answer = await chrome.tabs.sendMessage(tab.id, message, { frameId: 0 });
       reportAnswer(answer);
       return answer;
     }
-    const why = off ? 'mgr.integrationOff' : (wrong ? 'mgr.wrongConn' : 'mgr.needTab');
-    showReport(t(why, { origin: session.origin }), 'err');
+    // Every way this can fail comes with the one thing that fixes it, rather
+    // than a sentence telling someone to go and do it elsewhere.
+    if (off) {
+      showReport(t('mgr.integrationOff'), 'err', {
+        label: t('mgr.turnOn'),
+        onClick: async () => {
+          settings = await store.setSettings({ enabled: true });
+          await new Promise((r) => setTimeout(r, 400));   // the tab switches itself on from storage
+          await askTab(session, message);
+        },
+      });
+    } else {
+      showReport(t(wrong ? 'mgr.wrongConn' : 'mgr.needTab', { origin: session.origin }), 'err',
+        openAdminerAction(session, message));
+    }
     return null;
   } catch (err) {
     showReport(String(err && err.message || err), 'err');
@@ -417,6 +591,37 @@ async function askTab(session, message) {
   }
 }
 
+/**
+ * "Open Adminer": a tab on the session's own database, then — once its panel
+ * answers — the same request again, so the rollback that was asked for carries
+ * on instead of having to be asked for twice. It still stops at the preview.
+ */
+function openAdminerAction(session, message) {
+  if (!session.base) return null;
+  return {
+    label: t('mgr.openAdminer'),
+    onClick: async () => {
+      const tab = await chrome.tabs.create({ url: buildUrl(session.base, session.conn || {}, {}), active: true });
+      showReport(t('mgr.waitingAdminer'), '');
+      if (await waitForPanel(tab.id, session.key, 60000)) await askTab(session, message);
+      else showReport(t('mgr.adminerNotReady'), 'err', openAdminerAction(session, message));
+    },
+  };
+}
+
+/** Wait for an Adminer tab's panel to answer for this database — through a login, if it asks for one. */
+async function waitForPanel(tabId, key, ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    const ping = await chrome.tabs.sendMessage(tabId, { type: 'dbtools-ping', key }, { frameId: 0 })
+      .catch(() => null);
+    if (ping && ping.ok && ping.on !== false) return true;
+    if (!(await chrome.tabs.get(tabId).catch(() => null))) return false;   // closed
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  return false;
+}
+
 /** Say how it went, whichever kind of report came back. */
 function reportAnswer(answer) {
   if (!answer || !answer.ok) {
@@ -424,7 +629,16 @@ function reportAnswer(answer) {
     return;
   }
   const r = answer.report || {};
-  if (r.cancelled) return;
+  // Walking away from the preview is an answer; leaving "continue in the Adminer
+  // tab" on screen would read as still waiting for one.
+  if (r.cancelled) {
+    showReport(t('mgr.cancelled'), '');
+    return;
+  }
+  if (r.nothing) {
+    showReport(t('rollback.nothing'), '');
+    return;
+  }
   // A backup restore or drop answers with a plain ok flag.
   if (typeof r.ok === 'boolean') {
     showReport(r.ok ? t('rollback.done', { ok: 1, fail: 0 }) : String(r.error || 'failed'), r.ok ? 'ok' : 'err');
@@ -435,7 +649,25 @@ function reportAnswer(answer) {
   const main = 'tables' in r ? { ok: 0, failed: 0 } : r;
   const ok = (main.ok || 0) + (snaps.ok || 0);
   const fail = (main.failed || 0) + (snaps.failed || 0);
-  showReport(t('rollback.done', { ok, fail }), fail ? 'err' : 'ok');
+  // Changes it could not undo are the half of the outcome that used to go
+  // unmentioned: "2 succeeded, 0 failed" reads as done, with three rows still
+  // sitting there as the test left them.
+  const skipped = main.skipped || 0;
+  showReport(
+    t('rollback.done', { ok, fail }) + (skipped ? ` ${t('rollback.skippedDone', { n: skipped })}` : ''),
+    fail ? 'err' : (skipped ? 'warn' : 'ok'),
+  );
+}
+
+async function rollbackOne(change) {
+  const session = sessions[currentId];
+  if (!session) return;
+  await askTab(session, {
+    type: 'dbtools-run-rollback',
+    sessionId: session.id,
+    changeIds: [change.id],
+    includeUndone: Boolean(change.undone),
+  });
 }
 
 async function rollbackSelected() {
@@ -486,8 +718,14 @@ async function rename() {
 async function toggleOpen() {
   const session = sessions[currentId];
   if (!session) return;
-  if (session.closedAt) await store.reopenSession(session.id);
-  else await store.closeSession(session.id);
+  // Resuming ends whichever session was recording on that database — one at a
+  // time — and the panel in its Adminer tab follows without a reload.
+  if (session.closedAt) {
+    await store.reopenSession(session.id);
+    showReport(t('panel.resumed', { name: session.name }), 'ok');
+  } else {
+    await store.closeSession(session.id);
+  }
   await reload();
   render();
 }
@@ -504,6 +742,75 @@ async function removeSession() {
   await store.deleteSession(session.id);
   await reload();
   select(Object.keys(sessions)[0] || '');
+}
+
+/**
+ * Delete ended sessions in one go.
+ *
+ * By default only the ones with nothing left to undo; the ones that still hold
+ * changes are one tick away, and counted, so nobody deletes a session they
+ * still needed by accident. Sessions that still own a backup table in the
+ * database are never offered: this record is the only way back to it.
+ */
+async function cleanup() {
+  const groups = cleanupCandidates(sessions);
+  if (!groups.spent.length && !groups.pending.length) {
+    toast(t('mgr.cleanupNone'));
+    return;
+  }
+  const body = document.createElement('div');
+  body.className = 'cleanup';
+  const line = document.createElement('p');
+  line.className = 'meta';
+  line.textContent = t('mgr.cleanupSpent', { n: groups.spent.length });
+  body.append(line);
+
+  let includePending = null;
+  if (groups.pending.length) {
+    const label = document.createElement('label');
+    label.className = 'check';
+    includePending = document.createElement('input');
+    includePending.type = 'checkbox';
+    const text = document.createElement('span');
+    text.textContent = t('mgr.cleanupPending', { n: groups.pending.length });
+    label.append(includePending, text);
+    body.append(label);
+  }
+  if (groups.keptForBackups.length) {
+    const kept = document.createElement('p');
+    kept.className = 'meta';
+    kept.textContent = t('mgr.cleanupKept', { n: groups.keptForBackups.length });
+    body.append(kept);
+  }
+
+  const count = () => groups.spent.length + (includePending && includePending.checked ? groups.pending.length : 0);
+  const ok = await new Promise((resolve) => {
+    let go = null;
+    const paint = () => {
+      go.textContent = t('mgr.cleanupGo', { n: count() });
+      go.disabled = !count();
+    };
+    openDialog({
+      title: t('mgr.cleanupTitle'),
+      body,
+      answer: (value) => resolve(value === true),
+      buttons: (close) => {
+        go = makeButton('', () => close(true), 'danger');
+        return [makeButton(t('rollback.cancel'), () => close(false)), go];
+      },
+    });
+    if (includePending) includePending.addEventListener('change', paint);
+    paint();
+  });
+  if (!ok) return;
+
+  const doomed = cleanupCandidates(sessions, {
+    includePending: Boolean(includePending && includePending.checked),
+  }).chosen;
+  for (const session of doomed) await store.deleteSession(session.id);
+  await reload();
+  if (!sessions[currentId]) select(newestId()); else render();
+  toast(t('mgr.cleanupDone', { n: doomed.length }));
 }
 
 async function openSettings() {
@@ -673,10 +980,14 @@ function confirmDialog({ title, text, confirmLabel }) {
 
 /* === Small helpers ═══════════════════════════════════════════════════════ */
 
-function showReport(text, kind) {
+function showReport(text, kind, action) {
   ui.report.hidden = false;
   ui.report.className = `report ${kind || ''}`;
-  ui.report.textContent = text;
+  ui.report.replaceChildren(document.createTextNode(text));
+  if (action) {
+    const b = makeButton(action.label, () => action.onClick(), 'small report-action');
+    ui.report.append(b);
+  }
 }
 
 let toastTimer = 0;

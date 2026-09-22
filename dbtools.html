@@ -29,7 +29,11 @@
 
   <main class="shell">
     <aside class="rail">
-      <h2 data-i18n="mgr.sessions"></h2>
+      <div class="rail-head">
+        <h2 data-i18n="mgr.sessions"></h2>
+        <button id="btnCleanup" class="btn small" data-i18n="mgr.cleanup"></button>
+      </div>
+      <input id="railFilter" class="rail-filter" type="search" hidden />
       <div id="sessionList" class="session-list"></div>
     </aside>
 

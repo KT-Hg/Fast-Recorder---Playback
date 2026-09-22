@@ -67,16 +67,18 @@ async function startSession(page) {
     await page.click('#frp-dbtools-panel .head');
   }
   // The panel offers "end" instead of "start" while a session is recording, and
-  // the second half of this run reuses the same browser profile.
-  const stop = page.locator('#frp-dbtools-panel button:has-text("End")');
+  // the second half of this run reuses the same browser profile. Buttons are found
+  // by what they do (`data-act`), not by their label: after End the ended session
+  // stays on the panel and its start button reads "New session".
+  const stop = page.locator('#frp-dbtools-panel [data-act="stop"]');
   if (await stop.count()) {
     await stop.click();
     await page.waitForTimeout(300);
   }
-  await page.click('#frp-dbtools-panel button:has-text("Start session")');
+  await page.click('#frp-dbtools-panel .buttons [data-act="start"]');
   // The name is asked for in the panel's own sheet, not in a browser dialog.
   await page.fill('#frp-dbtools-panel .sheet input', 'E2E');
-  await page.click('#frp-dbtools-panel .sheet button.primary');
+  await page.click('#frp-dbtools-panel .sheet .foot button:last-child');
   await page.waitForTimeout(400);
   return page.locator('#frp-dbtools-panel .title').textContent();
 }
@@ -161,7 +163,10 @@ try {
   // 3. Roll the whole session back.
   await page.click('#frp-dbtools-panel button:has-text("Roll back all")');
   await page.waitForSelector('#frp-dbtools-panel .sheet pre');
-  await page.click('#frp-dbtools-panel .sheet button.primary');
+  // The SQL is the contract, but the lines above it are what gets read.
+  const summary = await page.locator('#frp-dbtools-panel .sheet .summary').textContent().catch(() => '');
+  check('the preview says what it does before showing the SQL', /row\(s\)/.test(summary), summary);
+  await page.click('#frp-dbtools-panel .sheet .foot button:last-child');
   await page.waitForTimeout(3000);
 
   now = rows();
@@ -207,15 +212,16 @@ try {
 
   await page2.click('#frp-dbtools-panel button:has-text("Roll back all")');
   await page2.waitForSelector('#frp-dbtools-panel .sheet pre');
-  await page2.click('#frp-dbtools-panel .sheet button.primary');
+  await page2.click('#frp-dbtools-panel .sheet .foot button:last-child');
   const driftSheet = await page2
     .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("changed after you edited")', { timeout: 8000 })
     .then(() => true).catch(() => false);
   check('drift is reported before anything is overwritten', driftSheet);
-  const driftText = await page2.locator('#frp-dbtools-panel .sheet pre').textContent().catch(() => '');
+  // The drift question is a table now — column, recorded, now — not a code block.
+  const driftText = await page2.locator('#frp-dbtools-panel .sheet .grid').textContent().catch(() => '');
   check('the drift names the value that is actually there', driftText.includes('SOMEONE_ELSE'), driftText);
 
-  await page2.click('#frp-dbtools-panel .sheet button:has-text("Cancel")');   // cancel = skip
+  await page2.click('#frp-dbtools-panel .sheet [data-act="cancel"]');   // "Skip these rows"
   await page2.waitForTimeout(3000);
   now = rows();
   check('the drifted row was left alone', now.find((r) => r.id === 5).value === 'SOMEONE_ELSE',
@@ -253,7 +259,7 @@ try {
   await page3.click('#frp-dbtools-panel button:has-text("⋯")');
   await page3.click('#frp-dbtools-panel button:has-text("Snapshot")');
   await page3.fill('#frp-dbtools-panel .sheet input', 'm_generic');
-  await page3.click('#frp-dbtools-panel .sheet button.primary');
+  await page3.click('#frp-dbtools-panel .sheet .foot button:last-child');
   await page3.waitForTimeout(1500);
   check('the table is snapshotted', /snapshot/i.test(await page3.locator('#frp-dbtools-panel .meta').textContent()),
     await page3.locator('#frp-dbtools-panel .meta').textContent());
@@ -293,12 +299,12 @@ try {
 
   await page3.click('#frp-dbtools-panel button:has-text("Roll back all")');
   await page3.waitForSelector('#frp-dbtools-panel .sheet pre');
-  await page3.click('#frp-dbtools-panel .sheet button.primary');
+  await page3.click('#frp-dbtools-panel .sheet .foot button:last-child');
   const snapSheet = await page3
     .waitForSelector('#frp-dbtools-panel .sheet h2:has-text("snapshot")', { timeout: 10000 })
     .then(() => true).catch(() => false);
   check('the snapshot restore is offered after the change log', snapSheet);
-  if (snapSheet) await page3.click('#frp-dbtools-panel .sheet button.primary');
+  if (snapSheet) await page3.click('#frp-dbtools-panel .sheet .foot button:last-child');
   await page3.waitForTimeout(3000);
 
   now = rows();

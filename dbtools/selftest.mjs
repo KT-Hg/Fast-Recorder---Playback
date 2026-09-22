@@ -38,6 +38,10 @@ import {
   splitStatements, whereText, describeStatement, prefetchSelect, isDestructiveDdl, literalInsertKeys,
 } from './sqlcapture.js';
 import { keyColsFromDoc } from './adapters/adminer.js';
+import * as store from './session.js';
+import {
+  summaryLines, rowKeyLabel, isSpent, cleanupCandidates, defaultSessionName, changesInPlay,
+} from './summary.js';
 import { CATALOGS, LANGUAGES, setLang, t, missingKeys, clearMissingKeys } from './i18n.js';
 
 let passed = 0;
@@ -517,6 +521,144 @@ function eq(name, actual, expected) {
   setLang('en');
   eq('and in English too', t('panel.changes', { n: 3 }), '3 change(s)');
   eq('an unknown key degrades to itself', t('nope.nope'), 'nope.nope');
+}
+
+/* ---------------------------------------------------------------------
+ * The words around a changeset — what the preview lists above its SQL, how a
+ * change is named, which sessions a clean-up may take.
+ * ------------------------------------------------------------------- */
+{
+  setLang('en');
+  const change = (id, seq, op, table, rows, extra = {}) => ({
+    id, seq, op, table, rows: Array.from({ length: rows }, (_, i) => ({ where: { id: seq * 10 + i } })), ...extra,
+  });
+  const session = {
+    changes: [
+      change('a', 1, 'update', 'orders', 3),
+      change('b', 2, 'delete', 'items', 1),
+      change('c', 3, 'insert', 'orders', 2),
+      change('d', 4, 'update', 'legacy', 1),
+      change('e', 5, 'update', 'orders', 1, { undone: true }),
+    ],
+    snapshots: [{ id: 's1' }],
+  };
+
+  eq('changes run newest first, undone ones left out',
+    changesInPlay(session).map((c) => c.id).join(), 'd,c,b,a');
+  eq('undone ones are back in on a second run',
+    changesInPlay(session, { includeUndone: true }).map((c) => c.id).join(), 'e,d,c,b,a');
+
+  const lines = summaryLines(session, { skipped: new Map([['d', 'no-key']]), statements: 3, hasSnapshots: true });
+  eq('one line per change, plus the totals', lines.length, 6);
+  eq('an insert is undone by deleting it', lines[1].say, 'delete the 2 inserted row(s)');
+  eq('a delete is undone by putting it back', lines[2].say, 're-insert 1 row(s)');
+  check('a skipped change is listed with its reason', lines[0].skipped && /no key/.test(lines[0].say), lines[0].say);
+  eq('the total counts only what will run', lines[4].say, '3 statement(s) · 6 row(s) · 2 table(s)');
+  check('snapshots are mentioned when they follow', /snapshot/.test(lines[5].say), lines[5].say);
+
+  const many = { changes: Array.from({ length: 30 }, (_, i) => change(`m${i}`, i + 1, i % 3 ? 'update' : 'delete', i % 2 ? 'orders' : 'items', 2)) };
+  const grouped = summaryLines(many, { statements: 30, groupOver: 12 });
+  check('a long session is grouped by table and operation', grouped.length <= 5, String(grouped.length));
+  const upd = grouped.find((l) => l.op === 'update' && l.table === 'orders');
+  check('a group says how many rows and how many changes', /row\(s\) · \d+ change\(s\)/.test(upd && upd.say), upd && upd.say);
+  eq('grouping keeps the totals', grouped[grouped.length - 1].say, '30 statement(s) · 60 row(s) · 2 table(s)');
+
+  eq('a one-row change is named by its key', rowKeyLabel({ rows: [{ where: { id: 2 } }] }), 'id=2');
+  eq('a composite key is named in full', rowKeyLabel({ rows: [{ where: { a: 1, b: null } }] }), 'a=1, b=NULL');
+  eq('more rows are counted after the first', rowKeyLabel({ rows: [{ where: { id: 1 } }, { where: { id: 2 } }] }), 'id=1 +1');
+  eq('a long key is shortened', rowKeyLabel({ rows: [{ where: { k: 'x'.repeat(40) } }] }).length <= 26, true);
+  eq('no rows, no name', rowKeyLabel({ rows: [] }), '');
+
+  check('a session with everything undone is spent', isSpent({ changes: [{ undone: true }], snapshots: [{ restoredAt: 'x' }] }));
+  check('one pending change is not', !isSpent({ changes: [{ undone: true }, { undone: false }] }));
+  check('an unrestored snapshot is not', !isSpent({ changes: [], snapshots: [{}] }));
+
+  const pool = {
+    rec: { id: 'rec', closedAt: null, changes: [] },
+    spent: { id: 'spent', closedAt: 'x', changes: [{ undone: true }] },
+    pending: { id: 'pending', closedAt: 'x', changes: [{ undone: false }] },
+    backup: { id: 'backup', closedAt: 'x', changes: [], backups: [{ id: 'b1' }] },
+    dropped: { id: 'dropped', closedAt: 'x', changes: [], backups: [{ id: 'b2', droppedAt: 'y' }] },
+  };
+  const ids = (list) => list.map((x) => x.id).sort().join();
+  const cands = cleanupCandidates(pool);
+  eq('clean-up takes spent ended sessions by default', ids(cands.chosen), 'dropped,spent');
+  eq('pending ones only when asked', ids(cleanupCandidates(pool, { includePending: true }).chosen), 'dropped,pending,spent');
+  check('never the recording one', !cleanupCandidates(pool, { includePending: true }).chosen.some((x) => x.id === 'rec'));
+  eq('a live backup table keeps its session', ids(cands.keptForBackups), 'backup');
+
+  eq('a default name says what and when', defaultSessionName('Test session', 'orders', new Date(2026, 8, 22, 9, 5)),
+    'Test session · orders · 09:05');
+  eq('and leaves out what it does not know', defaultSessionName('Test session', '', new Date(2026, 8, 22, 14, 30)),
+    'Test session · 14:30');
+}
+
+/* ---------------------------------------------------------------------
+ * Session lifecycle — which session the panel shows, and the rule that a
+ * connection has one recording session at most. Run against an in-memory
+ * stand-in for chrome.storage.local.
+ * ------------------------------------------------------------------- */
+{
+  const mem = {};
+  globalThis.chrome = {
+    runtime: { lastError: null },
+    storage: {
+      local: {
+        get: (keys, cb) => {
+          const out = {};
+          for (const k of [].concat(keys)) if (k in mem) out[k] = structuredClone(mem[k]);
+          cb(out);
+        },
+        set: (obj, cb) => { Object.assign(mem, structuredClone(obj)); cb && cb(); },
+        remove: (keys, cb) => { for (const k of [].concat(keys)) delete mem[k]; cb && cb(); },
+      },
+    },
+  };
+
+  const conn = { driver: 'sqlite', db: 'shop' };
+  const base = { conn, origin: 'http://h', base: 'http://h/', key: 'K1' };
+  const tick = () => new Promise((r) => setTimeout(r, 2));
+
+  const a = await store.startSession({ ...base, name: 'A' });
+  eq('a started session is what the panel shows', (await store.panelSession('K1')).id, a.id);
+
+  await store.closeSession(a.id);
+  const shown = await store.panelSession('K1');
+  eq('an ended session stays on the panel', shown && shown.id, a.id);
+  check('and it is shown as ended', Boolean(shown && shown.closedAt));
+  eq('nothing is recording after End', await store.activeSessionId('K1'), '');
+
+  await tick();
+  const b = await store.startSession({ ...base, name: 'B' });
+  eq('a new session takes over the panel', (await store.panelSession('K1')).id, b.id);
+
+  await store.reopenSession(a.id);
+  const all = await store.allSessions();
+  eq('resuming one session makes it the recording one', await store.activeSessionId('K1'), a.id);
+  check('and ends the one that was recording', Boolean(all[b.id].closedAt), JSON.stringify(all[b.id]));
+  check('the resumed session is open again', all[a.id].closedAt === null);
+
+  await tick();
+  const c = await store.startSession({ ...base, name: 'C' });
+  check('starting a session ends the one recording', Boolean((await store.getSession(a.id)).closedAt));
+  eq('only the new one is open',
+    Object.values(await store.allSessions()).filter((x) => !x.closedAt).map((x) => x.name).join(), 'C');
+
+  // Ending a session that is no longer the recording one must not pull the panel
+  // off the one that is.
+  await store.closeSession(b.id);
+  eq('ending a stale session leaves the recording one on the panel', (await store.panelSession('K1')).id, c.id);
+
+  const list = await store.sessionsFor('K1');
+  eq('sessions of a connection are listed newest first', list.map((x) => x.name).join(), 'C,B,A');
+  eq('another connection has none', (await store.sessionsFor('K2')).length, 0);
+  eq('and nothing to show', await store.panelSession('K2'), null);
+
+  await store.closeSession(c.id);
+  await store.deleteSession(c.id);
+  eq('deleting the shown session falls back to the newest left', (await store.panelSession('K1')).id, b.id);
+
+  delete globalThis.chrome;
 }
 
 /* ------------------------------------------------------------------- */
