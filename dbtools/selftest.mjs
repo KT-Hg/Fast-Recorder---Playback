@@ -32,7 +32,7 @@ import {
 } from './sqlquote.js';
 import {
   undoStatements, undoWhere, blockingReason, changedColumns, columnsToRestore,
-  driftOf, sameValue, sessionUndoScript,
+  driftOf, sameValue, sessionUndoScript, redoStatements, redoBlockingReason,
 } from './undo.js';
 import {
   splitStatements, whereText, describeStatement, prefetchSelect, isDestructiveDdl, literalInsertKeys,
@@ -271,6 +271,85 @@ function eq(name, actual, expected) {
 }
 
 /* ---------------------------------------------------------------------
+ * 3b. Redo generation — the same changeset run forwards, for the test that
+ *     has to be done a second time after it was rolled back.
+ *
+ *     The predicate is what has teeth here. A redo runs against a row that
+ *     has been put back, so it must reach it by the key it was *recorded*
+ *     with, never by the one the edit gave it — the exact opposite of what
+ *     an undo does. Getting that backwards writes the test's values onto
+ *     whatever row happens to hold the new key now.
+ * ------------------------------------------------------------------- */
+{
+  const update = {
+    op: 'update', table: 'm_generic', keyCols: ['id'],
+    rows: [{ where: { id: '42' }, before: { value: 'A', note: null }, after: { value: 'B', note: 'x' } }],
+  };
+  eq('a recorded update can be applied again', redoBlockingReason(update), '');
+  eq('it writes the values the test gave, by the recorded key',
+    redoStatements(update, 'mysql')[0],
+    "UPDATE `m_generic` SET `value` = 'B', `note` = 'x' WHERE `id` = 42");
+
+  const movedKey = {
+    op: 'update', table: 't', keyCols: ['id'],
+    rows: [{ where: { id: '1' }, before: { id: '1', v: 'a' }, after: { id: '2', v: 'b' } }],
+  };
+  eq('an edit that moved the key is redone on the old key, which the row has again',
+    redoStatements(movedKey, 'mysql')[0], "UPDATE `t` SET `id` = 2, `v` = 'b' WHERE `id` = 1");
+
+  const del = {
+    op: 'delete', table: 't', keyCols: ['id'],
+    rows: [{ where: { id: '9' }, before: { id: '9', a: 'z', b: null }, after: null }],
+  };
+  eq('a delete is redone by deleting the row the rollback put back',
+    redoStatements(del, 'mysql')[0], 'DELETE FROM `t` WHERE `id` = 9');
+
+  const ins = {
+    op: 'insert', table: 't', keyCols: ['id'],
+    rows: [{ where: { id: '5' }, before: null, after: { id: '5', a: 'new' } }],
+  };
+  eq('an insert is redone by putting the row back, key and all',
+    redoStatements(ins, 'pgsql')[0], 'INSERT INTO "t" ("id", "a") VALUES (5, \'new\')');
+
+  // The refusal that matters: a bulk statement typed on the SQL page records the
+  // old values but never reads the new ones, so it can be undone and cannot be
+  // repeated from the changeset. It has to say so, not emit an empty SET.
+  const bulk = {
+    op: 'update', table: 'm_generic', keyCols: ['id'], restoreCols: ['value'],
+    rows: [{ where: { id: '1' }, before: { id: '1', value: 'A' }, after: {} }],
+  };
+  eq('a capture with no new values is still undoable', blockingReason(bulk), '');
+  eq('but it cannot be applied again', redoBlockingReason(bulk), 'redo-no-after');
+  eq('and it produces no statement', redoStatements(bulk, 'mysql').length, 0);
+
+  eq('an insert whose key was never found is refused',
+    redoBlockingReason({ op: 'insert', table: 't', keyCols: [], rows: [{ where: {}, before: null, after: { a: '1' } }] }),
+    'insert-key-unknown');
+  eq('a keyless update is refused',
+    redoBlockingReason({ op: 'update', table: 't', keyCols: [], rows: [{ where: {}, before: { a: '1' }, after: { a: '2' } }] }),
+    'no-key');
+  eq('an insert with nothing recorded to put back is refused',
+    redoBlockingReason({ op: 'insert', table: 't', keyCols: ['id'], rows: [{ where: { id: '5' }, before: null, after: null }] }),
+    'redo-no-after');
+  eq('an unreadable column blocks a redo too',
+    redoBlockingReason({
+      op: 'update', table: 't', keyCols: ['id'], unreadableCols: ['photo'],
+      rows: [{ where: { id: '1' }, before: { a: '1' }, after: { a: '2' } }],
+    }), 'unreadable-columns');
+
+  // Drift, the other way round: a redo expects the row as the rollback left it,
+  // so "before" is what it compares against.
+  eq('a row still holding the old value is where a redo expects it',
+    driftOf(update, update.rows[0], { value: 'A', note: null }, 'redo').diffs.length, 0);
+  eq('that same row is drift for an undo',
+    driftOf(update, update.rows[0], { value: 'A', note: null }).diffs.length, 2);
+  eq('a row someone else wrote over is drift for a redo',
+    driftOf(update, update.rows[0], { value: 'Z', note: null }, 'redo').diffs[0].actual, 'Z');
+  check('a vanished row is missing whichever way it is run',
+    driftOf(update, update.rows[0], null, 'redo').missing);
+}
+
+/* ---------------------------------------------------------------------
  * 4. Reading a hand-written statement.
  * ------------------------------------------------------------------- */
 {
@@ -505,7 +584,7 @@ function eq(name, actual, expected) {
   const REASONS = [
     'no-key', 'no-before', 'nothing-to-restore', 'no-rows', 'no-table', 'unsupported-op',
     'unreadable-columns', 'multi-table', 'no-where', 'insert-not-captured', 'parse-error', 'not-a-write',
-    'insert-key-unknown', 'too-many-rows', 'import-not-captured',
+    'insert-key-unknown', 'too-many-rows', 'import-not-captured', 'redo-no-after',
   ];
   for (const lang of LANGUAGES) {
     setLang(lang);
@@ -547,6 +626,17 @@ function eq(name, actual, expected) {
     changesInPlay(session).map((c) => c.id).join(), 'd,c,b,a');
   eq('undone ones are back in on a second run',
     changesInPlay(session, { includeUndone: true }).map((c) => c.id).join(), 'e,d,c,b,a');
+
+  // A redo is the same list the other way up: only what was rolled back, and in
+  // the order it was recorded, so a row exists again before the edit that follows.
+  eq('a redo takes the rolled-back ones', changesInPlay(session, { dir: 'redo' }).map((c) => c.id).join(), 'e');
+  eq('and the ones still applied when asked, oldest first',
+    changesInPlay(session, { dir: 'redo', includeApplied: true }).map((c) => c.id).join(), 'a,b,c,d,e');
+
+  const redone = summaryLines(session, { dir: 'redo', includeApplied: true, statements: 5 });
+  eq('a redo says what it writes, not what it restores', redone[0].say, 'set 3 row(s) again');
+  eq('a delete is redone by deleting again', redone[1].say, 'delete 1 row(s) again');
+  eq('an insert is redone by putting the row back', redone[2].say, 're-insert 2 row(s)');
 
   const lines = summaryLines(session, { skipped: new Map([['d', 'no-key']]), statements: 3, hasSnapshots: true });
   eq('one line per change, plus the totals', lines.length, 6);

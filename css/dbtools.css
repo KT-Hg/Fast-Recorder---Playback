@@ -66,7 +66,7 @@ body { display: flex; flex-direction: column; }
   border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
 }
 .change .key { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.change .undo-one { flex: none; }
+.change .undo-one, .change .redo-one { flex: none; }
 .change.flash { box-shadow: 0 0 0 2px var(--primary); transition: box-shadow .3s; }
 .report-action { margin-left: 10px; vertical-align: baseline; }
 .cleanup { display: grid; gap: 8px; max-width: 420px; }

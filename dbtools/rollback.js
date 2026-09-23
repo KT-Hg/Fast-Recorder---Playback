@@ -1,9 +1,11 @@
 /**
- * rollback.js — running a changeset backwards.
+ * rollback.js — running a changeset backwards, or forwards again.
  *
  * The order is the only interesting part: newest change first. A test that
  * inserted a parent row and then updated it has to have the update undone before
- * the insert, or the update's predicate no longer matches anything.
+ * the insert, or the update's predicate no longer matches anything. A redo runs
+ * the same changeset the other way round — oldest first — for the same reason:
+ * the row has to exist again before the edit that followed it can be re-applied.
  *
  * Each change is run as its own submission rather than one big script, so a
  * failure half way leaves an accurate record: everything before it is marked
@@ -24,7 +26,9 @@
  * been undone and there is nothing to report.
  */
 
-import { blockingReason, undoStatements, driftOf, undoWhere } from './undo.js';
+import {
+  blockingReason, redoBlockingReason, undoStatements, redoStatements, driftOf, undoWhere,
+} from './undo.js';
 import { engineOf, joinStatements } from './sqlquote.js';
 import { runSql, readRow } from './executor.js';
 import { updateChange } from './session.js';
@@ -33,12 +37,13 @@ const noop = () => {};
 
 /**
  * Check every row of a change and report the ones that moved under us.
- * A change with no recorded "after" cannot be checked and is reported as such.
+ * A value the capture never recorded cannot be checked and is reported as such.
  */
-export async function checkDrift(ctx, change) {
+export async function checkDrift(ctx, change, dir = 'undo') {
+  const redo = dir === 'redo';
   const out = [];
   for (const row of change.rows || []) {
-    const where = undoWhere(row, change.keyCols);
+    const where = redo ? (row.where || {}) : undoWhere(row, change.keyCols);
     let current = null;
     try {
       const read = await readRow(ctx, change.table, where);
@@ -48,12 +53,13 @@ export async function checkDrift(ctx, change) {
       continue;
     }
 
-    if (change.op === 'delete') {
-      // Undoing a delete re-inserts; finding the row already back is the conflict.
+    // The statement that puts a row back — an undone DELETE, a redone INSERT —
+    // has nothing to compare: finding the row already there is the conflict.
+    if (redo ? change.op === 'insert' : change.op === 'delete') {
       if (current) out.push({ row, present: true, diffs: [] });
       continue;
     }
-    const drift = driftOf(change, row, current);
+    const drift = driftOf(change, row, current, dir);
     if (drift.missing) out.push({ row, missing: true, diffs: [] });
     else if (drift.diffs.length) out.push({ row, diffs: drift.diffs });
   }
@@ -75,21 +81,40 @@ export async function checkDrift(ctx, change) {
  * back a second time after someone changed it, and the undo statements are built
  * from the recorded before/after either way.
  */
-export async function runRollback(ctx, session, opts = {}) {
+export function runRollback(ctx, session, opts = {}) {
+  return runChanges(ctx, session, opts, 'undo');
+}
+
+/**
+ * Apply part or all of a session again, after it was rolled back.
+ *
+ * The test that was undone, run a second time without redoing it by hand: the
+ * same rows are given the same values, in the order they were given them.
+ *
+ * It considers the changes that were rolled back; `opts.includeApplied` takes in
+ * the ones still applied as well, which writes their recorded values over
+ * whatever is there now. Every other option means what it does for a rollback.
+ */
+export function runRedo(ctx, session, opts = {}) {
+  return runChanges(ctx, session, opts, 'redo');
+}
+
+async function runChanges(ctx, session, opts, dir) {
+  const redo = dir === 'redo';
   const onProgress = opts.onProgress || noop;
   const engine = ctx.engine || engineOf(session.conn && session.conn.driver);
 
   const wanted = new Set(opts.changeIds || []);
   const changes = [...(session.changes || [])]
-    .filter((c) => opts.includeUndone || !c.undone)
+    .filter((c) => (redo ? (opts.includeApplied || c.undone) : (opts.includeUndone || !c.undone)))
     .filter((c) => !wanted.size || wanted.has(c.id))
-    .sort((a, b) => b.seq - a.seq);
+    .sort((a, b) => (redo ? a.seq - b.seq : b.seq - a.seq));
 
   const report = { total: changes.length, ok: 0, failed: 0, skipped: 0, statements: [], details: [] };
 
   for (let i = 0; i < changes.length; i++) {
     const change = changes[i];
-    const reason = blockingReason(change);
+    const reason = redo ? redoBlockingReason(change) : blockingReason(change);
     if (reason) {
       report.skipped++;
       report.details.push({ change: change.id, skipped: reason });
@@ -99,7 +124,7 @@ export async function runRollback(ctx, session, opts = {}) {
     let rows = change.rows || [];
     if (opts.driftCheck && !opts.dryRun) {
       onProgress({ phase: 'drift', i: i + 1, n: changes.length, change });
-      const drifted = await checkDrift(ctx, change);
+      const drifted = await checkDrift(ctx, change, dir);
       if (drifted.length) {
         const answer = opts.force
           ? 'force'
@@ -118,10 +143,12 @@ export async function runRollback(ctx, session, opts = {}) {
       continue;
     }
 
-    const statements = undoStatements({ ...change, rows }, engine, opts);
+    const statements = redo
+      ? redoStatements({ ...change, rows }, engine, opts)
+      : undoStatements({ ...change, rows }, engine, opts);
     if (!statements.length) {
       report.skipped++;
-      report.details.push({ change: change.id, skipped: 'nothing-to-restore' });
+      report.details.push({ change: change.id, skipped: redo ? 'redo-no-after' : 'nothing-to-restore' });
       continue;
     }
     report.statements.push(...statements);
@@ -142,11 +169,13 @@ export async function runRollback(ctx, session, opts = {}) {
     if (result.ok) {
       report.ok++;
       const fully = rows.length === (change.rows || []).length;
-      await updateChange(session.id, change.id, {
-        undone: fully,
-        undoneAt: new Date().toISOString(),
-        partialUndo: !fully,
-      });
+      const at = new Date().toISOString();
+      // A redo puts the change back among the pending ones even when only some of
+      // its rows went through: what is in the database is the test's value again,
+      // and a rollback has to know that.
+      await updateChange(session.id, change.id, redo
+        ? { undone: false, redoneAt: at, partialRedo: !fully }
+        : { undone: fully, undoneAt: at, partialUndo: !fully });
       report.details.push({ change: change.id, ok: true, partial: !fully });
     } else {
       report.failed++;

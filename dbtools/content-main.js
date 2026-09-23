@@ -29,7 +29,7 @@ import * as adminer from './adapters/adminer.js';
 import * as store from './session.js';
 import { engineOf, joinStatements } from './sqlquote.js';
 import { blockingReason, undoStatements, undoWhere } from './undo.js';
-import { runRollback } from './rollback.js';
+import { runRollback, runRedo } from './rollback.js';
 import {
   selectRows, readRow, readRowByIdf, discoverKeyCols, selectFull, gridIdfs, runSql,
 } from './executor.js';
@@ -178,6 +178,7 @@ async function start() {
     onView: guarded(openManager),
     onExportSql: guarded(exportSql),
     onRollbackAll: guarded(() => rollback({})),
+    onRedoAll: guarded(() => redo({})),
     onUndoLast: guarded(undoLast),
     onPick: guarded(pickSession),
     onResume: guarded(() => state.session && resumeSession(state.session.id)),
@@ -261,6 +262,12 @@ const MESSAGES = {
     ok: true,
     report: await rollback({
       sessionId: msg.sessionId, changeIds: msg.changeIds, includeUndone: msg.includeUndone,
+    }),
+  }),
+  'dbtools-run-redo': async (msg) => ({
+    ok: true,
+    report: await redo({
+      sessionId: msg.sessionId, changeIds: msg.changeIds, includeApplied: msg.includeApplied,
     }),
   }),
   // Whole-table copies and the Playback guard built on them (features.js).
@@ -1349,6 +1356,75 @@ async function rollback({ sessionId, changeIds, auto = false, includeUndone = fa
     session = await store.getSession(session.id);
     report.snapshots = await restoreSnapshots(session, { auto, includeRestored: again });
   }
+  await refresh();
+  return report;
+}
+
+/**
+ * Apply a session's changes again, after it has been rolled back.
+ *
+ * The step of a test nobody plans for: the rollback ran, something turned out to
+ * be wrong, and the same rows have to go back to the values the test gave them.
+ * The changeset already holds those values, so they are written again — oldest
+ * change first, the order they were made in, so a row exists before the edit
+ * that followed it is re-applied.
+ *
+ * Only the change log. A whole-table snapshot records how a table was *before*
+ * the test and has nothing to say about how it looked after, so a redo leaves
+ * snapshots alone rather than pretending otherwise.
+ */
+async function redo({ sessionId, changeIds, includeApplied = false } = {}) {
+  const session = sessionId ? await store.getSession(sessionId) : (state.session || (await refresh()));
+  const report = { total: 0, ok: 0, failed: 0, skipped: 0, statements: [], details: [], snapshots: null };
+  if (!session) return report;
+
+  const changes = session.changes || [];
+  // With nothing rolled back there is nothing waiting to be applied again, so the
+  // ask is the other one: write the recorded values over whatever is there now.
+  const again = includeApplied || (!changes.some((c) => c.undone) && Boolean(changes.length));
+
+  const dry = await runRedo(state.ctx, session, { dryRun: true, changeIds, includeApplied: again });
+  if (!dry.statements.length) {
+    state.panel.notice(t('redo.nothing'), 'warn');
+    state.panel.expand();
+    return { ...dry, nothing: true };
+  }
+
+  const notes = [
+    again ? t('redo.againNote') : t('redo.note'),
+    dry.skipped ? t('redo.blocked', { n: dry.skipped }) : '',
+  ].filter(Boolean);
+  const go = await state.panel.preview({
+    title: again ? t('redo.againTitle') : t('redo.title'),
+    sql: joinStatements(dry.statements),
+    summary: summaryLines(session, {
+      dir: 'redo',
+      changeIds,
+      includeApplied: again,
+      skipped: new Map((dry.details || []).filter((d) => d.skipped).map((d) => [d.change, d.skipped])),
+      statements: dry.statements.length,
+    }),
+    note: notes.join('\n'),
+    confirmLabel: t('rollback.confirm', { n: dry.statements.length }),
+    confirmKind: 'danger',
+  });
+  if (!go) return { ...dry, cancelled: true };
+
+  try {
+    Object.assign(report, await runRedo(state.ctx, session, {
+      changeIds,
+      includeApplied: again,
+      driftCheck: state.settings.driftCheck,
+      onDrift: askAboutDrift,
+      onProgress: ({ phase, i, n }) => {
+        if (phase === 'run') state.panel.progress(t('rollback.running', { i, n }), i - 1, n);
+      },
+    }));
+  } finally {
+    state.panel.progress(null);
+  }
+
+  reportRollback(report);
   await refresh();
   return report;
 }

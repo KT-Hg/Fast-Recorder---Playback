@@ -179,6 +179,25 @@ try {
   check('rows nobody touched are untouched', now[3].value === '100' && now[4].value === 'Y',
     JSON.stringify(now.slice(3)));
 
+  // 3b. And the step after that: the test has to be run a second time. Every
+  //     value it gave is still in the changeset, so it is applied again instead
+  //     of being typed in again — oldest change first, so the two AJAX saves of
+  //     row 1 land in the order they were made.
+  await page.click('#frp-dbtools-panel [data-act="redo"]');
+  await page.waitForSelector('#frp-dbtools-panel .sheet pre');
+  await page.click('#frp-dbtools-panel .sheet .foot button:last-child');
+  await page.waitForTimeout(3000);
+
+  now = rows();
+  check('the edited row has the test values again', now[1].value === 'XXX' && now[1].note === 'ghi chu moi',
+    JSON.stringify(now[1]));
+  check('both AJAX saves are applied again, in the order they were made',
+    now[0].value === 'T2' && now[0].note === 'tiep tuc', JSON.stringify(now[0]));
+  // The one thing a redo cannot repeat: a statement typed on the SQL page records
+  // the old values but never reads the new ones back.
+  check('the hand-written bulk update is left out rather than guessed at', now[2].value === '0101',
+    JSON.stringify(now[2]));
+
   /* ── Delete, drift, and the manager page ───────────────────────────────── */
 
   console.log('\nDelete, drift and the manager page');

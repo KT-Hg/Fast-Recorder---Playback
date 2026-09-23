@@ -13,7 +13,7 @@
  */
 
 import * as store from './session.js';
-import { sessionUndoScript, blockingReason, columnsToRestore } from './undo.js';
+import { sessionUndoScript, blockingReason, redoBlockingReason, columnsToRestore } from './undo.js';
 import { backupRestoreSql } from './snapshot.js';
 import { joinStatements, engineOf } from './sqlquote.js';
 import { connLabel, buildUrl } from './params.js';
@@ -42,7 +42,7 @@ init();
 async function init() {
   for (const id of [
     'sessionList', 'detailHead', 'sessName', 'sessMeta', 'sessState', 'changeList', 'changeHead',
-    'changeCount', 'chkAll', 'report', 'btnRollback', 'btnExportSql', 'btnExportJson', 'btnRename',
+    'changeCount', 'chkAll', 'report', 'btnRollback', 'btnRedo', 'btnExportSql', 'btnExportJson', 'btnRename',
     'btnToggleOpen', 'btnDelete', 'btnSettings', 'btnLang', 'langLabel', 'settingsDlg', 'toast', 'extras',
     'railFilter', 'btnCleanup',
   ]) ui[id] = el(id);
@@ -110,6 +110,7 @@ function wire() {
   });
 
   ui.btnRollback.addEventListener('click', rollbackSelected);
+  ui.btnRedo.addEventListener('click', redoSelected);
   ui.btnExportSql.addEventListener('click', exportSql);
   ui.btnExportJson.addEventListener('click', exportJson);
   ui.btnRename.addEventListener('click', rename);
@@ -189,20 +190,24 @@ function render() {
   ui.changeCount.textContent = t('mgr.pendingOf', {
     n: session.changes.filter((c) => !c.undone).length, total: session.changes.length,
   });
-  paintRollbackButton();
+  paintRunButtons();
 
   const list = [...session.changes].sort((a, b) => b.seq - a.seq);
   ui.changeList.replaceChildren(...(list.length ? list.map(renderChange) : [para(t('mgr.empty'))]));
 }
 
 /**
- * Say what the button is about to do, not what it is called.
+ * Say what the buttons are about to do, not what they are called.
  *
- * With nothing ticked it rolls the whole session back — it was still labelled
- * "Roll back selected", which reads as "nothing is selected, so this is safe".
- * It is the opposite: that is the widest thing this page can do.
+ * With nothing ticked, rollback rolls the whole session back — it was still
+ * labelled "Roll back selected", which reads as "nothing is selected, so this is
+ * safe". It is the opposite: that is the widest thing this page can do.
+ *
+ * Re-apply counts the changes that were rolled back, because those are the ones
+ * it would run; only when none were does it offer the whole session, which is
+ * then a request to write the recorded values over what is there now.
  */
-function paintRollbackButton() {
+function paintRunButtons() {
   const session = sessions[currentId];
   if (!session) return;
   const ticked = session.changes.filter((c) => selected.has(c.id));
@@ -212,6 +217,13 @@ function paintRollbackButton() {
   // A session can be rolled back more than once, so the button stays available
   // while it holds anything at all.
   ui.btnRollback.disabled = !session.changes.length && !(TABLE_COPIES && (session.snapshots || []).length);
+
+  const rolledBack = session.changes.filter((c) => c.undone).length;
+  ui.btnRedo.textContent = ticked.length
+    ? t('mgr.redoN', { n: ticked.length })
+    : t('mgr.redoAllN', { n: rolledBack || session.changes.length });
+  ui.btnRedo.disabled = !session.changes.length;
+
   ui.chkAll.checked = Boolean(session.changes.length) && ticked.length === session.changes.length;
 }
 
@@ -377,9 +389,9 @@ function renderChange(change) {
   box.addEventListener('click', (e) => e.stopPropagation());
   box.addEventListener('change', () => {
     if (box.checked) selected.add(change.id); else selected.delete(change.id);
-    // Only the button: a full re-render here would shut every diff the person has
+    // Only the buttons: a full re-render here would shut every diff the person has
     // opened to decide what to tick.
-    paintRollbackButton();
+    paintRunButtons();
   });
 
   const op = document.createElement('span');
@@ -429,6 +441,21 @@ function renderChange(change) {
       rollbackOne(change);
     });
     summary.append(undo);
+  }
+
+  // And put this one back the way the test had it — offered once it has been
+  // rolled back, which is the only time there is anything to re-apply.
+  if (change.undone && !redoBlockingReason(change)) {
+    const again = document.createElement('button');
+    again.className = 'btn small redo-one';
+    again.textContent = t('mgr.redoOne');
+    again.title = t('mgr.redoOneHint');
+    again.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      redoOne(change);
+    });
+    summary.append(again);
   }
   details.append(summary);
 
@@ -683,6 +710,34 @@ async function rollbackSelected() {
     changeIds: selected.size ? [...selected] : undefined,
     // Ticking a change that was already undone is a request to run it again.
     includeUndone: ticked.some((c) => c.undone),
+  });
+  selected = new Set();
+  render();
+}
+
+async function redoOne(change) {
+  const session = sessions[currentId];
+  if (!session) return;
+  await askTab(session, {
+    type: 'dbtools-run-redo',
+    sessionId: session.id,
+    changeIds: [change.id],
+    includeApplied: !change.undone,
+  });
+}
+
+async function redoSelected() {
+  const session = sessions[currentId];
+  if (!session) return;
+  ui.btnRedo.disabled = true;
+  const ticked = session.changes.filter((c) => selected.has(c.id));
+  await askTab(session, {
+    type: 'dbtools-run-redo',
+    sessionId: session.id,
+    // Nothing ticked means every change that was rolled back.
+    changeIds: selected.size ? [...selected] : undefined,
+    // Ticking a change that is still applied is a request to write its values again.
+    includeApplied: ticked.some((c) => !c.undone),
   });
   selected = new Set();
   render();

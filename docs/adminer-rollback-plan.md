@@ -122,6 +122,8 @@ trước mỗi phiên test.
 1. **▶ Bắt đầu phiên** — đặt tên phiên (ví dụ `Test generic MST`). Tuỳ chọn: chụp snapshot các bảng sẽ đụng tới.
 2. Người dùng sửa dữ liệu như bình thường. Mọi thay đổi được ghi vào phiên.
 3. **■ Kết thúc phiên** hoặc **↺ Rollback tất cả**.
+4. **↷ Làm lại** — rollback xong mới phát hiện phải test lại: áp dụng lại đúng các thay đổi đó thay vì gõ tay
+   lần nữa. Nút chỉ hiện khi trong phiên có thay đổi đã hoàn tác.
 
 Thanh nổi trong Adminer khi phiên đang chạy:
 
@@ -149,6 +151,22 @@ Nguyên tắc:
 - Chỉ ghi lại **những cột thực sự đổi**, không ghi đè cả dòng — tránh đạp lên thay đổi hợp lệ của người khác.
 - `undoSql` luôn được **sinh lại tại thời điểm rollback** chứ không tin bản đã lưu (để còn áp dụng drift check);
   bản lưu chỉ dùng cho export.
+
+### 5.2b Chiều ngược lại: làm lại (redo)
+
+Cùng một changeset, chạy **xuôi thứ tự thời gian** (FIFO — dòng phải có lại trước khi câu sửa nó chạy tiếp).
+Đối xứng với undo: ghi `after` thay vì `before`, và định danh dòng bằng đúng `where` lúc ghi — vì sau rollback
+dòng đã trở lại chính trạng thái đó (kể cả khi lượt test có đổi cột khoá).
+
+| Thao tác gốc | Câu làm lại |
+|---|---|
+| `UPDATE` | `UPDATE t SET <cột đã đổi = giá trị mới> WHERE <where[] lúc ghi>` |
+| `DELETE` | `DELETE FROM t WHERE <where[] lúc ghi>` |
+| `INSERT` | `INSERT INTO t (...) VALUES (<after>)` — giữ nguyên khoá cũ để lần rollback sau vẫn tìm thấy |
+
+Drift check cũng đảo chiều: dòng phải đang giữ giá trị **`before`** (đúng như rollback để lại). Thay đổi không
+ghi được `after` — câu lệnh gõ tay ở trang SQL chỉ chụp giá trị cũ — thì **không làm lại được**, báo
+`redo-no-after` và bỏ qua chứ không đoán. Redo không đụng tới snapshot: snapshot chỉ ghi trạng thái *trước* test.
 
 ### 5.3 Các ca biên bắt buộc xử lý
 
@@ -251,17 +269,19 @@ Ràng buộc kỹ thuật cần tôn trọng:
 | **3b** | ✅ **Xong.** `INSERT` hoàn tác được: khoá lấy từ giá trị gõ vào form, từ thông báo *"Item N has been inserted"*, từ literal trong câu lệnh, hoặc so tập khoá trước/sau | Cách so tập khoá có thể tính cả dòng người khác chèn cùng lúc — change được đánh dấu `insert-found-by-difference` |
 | **4** | ✅ **Xong** — ⏸ **tạm ẩn** (`TABLE_COPIES = false` trong `dbtools/features.js`). Tầng 2: `dbtools/snapshot.js` — chụp cả bảng, rollback bằng diff (DELETE → UPDATE → INSERT). Tầng 3: nút tạo bảng backup, khôi phục bằng diff hoặc chép lại toàn bộ khi bảng quá lớn, xoá bảng backup | Dữ liệu snapshot lưu trong IndexedDB của extension (`dbtools/snapstore.js`), không chiếm quota 10 MB của `chrome.storage.local` — không cần quyền `unlimitedStorage` |
 | **5** | ✅ **Xong** — ⏸ **tạm ẩn** cùng GĐ 4 (guard dựa trên snapshot). `bg/dbguard.js`: mỗi lần Playback (kịch bản, chuỗi, CSV) mở phiên + chụp các bảng đã chọn trước khi chạy, tự rollback khi chạy xong. Không có tab Adminer của database đó thì **từ chối chạy** | Bật ở thẻ DB Test Session trong popup; chọn database/bảng trong Settings của trang quản lý |
+| **6** | ✅ **Xong.** Làm lại: `redoStatements` / `redoBlockingReason` (`dbtools/undo.js`), `runRedo` (`dbtools/rollback.js`), nút **↷ Làm lại** trên panel và trang quản lý, làm lại riêng từng thay đổi | Xem §5.2b. Không áp dụng cho thay đổi không ghi được `after` |
 
 ### Kiểm thử (đã có)
 
 ```bash
-node dbtools/selftest.mjs     # 290 check, Node thuần, không dependency
+node dbtools/selftest.mjs     # 451 check, Node thuần, không dependency
 bash dbtools/e2e/setup.sh     # Adminer 4.8.1 thật trên SQLite
 node dbtools/e2e/run.mjs      # extension thật, trình duyệt thật, DB thật
 ```
 
 `selftest.mjs` phủ phần số học: sinh SQL hoàn tác cho từng ca biên ở §5.3 (`NULL` vs `''`, đổi PK, bảng không
-khoá, capture không có "after"), quote đúng theo từng engine, bóc mệnh đề `WHERE` nguyên văn kể cả có subquery,
+khoá, capture không có "after"), chiều làm lại ở §5.2b (mệnh đề `WHERE` lấy từ lúc ghi, thứ tự FIFO, drift so
+với `before`, từ chối khi không có `after`), quote đúng theo từng engine, bóc mệnh đề `WHERE` nguyên văn kể cả có subquery,
 và hai catalog dịch không thiếu key.
 
 `e2e/run.mjs` phủ phần *không* kiểm chứng được bằng unit test — tức là mọi giả định về HTML của Adminer: sửa dòng,

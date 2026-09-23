@@ -1,5 +1,5 @@
 /**
- * undo.js — a recorded change → the SQL that puts it back.
+ * undo.js — a recorded change → the SQL that puts it back, or applies it again.
  *
  * One shape carries every kind of change, because the rollback page has to treat
  * them alike: a change is a table plus a list of rows, and each row holds the
@@ -23,6 +23,12 @@
  * the caller decides whether to offer the LIMIT 1 variant. The same goes for an
  * INSERT whose new key was never observed, and for a column the capture could
  * not read (a BLOB, a file input).
+ *
+ * The redo half is the mirror image: it writes `after` where the undo writes
+ * `before`, and it reaches the row by the predicate Adminer recorded — which is
+ * what the row holds again once the change has been rolled back. It needs values
+ * the capture actually read back, so a statement typed on the SQL page, whose
+ * `after` was never read, is refused rather than guessed at.
  *
  * Pure functions over plain objects — no DOM, no storage, no chrome API.
  */
@@ -96,6 +102,64 @@ export function blockingReason(change) {
 }
 
 /**
+ * Why a change cannot be applied again, or '' when it can.
+ *
+ * Same shape as `blockingReason`, with one reason of its own. A redo writes the
+ * values the capture read back after the write; a change that has none — a bulk
+ * statement typed on the SQL page, an INSERT whose row could not be read — is
+ * refused as `redo-no-after` instead of being re-applied as an empty statement.
+ */
+export function redoBlockingReason(change) {
+  if (!UNDOABLE_OPS.has(change.op)) return 'unsupported-op';
+  if (!change.table) return 'no-table';
+  if (!change.rows || !change.rows.length) return 'no-rows';
+  for (const row of change.rows) {
+    // The predicate is the recorded one: a redo runs against a row that has been
+    // put back, so the key it was reached by is the key it has again. An INSERT
+    // needs one too — without it the original row was never removed by the
+    // rollback either, and inserting it again would duplicate it.
+    if (!Object.keys(row.where || {}).length) return change.op === 'insert' ? 'insert-key-unknown' : 'no-key';
+    if (change.op === 'update' && !changedColumns(row).length) return 'redo-no-after';
+    if (change.op === 'insert' && !Object.keys(row.after || {}).length) return 'redo-no-after';
+  }
+  if ((change.unreadableCols || []).length) return 'unreadable-columns';
+  return '';
+}
+
+/**
+ * The statements that apply one change again — the mirror of `undoStatements`.
+ *
+ * An UPDATE sets the values it set the first time, a DELETE removes the row it
+ * removed, an INSERT puts back the row it created, keeping the key it was given
+ * so that rolling it back a second time still finds it.
+ */
+export function redoStatements(change, engine = 'mysql', opts = {}) {
+  const eng = ENGINE_ALIASES[engine] || engine;
+  const schema = change.schema || '';
+  const out = [];
+
+  for (const row of change.rows || []) {
+    const where = row.where || {};
+    const keyless = !Object.keys(where).length;
+
+    if (change.op === 'update') {
+      const sets = {};
+      for (const col of changedColumns(row)) sets[col] = row.after[col];
+      if (!Object.keys(sets).length) continue;
+      out.push(buildUpdate(change.table, sets, where, eng, schema));
+    } else if (change.op === 'delete') {
+      out.push(buildDelete(change.table, where, eng, schema, opts.limitGuard && keyless ? 1 : 0));
+    } else if (change.op === 'insert') {
+      // Nothing recorded to put back: `redoBlockingReason` says so, and an empty
+      // INSERT would not parse anyway.
+      if (!row.after || !Object.keys(row.after).length) continue;
+      out.push(buildInsert(change.table, row.after, eng, schema));
+    }
+  }
+  return out;
+}
+
+/**
  * The statements that undo one change, newest row first.
  *
  * `opts.limitGuard` adds LIMIT 1 to a DELETE built for a keyless table — only
@@ -143,27 +207,31 @@ export function sessionUndoScript(session, opts = {}) {
 }
 
 /**
- * Has anything touched this row since we changed it?
+ * Is the row still where the run about to touch it expects it to be?
  *
  * `current` is the row as it is right now, read back through the same edit-form
  * parser that captured it. Only the columns this change wrote are compared —
  * a colleague editing a different column of the same row is not a conflict.
  *
- * A change with no recorded "after" cannot be drift-checked at all; that is
- * reported as `unknown` rather than as "no drift", because the two would lead a
- * user to opposite decisions.
+ * Which values it should hold depends on the direction. An undo expects the
+ * change's own "after": anything else means someone wrote over it. A redo runs
+ * on a row that was rolled back, so it expects "before" instead.
+ *
+ * Values the capture never recorded cannot be compared at all; that is reported
+ * as `unknown` rather than as "no drift", because the two would lead a user to
+ * opposite decisions.
  */
-export function driftOf(change, row, current) {
+export function driftOf(change, row, current, dir = 'undo') {
   if (!current) return { missing: true, unknown: false, diffs: [] };
-  const after = row.after;
-  if (!after || !Object.keys(after).length) return { missing: false, unknown: true, diffs: [] };
+  const want = dir === 'redo' ? row.before : row.after;
+  if (!want || !Object.keys(want).length) return { missing: false, unknown: true, diffs: [] };
 
   const diffs = [];
   for (const col of columnsToRestore(change, row)) {
     if (!Object.prototype.hasOwnProperty.call(current, col)) continue;
-    if (!Object.prototype.hasOwnProperty.call(after, col)) continue;
-    if (!sameValue(current[col], after[col])) {
-      diffs.push({ col, expected: after[col], actual: current[col] });
+    if (!Object.prototype.hasOwnProperty.call(want, col)) continue;
+    if (!sameValue(current[col], want[col])) {
+      diffs.push({ col, expected: want[col], actual: current[col] });
     }
   }
   return { missing: false, unknown: false, diffs };

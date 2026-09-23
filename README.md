@@ -404,20 +404,28 @@ Design notes and the phases beyond what is built: [`docs/adminer-rollback-plan.m
    (column / recorded / now) with **Skip these rows** or **Overwrite anyway**. A session is not spent by one
    rollback: press it again — after another run of the same test, or after the data moved — and it offers the
    same undo a second time, saying that is what it is.
-5. **■ End** does not make the session disappear. It stays on the panel, marked *Ended*, still one click from
+5. **↷ Re-apply** appears once something has been rolled back, for the step nobody plans for: the rollback ran,
+   something was wrong, and the same rows have to go back to the values the test gave them. It is the changeset
+   run the other way — oldest change first, so a row exists again before the edit that followed it — with the
+   same preview and the same drift check, so a row someone else has written over since is shown before anything
+   is overwritten. One thing it will not repeat: a statement you typed on the SQL page, where the capture read
+   the old values but never the new ones. That one is listed as skipped, with the reason, rather than guessed at
+   — run the statement again yourself. On the manager page, **↷** on a change re-applies just that one.
+6. **■ End** does not make the session disappear. It stays on the panel, marked *Ended*, still one click from
    **↺ Roll back all**, with **↻ Resume** to record into it again and **▶ New session** for the next one. Click
    the session's **name** on the panel for every session on this database, each with its own **↻ Resume**; past
    six of them a filter appears, and Enter resumes the first match. One session records per database: resuming
    or starting another ends whichever was recording, and says so first.
 
 **Data → DB Test Session** opens the full page — and the card itself says which session is recording, one click
-from it. The page lists every change with the row it touched (`id=2`), a **↺** to undo just that one, its
+from it. The page lists every change with the row it touched (`id=2`), a **↺** to undo just that one and a **↷** to put it back, its
 before/after per column (diffs stay open while new changes arrive), the session's snapshots and backup tables,
 and `.sql` / `.json` export. **Clean up…** deletes ended sessions with nothing left to undo (those still holding
 changes are one tick away; those that still own a backup table are kept). **View** on the panel reuses an open
 copy of the page rather than opening another. The panel follows the extension's light/dark setting. The rollback
 button there says what it is about to do rather than what it is called — **Roll back all 12** with nothing
-ticked, **Roll back 3 selected** with three, **Run 3 again** when a ticked change has already been undone. The
+ticked, **Roll back 3 selected** with three, **Run 3 again** when a ticked change has already been undone.
+**Re-apply** beside it counts the changes that were rolled back, because those are the ones it would run. The
 run itself happens in the Adminer tab (the extension's own fetch would not carry Adminer's session cookie), so
 the page says to confirm it over there and reports what came back — and when no Adminer tab is open for that
 database, **Open Adminer** opens one and carries on once its panel answers. The **?** on that card is the in-popup guide.

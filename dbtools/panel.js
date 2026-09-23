@@ -436,6 +436,16 @@ export function mountPanel(handlers = {}, { theme = '' } = {}) {
       list.push(undo);
     }
 
+    // A rollback is not the end of the session. Finding out afterwards that the
+    // test has to run once more left only one way back: making all those edits
+    // again by hand, with the changeset that holds every one of them on screen.
+    const rolledBack = changes.filter((c) => c.undone).length;
+    if (rolledBack && handlers.onRedoAll) {
+      const again = button(t('panel.redoAll'), handlers.onRedoAll, '', 'redo');
+      again.title = t('panel.redoAllHint');
+      list.push(again);
+    }
+
     list.push(
       button(t('panel.exportSql'), handlers.onExportSql, '', 'export'),
       button(t('panel.view'), handlers.onView, '', 'view'),
