@@ -71,11 +71,16 @@ async function init() {
   });
 }
 
+/**
+ * The popup's theme, read the way the popup reads it (popup/theme.js): unset is
+ * light, not the OS's choice, or this page came up dark beside a light popup.
+ * Toggling it in the popup repaints an open manager tab straight away.
+ */
 function applyTheme() {
-  chrome.storage.local.get([THEME_KEY], (res) => {
-    const theme = res[THEME_KEY] ||
-      (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-    document.documentElement.setAttribute('data-theme', theme);
+  const paint = (value) => document.documentElement.setAttribute('data-theme', value === 'dark' ? 'dark' : 'light');
+  chrome.storage.local.get([THEME_KEY], (res) => paint(res[THEME_KEY]));
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[THEME_KEY]) paint(changes[THEME_KEY].newValue);
   });
 }
 

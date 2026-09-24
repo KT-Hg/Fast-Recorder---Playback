@@ -83,26 +83,28 @@ button {
 button:hover { background: #343c4f; }
 button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 button.danger  { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+button.danger:hover  { background: #991b1b; border-color: #991b1b; }
 button:disabled { opacity: .5; cursor: default; }
 button.more { padding: 5px 8px; line-height: 1; }
 button.more.on { background: #3b4358; }
 [hidden] { display: none !important; }
-/* The log is the one part that grows without asking, so it scrolls inside a fixed
-   height. The scrollbar is drawn rather than left to the platform: the panel sits
-   on somebody else's page in a dark box, and the default Windows bar is a wide
-   light-grey slab that reads as part of Adminer rather than part of this. */
+/* Scrollbars are drawn rather than left to the platform: the panel sits on
+   somebody else's page in a dark box, and the default Windows bar is a wide
+   light-grey slab that reads as part of Adminer rather than part of this. One bar
+   for everything the panel scrolls, the same 9px one the extension's own pages
+   draw. These rules live in the shadow tree, so Adminer's own scrollbars are left
+   alone. The standard scrollbar-width and scrollbar-color are unset on purpose:
+   Chrome ignores these pseudo-elements once either of them is specified. */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #4b5468; border-radius: 9px; }
+::-webkit-scrollbar-thumb:hover { background: #5c6780; }
+::-webkit-scrollbar-track { background: transparent; }
+/* The log is the one part that grows without asking, so it scrolls inside a fixed height. */
 .log {
   max-height: 128px; overflow-y: auto; overscroll-behavior: contain;
   font-size: 12px; color: #9aa3b5; display: grid; gap: 3px; padding-right: 2px;
-  scrollbar-width: thin; scrollbar-color: #4b5468 transparent;
 }
-.log::-webkit-scrollbar { width: 10px; }
-.log::-webkit-scrollbar-track { background: transparent; }
-.log::-webkit-scrollbar-thumb {
-  background: #4b5468; border-radius: 999px;
-  border: 3px solid transparent; background-clip: content-box;
-}
-.log::-webkit-scrollbar-thumb:hover { background: #5c6780; background-clip: content-box; }
 .log div { word-break: break-word; }
 .log .warn { color: #fbbf24; }
 .log .err  { color: #f87171; }
@@ -135,21 +137,22 @@ button.more.on { background: #3b4358; }
 .sheet pre {
   margin: 0; padding: 12px 14px; overflow: auto; flex: 1; white-space: pre-wrap; word-break: break-word;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #d7dbe5;
-  scrollbar-width: thin; scrollbar-color: #4b5468 transparent;
 }
-.sheet pre::-webkit-scrollbar { width: 12px; height: 12px; }
-.sheet pre::-webkit-scrollbar-track { background: transparent; }
-.sheet pre::-webkit-scrollbar-thumb {
-  background: #4b5468; border-radius: 999px;
-  border: 3px solid transparent; background-clip: content-box;
-}
-.sheet pre::-webkit-scrollbar-thumb:hover { background: #5c6780; background-clip: content-box; }
 .sheet .note { padding: 0 14px 10px; font-size: 12px; color: #fbbf24; }
 .sheet .body { padding: 0 14px; }
 /* What the statements below add up to. The SQL is the contract and is always
    shown, but "UPDATE users · 3 rows" is what somebody actually reads before
-   deciding, and a wall of quoted values is not. */
-.sheet .summary { padding: 12px 14px 4px; display: grid; gap: 4px; font-size: 12px; }
+   deciding, and a wall of quoted values is not.
+
+   It scrolls, and the zero min-height is what lets it: a flex item refuses to
+   shrink below its content without one, so a session with a line per table pushed the
+   sheet's own buttons off the bottom of a short window — the SQL above them had
+   already been squeezed to nothing, and there was no way left to confirm or
+   cancel what was on screen. */
+.sheet .summary {
+  padding: 12px 14px 4px; display: grid; gap: 4px; font-size: 12px;
+  min-height: 0; overflow-y: auto;
+}
 .sheet .summary .line { display: flex; gap: 8px; align-items: baseline; }
 .sheet .summary .op {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
@@ -184,10 +187,7 @@ button.more.on { background: #3b4358; }
 .picker .filter:focus { outline: none; border-color: #2563eb; }
 .picker .list {
   display: grid; gap: 6px; max-height: 320px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px;
-  scrollbar-width: thin; scrollbar-color: #4b5468 transparent;
 }
-.picker .list::-webkit-scrollbar { width: 10px; }
-.picker .list::-webkit-scrollbar-thumb { background: #4b5468; border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
 .pick-row {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px;
   border: 1px solid #39405180; border-radius: 8px; background: #232937;
@@ -216,6 +216,14 @@ const LIGHT = `
 button { background: #f1f3f7; color: #1b2030; border-color: #ccd2de; }
 button:hover { background: #e6eaf2; }
 button.more.on { background: #dbe1ec; }
+/* Scoped under :host(), the plain \`button\` rules above outrank the unscoped
+   \`button.primary\` and \`button.danger\`: in light, Start and Roll back all
+   came out grey, and the session name picked up a button's fill. */
+button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+button.primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+button.danger { background: #b91c1c; border-color: #b91c1c; color: #fff; }
+button.danger:hover { background: #991b1b; border-color: #991b1b; }
+.name .switch { background: transparent; border-color: transparent; }
 .meta, .log { color: #5c6579; }
 .log .time { color: #8a93a6; }
 .head .ended { border-color: #ccd2de; color: #5c6579; }
@@ -241,13 +249,10 @@ button.more.on { background: #dbe1ec; }
 .pick-meta, .picker .none { color: #5c6579; }
 .pick-row .rec { color: #b91c1c; }
 .picker .filter { background: #f7f8fb; color: #1b2030; border-color: #ccd2de; }
-.picker .list { scrollbar-color: #c2c9d6 transparent; }
-.picker .list::-webkit-scrollbar-thumb { background: #c2c9d6; background-clip: content-box; }
 .sheet .field { color: #5c6579; }
 .sheet .field input { background: #f7f8fb; color: #1b2030; border-color: #ccd2de; }
-.log, .sheet pre { scrollbar-color: #c2c9d6 transparent; }
-.log::-webkit-scrollbar-thumb, .sheet pre::-webkit-scrollbar-thumb { background: #c2c9d6; background-clip: content-box; }
-.log::-webkit-scrollbar-thumb:hover, .sheet pre::-webkit-scrollbar-thumb:hover { background: #a7b0c2; background-clip: content-box; }
+::-webkit-scrollbar-thumb { background: #c2c9d6; }
+::-webkit-scrollbar-thumb:hover { background: #a7b0c2; }
 `;
 
 /** Prefix every selector of every rule in `css` with `prefix`. */

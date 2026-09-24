@@ -930,7 +930,7 @@ guaranteed the two copies drift apart.
 
 1. **Zero dependencies** — No npm, no bundler, no external CDNs
 2. **Storage-first state** — All durable state in `chrome.storage`; in-memory is a cache
-3. **Graceful degradation** — Failed actions are logged, not fatal; playback continues
+3. **Graceful degradation** — A failed action is never fatal: playback pauses and a popup on the page asks to Retry, Skip (logged as failed, playback continues) or Stop; on pages that cannot show it, the failure is notified and playback continues
 4. **Non-destructive** — Undo/redo for all edits; export before import
 5. **Explicit over magic** — No implicit retries or hidden variable scopes
 

@@ -22,6 +22,10 @@
   --muted: #5c6579;
   --border: #d7dbe5;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* The panel's own scrollbar colours (dbtools/panel.js), so the two match.
+     Not --border: in dark it is half transparent and the thumb all but vanishes. */
+  --scroll-thumb: #c2c9d6;
+  --scroll-thumb-hover: #a7b0c2;
 }
 
 [data-theme="dark"] {
@@ -31,6 +35,8 @@
   --text: #e6e9ef;
   --muted: #9aa3b5;
   --border: #39405180;
+  --scroll-thumb: #4b5468;
+  --scroll-thumb-hover: #5c6780;
 }
 
 * { box-sizing: border-box; }
@@ -44,6 +50,16 @@ html, body {
 }
 
 body { display: flex; flex-direction: column; }
+
+/* The same bar sqlcases.html draws, for the same reason: this page is two
+   scrolling columns, and the platform default is a wide light-grey slab that
+   takes the eye before the content does. `scrollbar-width`/`scrollbar-color` are
+   deliberately left unset — Chrome ignores these pseudo-elements once either of
+   the standard properties is specified. */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 9px; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+::-webkit-scrollbar-track { background: transparent; }
 
 .topbar {
   display: flex; align-items: center; gap: 10px;
@@ -103,15 +119,28 @@ body { display: flex; flex-direction: column; }
   display: flex; align-items: center; gap: 12px;
   padding: 8px 14px; border-bottom: 1px solid var(--border);
 }
-.change-list { overflow: auto; padding: 10px 14px 24px; display: grid; gap: 8px; align-content: start; }
+/* `grid-auto-rows: min-content` is load-bearing. `.change` clips its own corners
+   with `overflow: hidden`, and that zeroes a grid item's automatic minimum size:
+   without this the auto rows divide the list's own height between them instead
+   of overflowing it, so past a dozen or so changes every one of them is squashed
+   to a few pixels — and clipped to that, so the list reads as empty stripes. */
+.change-list {
+  overflow: auto; padding: 10px 14px 24px;
+  display: grid; gap: 8px; align-content: start; grid-auto-rows: min-content;
+}
 .empty { color: var(--muted); }
 
 .change {
   border: 1px solid var(--border); border-radius: 8px; background: var(--surface); overflow: hidden;
 }
 .change.undone { opacity: .55; }
+/* It wraps because the row is clipped, not scrolled: in a narrow window — this
+   page beside an Adminer tab is the normal way to use it — the ↺ and ↷ buttons
+   at the end ran past the edge and `overflow: hidden` cut them off, leaving no
+   way to undo or re-apply that one change. */
 .change > summary {
   display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none;
+  flex-wrap: wrap;
 }
 .change > summary::-webkit-details-marker { display: none; }
 .change .op {

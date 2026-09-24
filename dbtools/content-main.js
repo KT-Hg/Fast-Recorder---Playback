@@ -106,7 +106,7 @@ export async function boot() {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes.dbtoolsSessions || changes.dbtoolsActive || changes.dbtoolsFocus) refresh();
-    if (changes.popupTheme && state.panel.setTheme) state.panel.setTheme(changes.popupTheme.newValue || '');
+    if (changes.popupTheme && state.panel.setTheme) state.panel.setTheme(popupTheme(changes.popupTheme.newValue));
     // Settings are read once at boot; without this an Adminer tab left open would
     // keep the old row cap and drift setting until it is reloaded.
     if (changes.dbtoolsSettings) {
@@ -167,10 +167,18 @@ export async function boot() {
  * has been flipped. A page that loaded while the feature was off is wired here,
  * the first time it is turned on.
  */
+/**
+ * The popup's theme as the popup itself reads it (popup/theme.js): anything but
+ * 'dark' — unset included — is light. Following the OS when unset put a dark
+ * panel next to a popup that was showing light.
+ */
+function popupTheme(value) {
+  return value === 'dark' ? 'dark' : 'light';
+}
+
 async function start() {
   state.on = true;
-  // The extension's own theme, the one the popup and the manager page use; unset,
-  // the panel follows the operating system.
+  // The extension's own theme, the one the popup and the manager page use.
   const themed = await new Promise((resolve) => chrome.storage.local.get(['popupTheme'], resolve));
   state.panel = mountPanel({
     onStart: guarded(startSession),
@@ -184,7 +192,7 @@ async function start() {
     onResume: guarded(() => state.session && resumeSession(state.session.id)),
     // No handler, no button: the panel leaves out ⋯ when there is nothing behind it.
     ...(TABLE_COPIES ? { onSnapshot: guarded(promptSnapshot), onBackup: guarded(promptBackup) } : {}),
-  }, { theme: (themed && themed.popupTheme) || '' });
+  }, { theme: popupTheme(themed && themed.popupTheme) });
 
   await refresh();
   await rememberConnection();

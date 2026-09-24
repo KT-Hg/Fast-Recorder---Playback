@@ -181,7 +181,7 @@ export function diffConditionSet(oldConds, oldTree, newConds, newTree) {
 
   pairs.forEach(([o, n]) => {
     newIdByOldId.set(o.id, n.id);
-    if (o.sql === n.sql) unchanged.push(n);
+    if (o.sql === n.sql && o.fingerprint === n.fingerprint) unchanged.push(n);
     else changed.push({ old: o, new: n, what: leafDiffKind(o, n) });
   });
 

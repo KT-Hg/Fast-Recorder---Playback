@@ -16,6 +16,9 @@ export function updateBadge() {
     text = 'PICK'; color = '#6366f1';
   } else if (state.recording) {
     text = 'REC'; color = '#ef4444';
+  } else if (state.playback.active && state.playback.failPrompt) {
+    // Paused on the failed-action prompt in the page, waiting for a click.
+    text = '!'; color = '#f59e0b';
   } else if (state.csvPlayback.active) {
     const row   = state.csvPlayback.currentRow ?? 0;
     const total = state.csvPlayback.rows?.length ?? 0;

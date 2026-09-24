@@ -193,8 +193,19 @@ function collectConditions(expr, source, out, prefix) {
 
   const cond = describeLeaf(e, source);
   cond.id = `${prefix}${out.length + 1}`;
+  // `sql` renders a subquery as `(SELECT …)`, so two leaves whose subqueries
+  // differ — a renamed @param, another column, a changed literal inside — read
+  // the same, and a before/after diff reported no change for them. The diff
+  // compares this instead. Non-enumerable so exports and model dumps don't
+  // carry a copy of the AST.
+  Object.defineProperty(cond, 'fingerprint', { value: fingerprint(e) });
   out.push(cond);
   return { node: 'leaf', id: cond.id };
+}
+
+/** The whole predicate, subqueries included, minus where in the text it sat. */
+function fingerprint(e) {
+  return JSON.stringify(e, (k, v) => (k === 'pos' ? undefined : v));
 }
 
 /** Normalise a single non-boolean predicate into a condition record. */

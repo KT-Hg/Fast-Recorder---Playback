@@ -1064,7 +1064,24 @@ const MAX_CONNECTION_RETRIES = 5;
 let connectionCheckInterval = null;
 
 /* === Switch Case Builder === */
-let _switchCases = []; // [{ value, scenarioId, scenarioName }]
+let _switchCases = []; // [{ value, scenarioId, scenarioName, startAt? }]
+
+// Case target that jumps within the scenario being played instead of branching
+// into another one — must match SWITCH_SELF in bg/playback.js.
+const SWITCH_SELF = "__self__";
+const SWITCH_SELF_LABEL = "↻ This scenario (jump)";
+
+/** "#N" suffix for a case that doesn't start at the first action. */
+function _switchStartSuffix(c) {
+  const n = parseInt(c.startAt, 10) || 1;
+  return c.scenarioId === SWITCH_SELF || n > 1 ? ` @#${n}` : "";
+}
+
+/** Case fields from the form: a 1-based start action, omitted when it's the first. */
+function _switchCaseTarget(scenarioId, scenarioName, startRaw) {
+  const startAt = Math.max(1, parseInt(startRaw, 10) || 1);
+  return { scenarioId, scenarioName, ...(startAt > 1 || scenarioId === SWITCH_SELF ? { startAt } : {}) };
+}
 
 function populateSwitchScenarioSelect() {
   const sel = document.getElementById("switchCaseScenario");
@@ -1081,6 +1098,12 @@ function populateSwitchScenarioSelect() {
       opt.textContent = folderName + (s.name || id);
       sel.appendChild(opt);
     });
+  // Last, not first: the first option is what an untouched select submits, and
+  // "+ Add" has always meant "branch to the first scenario" by default.
+  const selfOpt = document.createElement("option");
+  selfOpt.value = SWITCH_SELF;
+  selfOpt.textContent = SWITCH_SELF_LABEL;
+  sel.appendChild(selfOpt);
 }
 
 function renderSwitchCaseList(editingIdx = -1) {
@@ -1119,6 +1142,9 @@ function renderSwitchCaseList(editingIdx = -1) {
         });
         optionsHtml += `</optgroup>`;
       });
+      // Appended last so a case whose scenario was deleted (nothing selected)
+      // still falls back to the first scenario, not to a jump.
+      optionsHtml += `<option value="${SWITCH_SELF}"${c.scenarioId === SWITCH_SELF ? " selected" : ""}>${SWITCH_SELF_LABEL}</option>`;
 
       row.innerHTML = `
         <div class="sw-inline-row">
@@ -1129,6 +1155,8 @@ function renderSwitchCaseList(editingIdx = -1) {
         </div>
         <div class="sw-inline-row">
           <select class="sw-edit-scen sw-edit-input">${optionsHtml}</select>
+          <input class="sw-edit-start sw-start-input" type="number" min="1" placeholder="#"
+            title="Start at action # (1 = first)" value="${parseInt(c.startAt, 10) || 1}" />
         </div>
         <div class="sw-inline-row-end">
           <button class="sw-edit-confirm secondary sw-edit-btn">✓</button>
@@ -1148,7 +1176,8 @@ function renderSwitchCaseList(editingIdx = -1) {
           showToast(`Case "${resolvedVal === "__default__" ? "default" : resolvedVal}" already exists`, "error");
           return;
         }
-        _switchCases[idx] = { value: resolvedVal, scenarioId: newScenId, scenarioName: newScenName };
+        const newStart = row.querySelector(".sw-edit-start").value;
+        _switchCases[idx] = { value: resolvedVal, ..._switchCaseTarget(newScenId, newScenName, newStart) };
         renderSwitchCaseList();
       });
 
@@ -1163,7 +1192,7 @@ function renderSwitchCaseList(editingIdx = -1) {
       const label = c.value === "__default__" ? "⬡ default" : `"${escHtml(c.value)}"`;
       row.innerHTML = `
         <span class="sw-case-label">${label}</span>
-        <span class="sw-case-target">→ ${escHtml(c.scenarioName || c.scenarioId)}</span>
+        <span class="sw-case-target">→ ${escHtml(c.scenarioId === SWITCH_SELF ? SWITCH_SELF_LABEL : (c.scenarioName || c.scenarioId))}${_switchStartSuffix(c)}</span>
         <button data-idx="${idx}" class="sw-case-edit secondary sw-case-btn" title="Edit case">✎</button>
         <button data-idx="${idx}" class="sw-case-del secondary sw-case-btn" title="Delete case">🗑</button>
       `;
@@ -1193,12 +1222,20 @@ document.getElementById("switchAddCase")?.addEventListener("click", () => {
   if (_switchCases.find(c => c.value === caseVal)) {
     showToast(`Case "${caseVal === "__default__" ? "default" : caseVal}" already exists`, "error"); return;
   }
+  const startEl = document.getElementById("switchCaseStart");
+  if (selEl.value === SWITCH_SELF && !(parseInt(startEl?.value, 10) >= 1)) {
+    showToast("Enter the action # to jump to", "error"); return;
+  }
   _switchCases.push({
     value: caseVal,
-    scenarioId: selEl.value,
-    scenarioName: selEl.options[selEl.selectedIndex]?.textContent || selEl.value,
+    ..._switchCaseTarget(
+      selEl.value,
+      selEl.options[selEl.selectedIndex]?.textContent || selEl.value,
+      startEl?.value,
+    ),
   });
   if (valEl) valEl.value = "";
+  if (startEl) startEl.value = "";
   renderSwitchCaseList();
 });
 let sequenceClipboard = null; // Copy/paste clipboard for sequence items
@@ -2067,7 +2104,7 @@ function _getActionDisplayValue(a) {
   }
   if (a.type === "switch") {
     const caseLabels = (a.cases || []).map(c =>
-      `${c.value === "__default__" ? "default" : c.value}→${c.scenarioName || c.scenarioId || "?"}`
+      `${c.value === "__default__" ? "default" : c.value}→${c.scenarioId === SWITCH_SELF ? "this" : (c.scenarioName || c.scenarioId || "?")}${_switchStartSuffix(c)}`
     ).join(" | ");
     return `${a.switchVar || "?"}: ${caseLabels || "(no cases)"}`;
   }
@@ -3019,6 +3056,8 @@ function clearEditState() {
   if (switchWrapperClear) switchWrapperClear.style.display = "none";
   const switchVarClear = document.getElementById("switchVar");
   if (switchVarClear) switchVarClear.value = "";
+  const switchStartClear = document.getElementById("switchCaseStart");
+  if (switchStartClear) switchStartClear.value = "";
   const switchCaseListClear = document.getElementById("switchCaseList");
   if (switchCaseListClear) switchCaseListClear.innerHTML = "";
 

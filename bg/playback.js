@@ -110,9 +110,9 @@ function _failSuffix(failedActions) {
   return n ? ` — ${n} action${n === 1 ? '' : 's'} failed` : '';
 }
 
-function _notifyActionFailed(index, action, reason) {
+function _notifyActionFailed(index, action, reason, { toPopup = true } = {}) {
   const r = reason || 'element not found';
-  chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index, action, reason: r }).catch(() => {});
+  if (toPopup) chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index, action, reason: r }).catch(() => {});
   if (!state.csvPlayback.active) {
     const label = action?.label || action?.type || '';
     // Stable id: playback continues past a failed action, so without one a run
@@ -124,6 +124,98 @@ function _notifyActionFailed(index, action, reason) {
       'action_failed',
     );
   }
+}
+
+/* ── Failed-action prompt ───────────────────────────────────────────────────────
+ * A failed action pauses the run and asks, in a popup on the page being played,
+ * whether to run it again, skip it or stop. The content script holds the message
+ * open until a button is clicked, so the answer comes back as its response.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+const FAIL_RETRY = 'retry';
+const FAIL_SKIP  = 'skip';
+const FAIL_STOP  = 'stop';
+
+/** One attempt at showing the prompt: resolves to { choice } or { error }. */
+function _promptInPage(tabId, info) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (res) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      resolve(res);
+    };
+    // A stop from the popup or a hotkey, or the tab closing, ends the run while
+    // the prompt is still up; the loop must not keep waiting for a click then.
+    const poll = setInterval(() => {
+      if (!state.playback.active) settle({ choice: FAIL_STOP, external: true });
+    }, 250);
+    chrome.tabs.sendMessage(tabId, { type: 'ACTION_FAILED_PROMPT', ...info }, { frameId: 0 }, (res) => {
+      const err = chrome.runtime.lastError?.message;
+      settle(err || !res?.choice ? { error: err || 'no answer' } : { choice: res.choice });
+    });
+  });
+}
+
+/**
+ * Pause on a failed action until the user picks retry / skip / stop in the page.
+ * Returns null when no page could show the prompt (restricted URL, no content
+ * script), and the caller falls back to notifying and moving on.
+ */
+async function _askOnFailure(tabId, info) {
+  state.playback.failPrompt = true;
+  updateBadge();
+  try {
+    // Several tries: the failure is often the page being between documents, and
+    // a reload under an open prompt drops it — both are shown again once the new
+    // document has loaded.
+    for (let attempt = 0; attempt < 3 && state.playback.active; attempt++) {
+      const res = await _promptInPage(tabId, info);
+      if (res.choice) {
+        if (res.external) tabMsg(tabId, { type: 'ACTION_FAILED_PROMPT_CLOSE' }, 2_000);
+        return res.choice;
+      }
+      await waitForTabLoad(tabId, 10_000);
+      await new Promise(r => setTimeout(r, 300)); // let content.js register
+    }
+    return state.playback.active ? null : FAIL_STOP;
+  } finally {
+    state.playback.failPrompt = false;
+    updateBadge();
+  }
+}
+
+/**
+ * Every failed action goes through here. Retry leaves nothing behind; skip and
+ * stop record the failure, and stop ends the run the way STOP_PLAYBACK does.
+ */
+async function _onActionFailed(tabId, i, actions, action, reason, failedActions, record = reason) {
+  const r = reason || 'element not found';
+  chrome.runtime.sendMessage({ type: 'ACTION_FAILED', index: i, action, reason: r }).catch(() => {});
+
+  const csv = state.csvPlayback.active;
+  const choice = await _askOnFailure(tabId, {
+    index: i, total: actions.length, reason: r,
+    actionType: action?.type || '', label: action?.label || '',
+    scenarioName: state.playback.scenarioName || '',
+    row: csv ? state.csvPlayback.currentRow + 1 : null,
+    rows: csv ? state.csvPlayback.rows?.length || 0 : null,
+  });
+
+  if (choice === FAIL_RETRY) return FAIL_RETRY;
+  if (!choice) _notifyActionFailed(i, action, r, { toPopup: false });
+  if (failedActions) {
+    failedActions.push({ index: i + 1, type: action?.type || 'unknown', label: action?.label || '', reason: record || r });
+  }
+  if (choice === FAIL_STOP) {
+    state.playback.active         = false;
+    state.sequencePlayback.active = false;
+    state.csvPlayback.active      = false;
+    updateBadge();
+    return FAIL_STOP;
+  }
+  return FAIL_SKIP;
 }
 
 /* ── Screenshot settings cache ──────────────────────────────────────────────── */
@@ -140,6 +232,11 @@ async function _getSsSettings() {
 }
 
 /* ── Playback Core ──────────────────────────────────────────────────────────── */
+
+// Switch case target meaning "the scenario currently playing": the case jumps to
+// its startAt action in place instead of running a nested scenario.
+const SWITCH_SELF    = '__self__';
+const MAX_SELF_JUMPS = 1000;
 
 export async function playActionsOnTab(
   tabId, actions, vars = null, screenshotsResult = null,
@@ -159,6 +256,13 @@ export async function playActionsOnTab(
     if (removedTabId === tabId) { _tabClosed = true; state.playback.active = false; }
   };
   chrome.tabs.onRemoved.addListener(_onTabRemoved);
+
+  let _selfJumps = 0; // Switch → "this scenario" hops taken in this run
+
+  // Pauses on the in-page prompt. Each call site steps i back on FAIL_RETRY and
+  // breaks on FAIL_STOP; FAIL_SKIP falls through to the action's usual tail.
+  const fail = (i, action, reason, record) =>
+    _onActionFailed(tabId, i, actions, action, reason, failedActions, record);
 
   try {
     for (let i = startFromIndex; i < actions.length; i++) {
@@ -236,8 +340,9 @@ export async function playActionsOnTab(
           });
 
           if (!navSuccess) {
-            _notifyActionFailed(i, action, 'Navigation timed out or tab was closed');
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: 'Navigation timed out' });
+            const next = await fail(i, action, 'Navigation timed out or tab was closed', 'Navigation timed out');
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -245,7 +350,11 @@ export async function playActionsOnTab(
 
         /* ── Wait ── */
         if (action.type === 'wait') {
-          const ms = parseInt(action.value || action.delay || 500, 10);
+          // `delay` first, the same order the popup's preview and editor and both
+          // exporters read it in. Only old actions (and "save sequence as
+          // scenario" ones) keep the duration in `value`; one carrying both used
+          // to show one duration and wait another.
+          const ms = parseInt(action.delay || action.value || 500, 10);
           await new Promise((resolve) => setTimeout(resolve, isNaN(ms) ? 500 : ms));
           continue;
         }
@@ -275,8 +384,9 @@ export async function playActionsOnTab(
           const result   = await takeElementScreenshot(tabId, action.selector, saveMode, prefix, false, false, skipDownload, action.selectors)
             .catch(e => ({ error: e.message }));
           if (result?.error) {
-            _notifyActionFailed(i, action, result.error);
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
+            const next = await fail(i, action, result.error);
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -303,8 +413,9 @@ export async function playActionsOnTab(
             }
           } catch (e) {
             console.error('[PLAYBACK] screenshot_tovar failed:', e);
-            _notifyActionFailed(i, action, e.message);
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });
+            const next = await fail(i, action, e.message);
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -320,8 +431,9 @@ export async function playActionsOnTab(
             : takeVisibleScreenshot(tabId, saveMode, prefix, action.value || null, false, false, skipDownload);
           const result = await task.catch(e => ({ error: e.message }));
           if (result?.error) {
-            _notifyActionFailed(i, action, result.error);
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: result.error });
+            const next = await fail(i, action, result.error);
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -333,8 +445,9 @@ export async function playActionsOnTab(
           if (rdResult?.value !== undefined && action.varName) {
             resolvedVars[action.varName] = rdResult.value;
           } else if (rdResult?.failed) {
-            _notifyActionFailed(i, action, rdResult.error || null);
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: rdResult.error || 'element not found' });
+            const next = await fail(i, action, rdResult.error || null);
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -368,14 +481,39 @@ export async function playActionsOnTab(
           const cases     = action.cases || [];
           let matched     = cases.find(c => c.value === switchVal);
           if (!matched) matched = cases.find(c => c.value === '__default__');
-          if (matched?.scenarioId) {
+          // 1-based "start at action #N" on the case; absent on older cases = 1.
+          const startIdx  = Math.max(0, (parseInt(matched?.startAt, 10) || 1) - 1);
+          if (matched?.scenarioId === SWITCH_SELF) {
+            // Jump within the scenario being played: no nested run, just move i.
+            // A backward jump is a loop, so cap the hops — a case that always
+            // matches would otherwise spin forever.
+            if (startIdx >= actions.length) {
+              const next = await fail(i, action, `Switch: action #${startIdx + 1} does not exist (scenario has ${actions.length})`, 'Jump target out of range');
+              if (next === FAIL_RETRY) { i--; continue; }
+              if (next === FAIL_STOP) break;
+            } else if (++_selfJumps > MAX_SELF_JUMPS) {
+              const next = await fail(i, action, `Switch: more than ${MAX_SELF_JUMPS} jumps — possible infinite loop, continuing without jumping`, 'Jump limit exceeded');
+              if (next === FAIL_RETRY) { i--; continue; }
+              if (next === FAIL_STOP) break;
+            } else {
+              if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
+              i = startIdx - 1; // the loop's i++ lands on startIdx
+              continue;
+            }
+          } else if (matched?.scenarioId) {
             const scenarios      = await getScenarios();
             const targetScenario = scenarios[matched.scenarioId];
-            if (targetScenario?.actions?.length) {
+            if (targetScenario?.actions?.length && startIdx >= targetScenario.actions.length) {
+              const next = await fail(i, action, `Switch: "${targetScenario.name || matched.scenarioId}" has no action #${startIdx + 1} (only ${targetScenario.actions.length})`, 'Switch start action out of range');
+              if (next === FAIL_RETRY) { i--; continue; }
+              if (next === FAIL_STOP) break;
+            } else if (targetScenario?.actions?.length) {
               const caseLabel    = matched.value === '__default__' ? 'default' : matched.value;
               const switchedName = targetScenario.name || matched.scenarioId;
+              const parentName   = state.playback.scenarioName;
+              const parentTotal  = state.playback.totalActions;
               state.playback.scenarioName  = switchedName;
-              state.playback.actionIndex   = 0;
+              state.playback.actionIndex   = startIdx;
               state.playback.totalActions  = targetScenario.actions.length;
               chrome.runtime.sendMessage({ type: 'SWITCH_SCENARIO', scenarioName: switchedName, caseLabel }).catch(() => {});
               if (!state.csvPlayback.active) {
@@ -394,14 +532,21 @@ export async function playActionsOnTab(
               // came back empty.
               const nestedVars = await playActionsOnTab(
                 tabId, targetScenario.actions, { ...resolvedVars },
-                screenshotsResult, forceAutoSave, skipDownload, 0, failedActions, _depth + 1,
+                screenshotsResult, forceAutoSave, skipDownload, startIdx, failedActions, _depth + 1,
               );
               Object.assign(resolvedVars, nestedVars);
+              // Back in this scenario: progress counts its actions again, not the branch's.
+              state.playback.scenarioName = parentName;
+              state.playback.totalActions = parentTotal;
             } else {
-              _notifyActionFailed(i, action, `Switch: scenario "${matched.scenarioName || matched.scenarioId}" not found or has no actions`);
+              const next = await fail(i, action, `Switch: scenario "${matched.scenarioName || matched.scenarioId}" not found or has no actions`);
+              if (next === FAIL_RETRY) { i--; continue; }
+              if (next === FAIL_STOP) break;
             }
           } else {
-            _notifyActionFailed(i, action, `Switch: no case matched value "${switchVal}" and no default case set`);
+            const next = await fail(i, action, `Switch: no case matched value "${switchVal}" and no default case set`);
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
           continue;
@@ -419,9 +564,9 @@ export async function playActionsOnTab(
             : action.fileName ? [action.fileName] : [];
 
           if (!cssSel || !folder || !rawNames.length) {
-            const reason = 'uploadFile: missing selector, folderPath, or file name(s)';
-            _notifyActionFailed(i, action, reason);
-            if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
+            const next = await fail(i, action, 'uploadFile: missing selector, folderPath, or file name(s)');
+            if (next === FAIL_RETRY) { i--; continue; }
+            if (next === FAIL_STOP) break;
           } else {
             const sep       = folder.includes('\\') ? '\\' : '/';
             const filePaths = rawNames.map(n => `${folder}${sep}${n}`);
@@ -432,8 +577,9 @@ export async function playActionsOnTab(
                 await setFileInputViaCdp(tabId, cssSel, filePaths);
               }
             } catch (e) {
-              _notifyActionFailed(i, action, e.message);
-              if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason: e.message });
+              const next = await fail(i, action, e.message);
+              if (next === FAIL_RETRY) { i--; continue; }
+              if (next === FAIL_STOP) break;
             }
           }
           if (action.delay && action.delay > 0) await new Promise(r => setTimeout(r, action.delay));
@@ -472,8 +618,9 @@ export async function playActionsOnTab(
 
         if (result?.failed) {
           const reason = result._noContentScript ? 'Content script not reachable' : (result.error || 'Action failed');
-          _notifyActionFailed(i, action, reason);
-          if (failedActions) failedActions.push({ index: i + 1, type: action.type, label: action.label || '', reason });
+          const next = await fail(i, action, reason);
+          if (next === FAIL_RETRY) { i--; continue; }
+          if (next === FAIL_STOP) break;
         }
 
         // For succeeded click/select, also check for post-action navigation
@@ -490,8 +637,9 @@ export async function playActionsOnTab(
         }
       } catch (err) {
         console.error(`[PLAYBACK] Action ${i} failed:`, err);
-        _notifyActionFailed(i, actions[i], err?.message || null);
-        if (failedActions) failedActions.push({ index: i + 1, type: actions[i]?.type || 'unknown', label: actions[i]?.label || '', reason: err?.message || 'unknown error' });
+        const next = await fail(i, actions[i], err?.message || null, err?.message || 'unknown error');
+        if (next === FAIL_RETRY) { i--; continue; }
+        if (next === FAIL_STOP) break;
       }
     }
   } finally {

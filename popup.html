@@ -316,9 +316,10 @@
         <div style="display:flex; gap:6px; align-items:center;">
           <input id="switchCaseValue" placeholder="Case value  (e.g. admin)" style="flex:1; margin:0; font-size:12px;" />
           <select id="switchCaseScenario" style="flex:1.5; margin:0; font-size:12px;"></select>
+          <input id="switchCaseStart" class="sw-start-input" type="number" min="1" placeholder="#1" title="Start at action # (1 = first)" />
           <button id="switchAddCase" class="secondary" style="width:auto; flex:0 0 auto; margin:0; padding:4px 8px; font-size:12px;">+ Add</button>
         </div>
-        <span class="helper-text">Leave case value empty to set as <strong>default</strong>. Cases are checked top-to-bottom; first match wins.</span>
+        <span class="helper-text">Leave case value empty to set as <strong>default</strong>. Cases are checked top-to-bottom; first match wins. <strong>#</strong> = action number to start from (default 1). <strong>↻ This scenario</strong> jumps to that action in the scenario being played instead of running another one.</span>
       </div>
 
       <!-- CHILD CONDITION (optional collapsible) — shown for click/input/hover -->

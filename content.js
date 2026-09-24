@@ -1426,6 +1426,99 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   FAILED-ACTION PROMPT
+
+   Playback pauses on a failed action and asks here, on the page being played,
+   whether to retry it, skip it or stop the run. The worker holds its message
+   open and the click goes back as the response. Only the top frame is asked
+   (the worker sends to frameId 0). The page stays usable underneath, so the
+   user can put it right by hand before pressing Retry.
+───────────────────────────────────────────────────────────────────────────── */
+
+let _failPrompt = null; // { handle, respond }
+
+function _closeFailPrompt(choice) {
+  if (!_failPrompt) return;
+  const { handle, respond } = _failPrompt;
+  _failPrompt = null;
+  handle.destroy();
+  try { respond(choice ? { choice } : { closed: true }); } catch (_) {}
+}
+
+function _failPromptLine(text, extra = []) {
+  return _extSpan(text, [
+    'display:block', 'font-size:12px', 'white-space:pre-wrap', 'word-break:break-word', ...extra,
+  ]);
+}
+
+function _showFailPrompt(msg, respond) {
+  // A newer prompt replaces an older one; the worker is no longer waiting on it.
+  _closeFailPrompt(null);
+
+  const head = document.createElement('div');
+  head.style.cssText = [
+    'all:initial', 'display:flex', 'align-items:center', 'gap:6px',
+    'font-family:inherit', 'font-size:13px', 'line-height:1.4', 'color:inherit',
+  ].join(';');
+  head.append(
+    _extSpan('⚠', [`color:${_EXT_DANGER}`, 'font-size:15px', 'flex:0 0 auto']),
+    _extSpan(`Action ${msg.index + 1}${msg.total ? ` of ${msg.total}` : ''} failed`, ['font-weight:700']),
+  );
+
+  const what  = [msg.actionType, msg.label && `"${msg.label}"`].filter(Boolean).join(' · ');
+  const where = [msg.scenarioName, msg.row ? `row ${msg.row} of ${msg.rows}` : ''].filter(Boolean).join(' · ');
+
+  const row = document.createElement('div');
+  row.style.cssText = [
+    'all:initial', 'display:flex', 'justify-content:flex-end', 'gap:6px', 'margin-top:4px',
+  ].join(';');
+
+  const handle = _extOverlay({
+    id: '__action_failed_prompt',
+    variant: 'panel',
+    hint: null,
+    buttons: [
+      { key: 'retry', label: '↻ Retry', onClick: () => _closeFailPrompt('retry') },
+      { key: 'skip',  label: '⏭ Skip',  onClick: () => _closeFailPrompt('skip') },
+      { key: 'stop',  label: '■ Stop', tone: 'danger', onClick: () => _closeFailPrompt('stop') },
+    ],
+    content: [
+      head,
+      what  ? _failPromptLine(what, ['opacity:0.75']) : null,
+      _failPromptLine(msg.reason || 'Action failed', ['max-height:120px', 'overflow:auto']),
+      where ? _failPromptLine(where, ['font-size:11px', 'opacity:0.6']) : null,
+      row,
+    ],
+    extra: [
+      'display:flex', 'top:16px', 'left:50%', 'transform:translateX(-50%)',
+      'width:min(420px, calc(100vw - 32px))',
+    ],
+  });
+
+  // The template appends buttons straight onto the panel's column; they belong
+  // on one row under the text. Moving the nodes keeps their theme repaint.
+  const { retry, skip, stop } = handle.buttons;
+  retry.title = 'Run this action again';
+  skip.title  = 'Record it as failed and go on to the next action';
+  stop.title  = 'Record it as failed and end the run';
+  row.append(retry, skip, stop);
+
+  _failPrompt = { handle, respond };
+  handle.mount();
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'ACTION_FAILED_PROMPT') {
+    _showFailPrompt(msg, sendResponse);
+    return true; // answered when a button is clicked
+  }
+  if (msg.type === 'ACTION_FAILED_PROMPT_CLOSE') {
+    _closeFailPrompt(null);
+    sendResponse({ ok: true });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
    PING / PONG
 ───────────────────────────────────────────────────────────────────────────── */
 
@@ -2644,6 +2737,13 @@ async function _hlRestoreOne(h) {
     if (!segments.length) return;
     segments.forEach(({ node, start, end }) => {
       const mark = _hlMark(h.id, h.color, h.note);
+      // A highlight disabled from the popup stays saved but must come back
+      // unpainted, the same state HL_SET_HIDDEN leaves it in; otherwise every
+      // reload paints it again until it is toggled off a second time.
+      if (h.disabled) {
+        mark.style.setProperty('background-color', 'transparent', 'important');
+        mark.dataset.hlHidden = '1';
+      }
       if (end < node.length) node.splitText(end);
       const target = start > 0 ? node.splitText(start) : node;
       if (!target.parentNode) return;

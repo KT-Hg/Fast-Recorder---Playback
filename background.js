@@ -336,7 +336,11 @@ function handleMessage(request, sender, sendResponse) {
       // own resume mechanism and startPlaybackFromCheckpoint would run outside CSV
       // context (forceAutoSave=false, skipDownload=false), causing screenshot
       // save-as dialogs and skipping IDB accumulation for the zip.
-      if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000 && !state.csvPlayback.active) {
+      // Nor while any run is still live: a page that loads mid-run (a navigate
+      // action, a reload under the failed-action prompt) was not interrupted, and
+      // the banner used to offer to "resume" a run that had never stopped.
+      const live = state.playback.active || state.sequencePlayback.active || state.csvPlayback.active;
+      if (cp && tabId === cp.tabId && Date.now() - cp.timestamp < 60_000 && !live) {
         chrome.runtime.sendMessage({ type: "OFFER_RESUME", checkpoint: cp }).catch(() => {});
       }
     });
