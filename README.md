@@ -1,6 +1,8 @@
-# Fast Recorder & Playback
+# Pocket QA
 
 A Chrome Manifest V3 extension that records browser interactions and replays them with conditional logic, variable substitution, scheduling, and CSV-driven data execution — no coding required.
+
+> Formerly **Fast Recorder & Playback** (renamed 2026-09-26, together with the repository and its GitHub Pages URL). A few internal identifiers keep the old name on purpose, because renaming them would orphan data that installed copies already hold: the IndexedDB names (`FastRecorder_*`) and the `frp…` keys and DOM ids of the Adminer panel, which the sibling extensions also look for.
 
 ---
 

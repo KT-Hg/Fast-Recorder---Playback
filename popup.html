@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Scenario Recorder</title>
+  <title>Pocket QA</title>
 
   <link rel="stylesheet" href="css/popup.css" />
 </head>
@@ -622,9 +622,13 @@
 
     <!-- DB TEST SESSION (ADMINER) -->
     <div class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-        <h3 style="margin:0;">DB Test Session</h3>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <h3 style="margin:0 auto 0 0;">DB Test Session</h3>
         <button class="card-help-btn" data-card="dbtools" title="DB Test Session guide">?</button>
+        <label class="hl-toggle-switch" title="Adminer panel — show it and record changes. Off: no panel on Adminer pages and nothing is recorded. Takes effect on open Adminer tabs straight away.">
+          <input type="checkbox" id="dbEnabledToggle" role="switch" aria-label="Adminer panel: show it and record changes" />
+          <span class="hl-toggle-slider" aria-hidden="true"></span>
+        </label>
       </div>
       <button id="dbStatus" class="db-status" type="button" hidden></button>
       <button id="openDbTools" class="export-code-btn" style="width:100%;" title="Review and roll back data changed through Adminer">
@@ -635,13 +639,12 @@
         </div>
       </button>
       <p style="font-size:12px; color: var(--muted); margin:6px 0 0;">Recording happens in the Adminer tab itself; this page reviews and rolls back.</p>
-      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:8px;" title="Off: no panel on Adminer pages and nothing is recorded. Takes effect on open Adminer tabs straight away.">
-        <input type="checkbox" id="dbEnabledToggle" style="width:auto; margin:0; cursor:pointer; flex:none;" />
-        <span><b>Adminer panel</b> — show it and record changes</span>
-      </label>
-      <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:6px;" title="Snapshot the chosen tables before every Playback run and roll the database back when it ends">
-        <input type="checkbox" id="dbGuardToggle" style="width:auto; margin:0; cursor:pointer; flex:none;" />
-        <span>Roll the database back after each Playback run</span>
+      <label class="switch-row" title="Snapshot the chosen tables before every Playback run and roll the database back when it ends">
+        <span class="switch-text">Roll the database back after each Playback run</span>
+        <span class="hl-toggle-switch">
+          <input type="checkbox" id="dbGuardToggle" role="switch" />
+          <span class="hl-toggle-slider" aria-hidden="true"></span>
+        </span>
       </label>
     </div>
 

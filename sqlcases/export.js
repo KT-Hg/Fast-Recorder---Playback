@@ -56,7 +56,7 @@ export function toJson(sql, result) {
   const model = result.model || {};
   return JSON.stringify({
     generatedAt: new Date().toISOString(),
-    generator: 'Fast Recorder & Playback — SQL Test Case Designer',
+    generator: 'Pocket QA — SQL Test Case Designer',
     language: getLang(),
     sql,
     // The values a reader cannot recover from the SQL: without these, a case

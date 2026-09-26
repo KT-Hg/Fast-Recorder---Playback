@@ -289,7 +289,7 @@ async function remindBeforeDeadline() {
   const days = lock.daysLeft;
   sendAlertNotification(
     '⏳ Update required soon',
-    `Fast Recorder & Playback locks recording, playback and capture in ` +
+    `Pocket QA locks recording, playback and capture in ` +
     `${days} day${days === 1 ? '' : 's'}. Update from the Chrome Web Store to keep using them.`,
     'update_reminder',
   );
@@ -312,7 +312,7 @@ export function notifyLocked(message = LOCK_MESSAGE) {
     chrome.notifications.create({
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icons/icon128.png'),
-      title: 'Fast Recorder & Playback — update required',
+      title: 'Pocket QA — update required',
       message,
       priority: 2,
     }, () => { void chrome.runtime.lastError; });

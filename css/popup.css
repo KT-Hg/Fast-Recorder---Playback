@@ -5427,3 +5427,21 @@ body[data-active-tab="tabData"] #lockOverlayData.is-visible {
 .db-status .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .db-status .label b { font-weight: 600; }
 .db-status .sub { color: var(--muted); white-space: nowrap; }
+/* `display: flex` above beats the `hidden` attribute, which left an empty pill
+   on screen while the Adminer panel is off. */
+.db-status[hidden] { display: none; }
+/* No session recorded yet: a hint, not a link. */
+.db-status.empty { cursor: default; color: var(--muted); border-style: dashed; }
+.db-status.empty:hover { border-color: var(--border); background: transparent; }
+
+/* On/off setting in a card: label on the left, .hl-toggle-switch on the right.
+   The whole row is the <label>, so clicking the text flips it too. */
+.switch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 12px; margin-top: 8px; cursor: pointer;
+}
+.switch-row .switch-text { flex: 1; min-width: 0; }
+/* The guard switch is disabled while the Adminer panel is off. */
+.switch-row:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.switch-row:has(input:disabled) .hl-toggle-switch,
+.switch-row:has(input:disabled) .hl-toggle-slider { cursor: not-allowed; }

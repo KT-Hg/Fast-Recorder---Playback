@@ -29,5 +29,5 @@
   window.__frpDbtoolsBooted = true;
   import(chrome.runtime.getURL('dbtools/content-main.js'))
     .then((mod) => mod.boot())
-    .catch((err) => console.warn('[Fast Recorder] DB tools failed to load:', err));
+    .catch((err) => console.warn('[Pocket QA] DB tools failed to load:', err));
 })();

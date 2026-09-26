@@ -1,9 +1,14 @@
 # `update-config.json` — critical-release kill switch
 
 Published at
-<https://kt-hg.github.io/Fast-Recorder---Playback/update-config.json>
+<https://kt-hg.github.io/Pocket-QA/update-config.json>
 and fetched by every install once a day, alongside the Web Store version check
 (`bg/remote-config.js`).
+
+Builds published before the rename fetch the old address,
+`https://kt-hg.github.io/Fast-Recorder---Playback/update-config.json`, which
+stopped resolving when the repository was renamed. Those installs fail open (no
+lock, no warning) until they update to a build that reads the address above.
 
 A version floor cannot live inside the extension: users running the broken build
 would have to update in order to receive the rule telling them to update. This

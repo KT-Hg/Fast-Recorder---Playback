@@ -4100,7 +4100,7 @@ if (backupAllBtn) {
       const payload = { ...res.data, __sync: res.sync || {} };
       _downloadBlob(
         new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }),
-        `fast-recorder-backup-${new Date().toISOString().slice(0, 10)}.json`,
+        `pocket-qa-backup-${new Date().toISOString().slice(0, 10)}.json`,
       );
       showToast("Backup downloaded", "success");
     });

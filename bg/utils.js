@@ -95,7 +95,7 @@ async function _notify(category, title, message, id) {
   if (!(await _notifyEnabled(category))) return;
   chrome.notifications.create(id || `${category}_${Date.now()}`, {
     type: 'basic', iconUrl: _NOTIF_ICON,
-    title: title || 'Fast Recorder & Playback',
+    title: title || 'Pocket QA',
     message: message || '',
   }, () => { void chrome.runtime.lastError; });
 }

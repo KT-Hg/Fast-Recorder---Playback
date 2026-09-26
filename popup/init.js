@@ -125,15 +125,26 @@ function initDbStatus() {
       .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)));
     const latest = [...sessions].sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0];
     const shown = recording[0] || latest;
-    if (!shown || off) {
+    if (off) {
       line.hidden = true;
       target = '';
+      return;
+    }
+    line.hidden = false;
+    if (!shown) {
+      // Nothing recorded yet: say where sessions come from rather than show
+      // nothing — an empty card reads as broken.
+      target = '';
+      line.classList.remove('rec');
+      line.classList.add('empty');
+      line.textContent = 'No test session yet — start one from the panel in an Adminer tab';
+      line.title = '';
       return;
     }
     target = shown.id;
     const n = (shown.changes || []).length;
     const rec = Boolean(recording[0]);
-    line.hidden = false;
+    line.classList.remove('empty');
     line.classList.toggle('rec', rec);
     line.replaceChildren();
     const dot = document.createElement('span');
@@ -173,7 +184,7 @@ function initDbGuardToggle() {
   const box = document.getElementById('dbGuardToggle');
   if (!box || !enabled) return;
   // The guard is held back with the table snapshots it runs on (features.js).
-  // The label carries an inline display, which the `hidden` attribute loses to.
+  // The label's .switch-row gives it a display, which the `hidden` attribute loses to.
   if (!TABLE_COPIES) box.closest('label').style.display = 'none';
   const KEY = 'dbtoolsSettings';
 

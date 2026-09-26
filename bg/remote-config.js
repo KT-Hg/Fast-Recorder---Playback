@@ -20,7 +20,7 @@
 
 import { evaluateRemoteConfig } from './update-lock.js';
 
-const CONFIG_URL = 'https://kt-hg.github.io/Fast-Recorder---Playback/update-config.json';
+const CONFIG_URL = 'https://kt-hg.github.io/Pocket-QA/update-config.json';
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_MESSAGE_LEN  = 240;

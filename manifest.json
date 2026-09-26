@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Fast Recorder & Playback",
+  "name": "Pocket QA",
   "version": "1.0.17",
   "description": "Record & Playback web workflows with variables, CSV data runs, screenshots, file uploads, drag-drop, and JS scripting",
 
@@ -66,7 +66,7 @@
 
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Fast Recorder & Playback",
+    "default_title": "Pocket QA",
     "default_icon": {
       "16":  "icons/icon16.png",
       "32":  "icons/icon32.png",
